@@ -1,0 +1,90 @@
+# The Windows build.
+#
+# Kept out of the main pipeline because it is slow and Windows minutes are expensive, and
+# because most changes cannot break it. It runs when something merges into a permanent
+# branch, when a change touches the parts that decide what the binary is, and whenever it
+# is asked for by hand.
+#
+# It produces an unsigned executable. Signing needs a certificate this project does not
+# pay for, so Windows will warn about it; the README says so plainly rather than letting
+# anyone find out by surprise.
+name: build-windows
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'crates/cairn-platform/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          # The version comes from .nvmrc, for the reason written in ci.yml.
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: tauri-cli
+
+      - name: Install dependencies from the lockfile
+        run: npm ci --ignore-scripts
+
+      - name: Build the release bundle
+        # --locked after the separator goes to cargo: the build resolves exactly the
+        # versions in Cargo.lock and fails rather than quietly picking something newer.
+        run: cargo tauri build -- --locked
+
+      - name: Check the binary against its size budget
+        shell: pwsh
+        run: |
+          $exe = 'target/release/cairn.exe'
+          $budget = 15MB
+          $size = (Get-Item $exe).Length
+          "Size: $([math]::Round($size / 1MB, 2)) MB (budget $([math]::Round($budget / 1MB, 2)) MB)"
+          if ($size -gt $budget) {
+            Write-Output "::error::$exe is over its size budget"
+            exit 1
+          }
+
+      - name: Keep the executable for manual testing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cairn-windows-unsigned
+          path: |
+            target/release/cairn.exe
+            target/release/bundle/nsis/*.exe
+          # Long lived artefacts are a liability nobody is watching. This one exists to be
+          # downloaded and tried the same day.
+          retention-days: 1
+          if-no-files-found: error

@@ -1,0 +1,175 @@
+# Quality gates.
+#
+# Every check that can decide on its own whether a change is acceptable runs here, on
+# every push and every pull request. Each one is its own step so that a red pipeline says
+# which gate failed without anybody opening a log.
+#
+# Third party actions are pinned to a full commit SHA rather than a tag. A tag is a
+# movable pointer: whoever controls the action repository can repoint it at different code
+# and that code runs with this workflow's token. The comment after each SHA records which
+# tag it corresponded to when it was pinned.
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# Read only by default. A job that genuinely needs to write says so for itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning that nobody reads is a warning that is not doing anything.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # The whole history, because a secret that was removed in a later commit is
+          # still a leaked secret.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan the working tree and the history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_ENABLE_SUMMARY: true
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          # Read from .nvmrc rather than written here, so the pipeline and a developer's
+          # machine cannot drift apart. They did once: npm 11 accepted a lockfile with an
+          # optional peer dependency missing and npm 10 refused to install it, so the only
+          # failure appeared here, on a tree that had passed every check locally.
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        # No dependency gets to run a script during installation, here or anywhere else.
+        run: npm ci --ignore-scripts
+
+      - name: Check that nothing ships as a runtime dependency
+        # The frontend has no runtime dependencies, and that is a property worth a gate
+        # rather than a sentence in a document. Every package in the bundle is attack
+        # surface in an application holding a password vault.
+        run: |
+          count=$(node -p "Object.keys(require('./package.json').dependencies ?? {}).length")
+          if [ "$count" != "0" ]; then
+            echo "::error::package.json declares $count runtime dependencies; it must declare none"
+            node -p "JSON.stringify(require('./package.json').dependencies, null, 2)"
+            exit 1
+          fi
+
+      - name: Formatting
+        run: npm run format:check
+
+      - name: Lints
+        run: npm run lint
+
+      - name: Types
+        run: npm run check
+
+      - name: Unused files, exports and dependencies
+        run: npm run knip
+
+      - name: Advisories
+        run: npm audit --omit=dev
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the system libraries Tauri links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml decides the version. Naming one here as well would be a
+        # second place to forget to update.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt, clippy, llvm-tools
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Coverage
+        run: cargo llvm-cov --workspace --all-features --fail-under-lines 80
+
+      - name: Licences, advisories, sources and bans
+        run: cargo deny check
+
+      - name: Advisories
+        run: cargo audit
+
+  unsafe-code:
+    name: unsafe code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Assert that unsafe code appears only where it is allowed
+        # cairn-platform is the one crate permitted to contain unsafe, because platform
+        # APIs require it. Anywhere else it is a mistake, and this is what notices.
+        run: |
+          set -euo pipefail
+          offenders=$(grep -rln --include='*.rs' -E '(^|[^_[:alnum:]])unsafe[[:space:]]' \
+            crates/cairn-crypto/src \
+            crates/cairn-domain/src \
+            crates/cairn-db/src \
+            crates/cairn-sync/src \
+            src-tauri/src || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::unsafe code found outside crates/cairn-platform:"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "No unsafe code outside crates/cairn-platform."
