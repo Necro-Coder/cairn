@@ -8,6 +8,11 @@
 //!
 //! The rule is easy to state and easy to break by accident, which is exactly why it is
 //! asserted here rather than left as a note in a review.
+// Every function in an integration test file is test code, but the lint that forbids
+// panicking constructs only relaxes itself inside `#[cfg(test)]` modules and `#[test]`
+// functions. The helpers below are neither, and a helper that cannot panic would have to
+// return a Result that every assertion then has to unwrap, which buries the assertion.
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use cairn_lib::commands::diagnostics::{DatabaseStatus, Diagnostics};
 
@@ -90,7 +95,14 @@ fn nothing_but_the_agreed_fields_is_reported() {
 
     assert_eq!(
         fields,
-        ["app", "arch", "database", "os", "uptimeMs", "webviewVersion"],
+        [
+            "app",
+            "arch",
+            "database",
+            "os",
+            "uptimeMs",
+            "webviewVersion"
+        ],
         "the set of fields on the diagnostics snapshot has changed"
     );
 }

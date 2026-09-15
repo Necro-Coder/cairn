@@ -10,6 +10,11 @@
 //! parsed here and every setting the threat model depends on is asserted by name, with
 //! the reason written next to it, so that whoever changes one has to come and argue with
 //! this file first.
+// Every function in an integration test file is test code, but the lint that forbids
+// panicking constructs only relaxes itself inside `#[cfg(test)]` modules and `#[test]`
+// functions. The helpers below are neither, and a helper that cannot panic would have to
+// return a Result that every assertion then has to unwrap, which buries the assertion.
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
 
@@ -86,10 +91,19 @@ fn content_security_policy_locks_down_every_directive_the_threat_model_names() {
         .expect("the content security policy must be a string");
 
     let required = [
-        ("default-src 'self'", "nothing loads from anywhere else by default"),
-        ("script-src 'self'", "script comes from the bundle and nowhere else"),
+        (
+            "default-src 'self'",
+            "nothing loads from anywhere else by default",
+        ),
+        (
+            "script-src 'self'",
+            "script comes from the bundle and nowhere else",
+        ),
         ("object-src 'none'", "no plugins, no embedded objects"),
-        ("base-uri 'none'", "injected script cannot rewrite relative URLs"),
+        (
+            "base-uri 'none'",
+            "injected script cannot rewrite relative URLs",
+        ),
         ("frame-ancestors 'none'", "the window cannot be framed"),
         ("form-action 'none'", "no form can post anywhere"),
     ];
@@ -143,7 +157,10 @@ fn the_asset_protocol_is_disabled() {
 #[test]
 fn the_asset_content_security_policy_modification_is_not_disabled() {
     assert_eq!(
-        at(&config(), "app.security.dangerousDisableAssetCspModification"),
+        at(
+            &config(),
+            "app.security.dangerousDisableAssetCspModification"
+        ),
         &Value::Bool(false),
         "this setting stops Tauri from applying the policy to bundled assets"
     );

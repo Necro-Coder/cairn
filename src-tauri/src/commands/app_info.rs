@@ -18,7 +18,11 @@ pub const DISPLAY_NAME: &str = "Cairn";
 /// This is not cosmetic. A diagnostics screen that says `release` while the devtools open
 /// would mean the hardening did not take effect, and the person looking at the screen
 /// needs to be able to tell.
-pub const BUILD_PROFILE: &str = if cfg!(debug_assertions) { "debug" } else { "release" };
+pub const BUILD_PROFILE: &str = if cfg!(debug_assertions) {
+    "debug"
+} else {
+    "release"
+};
 
 /// Name, version and build profile of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
