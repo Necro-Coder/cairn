@@ -69,7 +69,9 @@ The other asserts that `unsafe` appears nowhere except `crates/cairn-platform`.
 
 ## The two tests that read configuration
 
-`src-tauri/tests/config_hardening.rs` parses `tauri.conf.json` and asserts every setting the WebView defence depends on: the isolation pattern, a content security policy with no inline or evaluated script, no global Tauri object, prototypes frozen, the asset protocol disabled, drag and drop off, and no capability granting more than the core defaults.
+`src-tauri/tests/config_hardening.rs` parses `tauri.conf.json` and asserts every setting the WebView defence depends on: the isolation pattern, a content security policy with no inline or evaluated script, no global Tauri object, prototypes frozen, the asset protocol disabled, drag and drop off, and no capability granting any core permission at all.
+
+That last one is stricter than it first looks. Tauri offers `core:default` as a convenient starting bundle, and it is what a generated project begins with, but it is a bundle rather than a minimal list and it includes path resolution. Script that has managed to run inside the WebView could use that to learn the account name, which is precisely what the diagnostics screen goes to trouble to avoid revealing. The application's own commands do not need a capability entry, so the list is empty, which was confirmed by emptying it and watching the application carry on working.
 
 It is the most valuable test in the project so far, because of the way the failure it guards against behaves. Loosening the content security policy breaks nothing. The application starts, every screen works, every other test passes, and the protection is simply gone. Nobody notices until it matters. It was verified by loosening each setting in turn and confirming the test fails for each one.
 
