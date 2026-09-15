@@ -1,0 +1,8 @@
+# The lints that forbid panicking constructs are aimed at production paths. Inside a test,
+# unwrapping is how a failed assumption is reported, so they are relaxed there.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = false
+allow-print-in-tests = true

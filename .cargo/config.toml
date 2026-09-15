@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# Control Flow Guard makes indirect calls check their target against a table generated at
+# compile time, which turns most control-flow hijacking primitives into a crash.
+rustflags = ["-C", "control-flow-guard=yes"]
