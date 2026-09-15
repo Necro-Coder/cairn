@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "src-tauri",
     "crates/cairn-crypto",
     "crates/cairn-domain",
     "crates/cairn-db",
@@ -37,6 +38,11 @@ unsafe_code = "deny"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 missing_docs = "warn"
+# The MSVC linker prints an informational line every time it produces the import library
+# for a cdylib, which the application crate is so that the same code can be driven by the
+# iOS entry point later. It is not actionable and it is not a diagnostic about our code,
+# but it would fail the `-D warnings` gate on every Windows build.
+linker_messages = "allow"
 
 [workspace.lints.clippy]
 # Anything that can abort the process on a value the code did not check. These are the
