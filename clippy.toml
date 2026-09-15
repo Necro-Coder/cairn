@@ -6,3 +6,24 @@ allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-dbg-in-tests = false
 allow-print-in-tests = true
+
+# Product and technology names that appear in prose. Without this, the documentation lint
+# demands backticks around them, which would mean formatting the name of a WebView engine
+# as if it were a function in this codebase. The ".." entry keeps the built-in list.
+doc-valid-idents = [
+    "..",
+    "WebView",
+    "WebView2",
+    "WKWebView",
+    "SQLCipher",
+    "SQLite",
+    "SmartScreen",
+    "TypeScript",
+    "JavaScript",
+    "GitHub",
+    "Argon2id",
+    "XChaCha20-Poly1305",
+    "HKDF-SHA512",
+    "macOS",
+    "iOS",
+]
