@@ -1,0 +1,76 @@
+# Dependency policy.
+#
+# Written strict on the first day on purpose. A policy that starts permissive never gets
+# tightened, because tightening it means breaking a build that was passing yesterday, and
+# that argument always wins. Starting strict means every exception has to be added
+# deliberately, with a reason written next to it, which is the only version of this file
+# that is worth having.
+
+[graph]
+# The platforms this application is actually built for. Advisories and licence findings
+# for dependencies that only compile on other targets are noise, not risk.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-ios",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+version = 2
+# No known vulnerability is acceptable in an application that holds a password vault.
+# Every entry added below has to name the advisory and say why it cannot be reached from
+# any code path here. An empty list is the correct state.
+ignore = []
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licences only. This is an Apache-2.0 project and a strong copyleft dependency
+# would change what people are allowed to do with it, which is not a decision a transitive
+# dependency should be making.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Duplicate versions are a warning rather than an error because the framework drags in a
+# large graph that a single project cannot deduplicate on its own. Cryptographic crates
+# are the exception below: two versions of one of those is a real problem, because it
+# means half the code is getting fixes the other half is not.
+multiple-versions = "warn"
+# A wildcard version is an unreviewed upgrade waiting to happen.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+deny = [
+    # Long unmaintained, and superseded by the standard library or by maintained crates.
+    { name = "time", version = "<0.2.23", reason = "CVE-2020-26235: segmentation fault in localtime_r" },
+    { name = "chrono", version = "<0.4.20", reason = "RUSTSEC-2020-0159: unsound localtime_r binding" },
+    # Random number generation used anywhere near key material has to come from the
+    # operating system. These make it too easy to get a predictable stream instead.
+    { name = "rand_core", version = "<0.6", reason = "predates the current OsRng contract" },
+]
+
+skip-tree = []
+
+[sources]
+# Everything comes from the public registry. A dependency pulled straight from a git
+# repository has no published checksum, no yank mechanism and no advisory coverage.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

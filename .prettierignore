@@ -1,0 +1,14 @@
+# Generated or owned by another toolchain.
+dist/
+target/
+node_modules/
+src-tauri/gen/
+src-tauri/icons/
+package-lock.json
+Cargo.lock
+
+# Rust is formatted by rustfmt, not by Prettier.
+*.rs
+
+# The licence text is reproduced verbatim and must not be reflowed.
+LICENSE
