@@ -17,12 +17,6 @@ html {
 
 body {
   margin: 0;
-  /* The flex column lives here rather than on `main`, so that the page is exactly the
-   * height of the window. Giving both `body` and its child a minimum of the full viewport
-   * height stacks the two and produces a scrollbar on a page that has nothing to scroll. */
-  display: flex;
-  flex-direction: column;
-  min-height: 100dvh;
   background-color: var(--colour-surface);
   color: var(--colour-text);
   font-family: var(--font-sans);
@@ -34,6 +28,19 @@ body {
   user-select: none;
   /* There is no page to pull, and rubber banding inside a desktop window looks broken. */
   overscroll-behavior: none;
+}
+
+/*
+ * Svelte mounts into this div, so `body` and `main` are not parent and child. The window
+ * height is claimed here rather than through a chain of percentages from the root: a
+ * percentage only resolves if every ancestor has a height, and one missing link leaves
+ * the page as tall as its content, with the WebView background showing below the footer
+ * on any screen that does not happen to fill the window.
+ */
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
 }
 
 h1,
