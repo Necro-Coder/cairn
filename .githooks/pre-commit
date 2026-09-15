@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook.
+#
+# Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# It lives in the repository rather than in .git/hooks so that it can be read and audited
+# by anyone who clones this, and so that it is reviewed like any other change.
+#
+# The point of every check below is that publishing is irreversible. Once a secret or a
+# personal path reaches a public repository it is in the history, in every fork, and in
+# whatever mirrors and caches picked it up, whether or not it is deleted afterwards. This
+# hook is the last place a mistake is still cheap.
+#
+# It never passes by accident: if a tool it depends on is missing, it fails loudly rather
+# than skipping. A check that silently does not run is worse than no check, because it
+# still produces the feeling of being protected.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly RED=$'\033[0;31m'
+readonly YELLOW=$'\033[0;33m'
+readonly RESET=$'\033[0m'
+
+fail() {
+    printf '%s%s%s\n' "$RED" "$1" "$RESET" >&2
+    exit 1
+}
+
+warn() {
+    printf '%s%s%s\n' "$YELLOW" "$1" "$RESET" >&2
+}
+
+# Nothing staged means nothing to check.
+staged_files() {
+    git diff --cached --name-only --diff-filter=ACMR
+}
+
+if [ -z "$(staged_files)" ]; then
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Secrets.
+# ---------------------------------------------------------------------------
+if ! command -v gitleaks >/dev/null 2>&1; then
+    fail "gitleaks is not on PATH.
+
+This hook will not let a commit through without scanning it for secrets, and it
+will not pretend to have scanned something it did not. Install gitleaks and try
+again: https://github.com/gitleaks/gitleaks
+
+If you are certain this commit contains no credentials and you understand that
+nothing verified that claim, you can bypass the hook, but do not do it out of
+habit."
+fi
+
+if ! gitleaks protect --staged --redact --no-banner; then
+    fail "gitleaks found something that looks like a credential in the staged changes.
+
+Nothing has been committed. If it is a real secret: remove it, and treat it as
+compromised. Rotate it, because it existed on disk. If it is a false positive,
+add a narrowly scoped rule rather than switching the check off."
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Files that must never be published.
+# ---------------------------------------------------------------------------
+# Private working notes are kept out of the published ignore file so that nothing public
+# has to describe how the author works. That makes this check the real guard: it is the
+# one that still works after a fresh clone, where a local exclude file does not exist.
+#
+# The rule is an allowlist rather than a list of things to block, because a list of
+# forbidden names only catches the mistakes somebody already thought of.
+# An array rather than a space separated string: IFS is deliberately set to newline and
+# tab at the top of this hook, so a string would never split into words and every file
+# would be compared against the whole list as one name.
+readonly ALLOWED_ROOT_DOCS=(
+    README.md
+    SECURITY.md
+    CONTRIBUTING.md
+    CHANGELOG.md
+    LICENSE
+)
+
+while IFS= read -r file; do
+    # Only root level documents are constrained; everything under docs/ is public by design.
+    case "$file" in
+        */*) continue ;;
+    esac
+    case "$file" in
+        *.md | LICENSE) ;;
+        *) continue ;;
+    esac
+
+    allowed=false
+    for permitted in "${ALLOWED_ROOT_DOCS[@]}"; do
+        if [ "$file" = "$permitted" ]; then
+            allowed=true
+            break
+        fi
+    done
+
+    if [ "$allowed" = false ]; then
+        fail "Refusing to commit '$file'.
+
+Only these documents belong at the root of a public repository:
+  ${ALLOWED_ROOT_DOCS[*]}
+
+Anything else at this level is working material. If this file really is meant to
+be published, add it to ALLOWED_ROOT_DOCS in .githooks/pre-commit, in the same
+commit, so the decision is visible in the diff."
+    fi
+done < <(staged_files)
+
+# ---------------------------------------------------------------------------
+# 3. Absolute paths that identify a machine or an account.
+# ---------------------------------------------------------------------------
+readonly PATH_PATTERN='[A-Za-z]:[\\/](Users|proyectos)|/home/[a-z_][a-z0-9_-]*/|/Users/[a-z_][a-z0-9_-]*/'
+
+if git diff --cached -U0 -- . ':!*.lock' ':!.githooks/pre-commit' \
+    | grep -E '^\+' \
+    | grep -Eq "$PATH_PATTERN"; then
+    fail "The staged changes contain an absolute path.
+
+A path like C:\\Users\\<name> or /home/<name> names the account running the build.
+Use a path relative to the repository root instead, or read the location from the
+environment at runtime. Run this to see where:
+
+    git diff --cached | grep -nE '$PATH_PATTERN'"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Private network addresses.
+# ---------------------------------------------------------------------------
+readonly IP_PATTERN='(^|[^0-9.])(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)[0-9]'
+
+if git diff --cached -U0 -- . ':!*.lock' ':!.githooks/pre-commit' \
+    | grep -E '^\+' \
+    | grep -Eq "$IP_PATTERN"; then
+    fail "The staged changes contain a private network address.
+
+An address from a home network or a private tailnet describes the author's
+network layout. Documentation describes minimum requirements, never the real
+topology."
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Leftovers from working on something.
+# ---------------------------------------------------------------------------
+readonly DEBUG_PATTERN='\bdbg!\(|\bconsole\.(log|debug|trace)\(|\bdebugger\b|[[:space:]]TODO:|[[:space:]]FIXME:'
+
+# The lint configuration is excluded for the same reason this hook is: a file whose job is
+# to forbid a pattern has to spell the pattern out, and a check that fires on its own
+# definition teaches people to ignore it.
+if git diff --cached -U0 -- '*.rs' '*.ts' '*.js' '*.svelte' \
+    ':!.githooks/pre-commit' ':!eslint.config.js' \
+    | grep -E '^\+' \
+    | grep -Eq "$DEBUG_PATTERN"; then
+    warn "The staged changes contain a debugging leftover or a TODO marker.
+
+The linters will reject most of these, so this is an early warning rather than a
+refusal. If it is deliberate, carry on."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Attribution lines.
+# ---------------------------------------------------------------------------
+# The repository documents the code, not the process that produced it.
+if git diff --cached -U0 -- . ':!.githooks/pre-commit' \
+    | grep -E '^\+' \
+    | grep -Eiq 'co-authored-by:|generated with \[|🤖'; then
+    fail "The staged changes contain an attribution or co-authorship line.
+
+This repository does not carry them. Remove the line and commit again."
+fi
+
+exit 0
