@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# Private working material. Never published.
+# ---------------------------------------------------------------------------
+/fases/
+/privado/
+/CLAUDE.md
+/STACK.md
+/brief-app.md
+/HARDWARE-SERVIDOR.md
+/.claude/
+*.private.md
+*.local.md
+*.local.toml
+*.local.json
+
+# Editor and IDE settings
+.vscode/
+.idea/
+*.code-workspace
+
+# ---------------------------------------------------------------------------
+# Secrets and credentials. Nothing here ever reaches the repository.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+*.p8
+*.cer
+*.certSigningRequest
+*.keystore
+*.jks
+secrets/
+*.pairing
+*.plist.local
+
+# ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+/target/
+**/target/
+*.pdb
+*.rs.bk
+# Cargo.lock IS committed: builds must be reproducible (--locked).
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+.svelte-kit/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+# package-lock.json IS committed.
+
+# ---------------------------------------------------------------------------
+# Tauri / mobile build output
+# ---------------------------------------------------------------------------
+src-tauri/target/
+src-tauri/gen/schemas/
+gen/apple/build/
+gen/apple/*.xcworkspace/xcuserdata/
+gen/apple/*.xcodeproj/xcuserdata/
+gen/apple/Externals/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.xcarchive
+
+# ---------------------------------------------------------------------------
+# Application data. Real databases and backups must never be committed.
+# ---------------------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.cairn
+*.cairnbackup
+backups/
+
+# ---------------------------------------------------------------------------
+# Test, coverage and audit artifacts
+# ---------------------------------------------------------------------------
+coverage/
+lcov.info
+*.profraw
+*.profdata
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/coverage/
+mutants.out*/
+criterion/
+audit-report*.json
+sbom*.json
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+*~
