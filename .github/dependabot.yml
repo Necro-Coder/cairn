@@ -1,0 +1,46 @@
+# Dependency updates.
+#
+# Grouped and weekly rather than one pull request per package, because a wall of separate
+# updates is a wall nobody reads, and an update nobody reads is an update nobody reviewed.
+#
+# Nothing merges without the gates passing, and an update that touches a cryptographic
+# crate is reviewed by hand whatever the pipeline says.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      rust-dependencies:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'build(deps)'
+    labels: ['area:ci']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-tooling:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'build(deps)'
+    labels: ['area:ci']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'ci(deps)'
+    labels: ['area:ci']
