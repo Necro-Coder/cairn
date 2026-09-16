@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cairn",
+  "identifier": "io.github.necro-coder.cairn",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cairn",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true,
+        "visible": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "pattern": {
+        "use": "isolation",
+        "options": {
+          "dir": "../src-isolation"
+        }
+      },
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      "freezePrototype": true,
+      "dangerousDisableAssetCspModification": false,
+      "assetProtocol": {
+        "enable": false,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Cairn",
+    "copyright": "Copyright 2026 Cairn contributors",
+    "shortDescription": "Habits, passwords and finances, stored only on your own devices.",
+    "longDescription": "Cairn is a local-first personal application with three modules built on a shared Rust core: habits, an encrypted password vault, and finances. It has no servers, no accounts and no telemetry."
+  }
+}

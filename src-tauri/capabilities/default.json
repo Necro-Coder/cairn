@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The only capability the main window has. Denying by default is the point: a permission appears here when a feature needs it and is removed the moment that feature goes away.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
