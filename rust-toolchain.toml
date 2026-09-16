@@ -1,0 +1,8 @@
+# Pinned, never floating. A build that silently changes compiler between machines is not
+# reproducible, and reproducibility is what lets someone verify that a published binary
+# corresponds to this source.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools"]
+targets = ["x86_64-pc-windows-msvc"]
