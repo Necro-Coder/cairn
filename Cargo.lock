@@ -337,6 +337,10 @@ dependencies = [
 [[package]]
 name = "cairn-platform"
 version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.20",
+ "zeroize",
+]
 
 [[package]]
 name = "cairn-sync"

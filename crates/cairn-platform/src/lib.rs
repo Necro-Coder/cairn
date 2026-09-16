@@ -12,6 +12,8 @@
 //! defeat the purpose: the exception has to be argued once per call site, not once.
 // Deliberately no `#![forbid(unsafe_code)]` here. See the module documentation above.
 
+pub mod secure_storage;
+
 /// The version of this crate, taken from its manifest at compile time.
 ///
 /// Every crate in the workspace inherits the same version from `[workspace.package]`, so
