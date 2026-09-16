@@ -23,6 +23,12 @@ unicode-normalization = "0.1"
 uuid = { version = "1.26", default-features = false }
 zeroize = { version = "1.9", features = ["alloc", "derive"] }
 
+[[bench]]
+# A plain binary rather than a harness. Three samples of a half second operation is all the
+# statistics this deserves, and the output is a line to read rather than a gate to pass.
+name = "unlock"
+harness = false
+
 [lints]
 workspace = true
 
