@@ -36,7 +36,7 @@ The full walkthrough, including what to do when something does not work, is in [
 Every one of these has to pass before a pull request can be merged, and all of them run in CI. Run them locally first; CI is a safety net, not a substitute for checking your own work.
 
 | What | Command |
-|---|---|
+| --- | --- |
 | Rust formatting | `cargo fmt --all -- --check` |
 | Rust lints | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | Rust tests | `cargo test --workspace --all-features` |
