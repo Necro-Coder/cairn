@@ -6,7 +6,7 @@ From a fresh clone to the application running on your machine. Every command her
 
 **Rust.** Install it through [rustup](https://rustup.rs). Do not install a toolchain by hand and do not override the one this repository asks for: `rust-toolchain.toml` pins an exact version, and rustup installs it automatically the first time you run a cargo command here. Pinning is deliberate. A build that silently changes compiler between machines is not reproducible, and reproducibility is what lets somebody verify that a published binary corresponds to this source.
 
-**Node.js 20 or newer**, with npm.
+**Node.js**, at the version in `.nvmrc`, with the npm that ships with it. If you use a version manager, `nvm use` reads that file. The version is pinned for the same reason the Rust toolchain is, and the reason is not theoretical: npm's resolver changed between major versions, and an older npm refused to install a lockfile that a newer one had written and accepted. The failure appeared only in the pipeline, on a tree that had passed every check locally, which is the most expensive kind of difference to find.
 
 **On Windows**, two more things. The Microsoft C++ build tools with the Windows 11 SDK, which you get by installing Visual Studio Build Tools and selecting the desktop C++ workload. And the WebView2 runtime, which is already present on Windows 11; on anything older you have to install it from Microsoft. Without WebView2 the application will not start at all, and it cannot fall back to anything, because there is nothing to fall back to.
 
