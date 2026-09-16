@@ -1,14 +1,37 @@
-//! Cryptography for Cairn: key derivation, the key hierarchy, authenticated
-//! encryption and the framing used by encrypted exports.
+//! Cryptography for Cairn: key derivation, the key hierarchy, authenticated encryption
+//! and the framing used by encrypted exports.
 //!
-//! This crate performs no input or output and knows nothing about the database, the
-//! window or the transport. Everything it does is a pure function of its arguments,
-//! which is what makes it testable with property tests and checkable under Miri.
+//! This crate performs no input or output and knows nothing about the database, the window
+//! or the transport. Everything it does is a pure function of its arguments, which is what
+//! makes it testable with property tests and checkable under Miri.
 //!
-//! Nothing in here is implemented yet. The key hierarchy arrives with the phase that
-//! introduces it, so that it can be reviewed on its own rather than buried in a commit
-//! that also moves scaffolding around.
+//! Three rules hold everywhere inside it, and each one is enforced by something other than
+//! good intentions.
+//!
+//! Encryption happens in one place. [`seal`] and [`open`] are the only functions that
+//! touch the cipher, and a test walks the source tree to prove that no other crate so much
+//! as names the cipher library.
+//!
+//! A nonce is used once. [`FreshNonce`] can only be read from the operating system and is
+//! consumed by value, so a second use is a compile error rather than a review comment, and
+//! a test in `tests/ui` asserts that the compiler really does refuse it.
+//!
+//! Nothing prints a secret. Every key type writes `[REDACTED]` from its own `Debug`, so a
+//! struct that happens to hold a key cannot leak it through a derived one.
 #![forbid(unsafe_code)]
+
+mod aad;
+mod aead;
+mod error;
+mod keys;
+mod nonce;
+mod random;
+
+pub use aad::{Aad, ID_LEN, MAX_NAME_LEN};
+pub use aead::{MAX_PLAINTEXT_LEN, Sealed, TAG_LEN, open, seal};
+pub use error::CryptoError;
+pub use keys::{DataKey, KEY_LEN, Kek};
+pub use nonce::{FreshNonce, NONCE_LEN};
 
 /// The version of this crate, taken from its manifest at compile time.
 ///
