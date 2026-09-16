@@ -67,6 +67,8 @@ One asserts that `package.json` declares no runtime dependencies. The frontend h
 
 The other asserts that `unsafe` appears nowhere except `crates/cairn-platform`.
 
+A third builds the production bundle and searches the whole of `dist/` for the marker string the preview module defines. Preview mode replaces the core with something that invents its answers, and an application holding a password vault must never show invented data as though it were the person's own. A build-time alias keeps that module out of the graph entirely, and this step checks the artefact rather than the intention, because one badly placed import would undo the alias without producing a warning. [Preview mode](preview-mode.md) explains both halves.
+
 ## The iOS compilation gate
 
 `ios-compile` cross compiles the five library crates for `aarch64-apple-ios` on a `macos-15` runner, on every pull request and every push. It is blocking: a red `ios-compile` means the pull request cannot be merged.
