@@ -85,6 +85,16 @@ impl Aad {
         Ok(Self(bytes))
     }
 
+    /// Builds the associated data for the wrapped key inside the vault header.
+    ///
+    /// The whole authenticated prefix, not a list of the fields that seemed important. A
+    /// rule covers a field added next year; a list covers the fields somebody remembered,
+    /// and the one they forget is the one an attacker edits.
+    #[must_use]
+    pub fn authenticated_prefix(prefix: &[u8]) -> Self {
+        Self(prefix.to_vec())
+    }
+
     /// The encoded bytes, as the cipher wants them.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {

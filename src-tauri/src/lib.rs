@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod state;
+pub mod vault_file;
 
 use state::AppState;
 

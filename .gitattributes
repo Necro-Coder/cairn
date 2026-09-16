@@ -18,6 +18,11 @@
 *.dll    binary
 *.ipa    binary
 
+# Frozen test vaults. These are exact byte sequences that a parser has to accept, and the
+# line ending normalisation above would rewrite any 0x0d 0x0a pair inside one of them.
+*.header binary
+*.sealed binary
+
 # Lockfiles are generated. Collapse them in review and keep them out of language stats.
 Cargo.lock        linguist-generated=true
 package-lock.json linguist-generated=true

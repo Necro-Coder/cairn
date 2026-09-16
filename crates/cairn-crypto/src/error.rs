@@ -53,6 +53,80 @@ pub enum CryptoError {
         max: usize,
     },
 
+    /// A master password was longer than this accepts.
+    ///
+    /// Not a rule about what makes a good password, which is a decision for the layer that
+    /// talks to a person. It is a bound on work: Argon2id hashes whatever it is handed, so
+    /// a field somebody pasted a file into is a denial of service with no attacker in it.
+    #[error("the password is {len} bytes, and at most {max} are accepted")]
+    PasswordTooLong {
+        /// How long it was, in bytes of UTF-8.
+        len: usize,
+        /// How long it is allowed to be.
+        max: usize,
+    },
+
+    /// An Argon2id parameter was outside the range a vault may ask for.
+    ///
+    /// Says which field and which bound, because the number came out of a file rather than
+    /// out of a person. The floor stops somebody making a brute force attempt cheap; the
+    /// ceiling stops a header claiming more memory than the machine has.
+    #[error("{field} is {value}, and the allowed range is {min} to {max}")]
+    ParamOutOfRange {
+        /// Which field, named as it is in the header layout.
+        field: &'static str,
+        /// What the header asked for.
+        value: u32,
+        /// The lowest value allowed.
+        min: u32,
+        /// The highest value allowed.
+        max: u32,
+    },
+
+    /// Argon2id itself refused to run.
+    ///
+    /// In practice this means the parameters, though inside the allowed range, could not be
+    /// turned into an allocation on this machine. It is deliberately separate from a failed
+    /// unwrapping, because it is a fact about the machine rather than about the password.
+    #[error("the key derivation could not be run")]
+    Kdf,
+
+    /// The header file was not exactly the size a header is.
+    ///
+    /// The first thing checked and the likeliest thing a power cut leaves behind, which is
+    /// why the format has one fixed size rather than a length field to be trusted.
+    #[error("a vault header cannot be {len} bytes long")]
+    HeaderSize {
+        /// How many bytes were offered.
+        len: usize,
+    },
+
+    /// The file did not begin with the eight bytes every header of ours begins with.
+    #[error("this is not a vault header")]
+    HeaderMagic,
+
+    /// The header announced a format version this build does not know.
+    ///
+    /// Refused rather than read hopefully. A reader that guesses at a layout it has never
+    /// seen is a reader that hands out the wrong bytes as a key.
+    #[error("this vault header is version {found}, which this build cannot read")]
+    HeaderVersion {
+        /// The version the file claimed.
+        found: u16,
+    },
+
+    /// The reserved field was not zero.
+    #[error("the reserved field of the vault header is not zero")]
+    HeaderReserved,
+
+    /// The checksum over the unauthenticated tail did not match.
+    ///
+    /// Detects corruption, not tampering. Anybody who can write the file can recompute the
+    /// checksum, and that is written down here and in the public documentation rather than
+    /// left for somebody to discover.
+    #[error("the vault header trailer is corrupt")]
+    HeaderTrailerChecksum,
+
     /// A stored blob was too short to be a nonce followed by a tag.
     ///
     /// This is a structural check that runs before any key is involved, which is why it is

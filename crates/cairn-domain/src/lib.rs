@@ -9,6 +9,8 @@
 //! used on the wire. Dependencies point inwards, and this is as far in as they go.
 #![forbid(unsafe_code)]
 
+pub mod password;
+
 /// The version of this crate, taken from its manifest at compile time.
 ///
 /// Every crate in the workspace inherits the same version from `[workspace.package]`, so
