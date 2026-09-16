@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES};
 use cairn_lib::commands::vault::{
-    ConditionReport, VaultError, VaultStatus, change_kdf_params, change_password, create,
-    heartbeat, unlock,
+    ConditionReport, InactivityChoice, VaultError, VaultStatus, change_kdf_params, change_password,
+    create, heartbeat, set_inactivity, unlock,
 };
 use cairn_lib::state::AppState;
 use cairn_lib::vault::Vault;
@@ -377,4 +377,34 @@ fn a_heartbeat_puts_the_inactivity_timer_back_to_the_beginning() {
         Some(300),
         "the timer was not put back to the beginning"
     );
+}
+
+#[test]
+fn choosing_a_shorter_period_applies_at_once_and_does_not_lock_the_vault_in_the_same_instant() {
+    // Somebody who has been reading for four minutes and then picks one minute should get a
+    // minute, not an immediate lock.
+    let scratch = Scratch::new("inactivity");
+    let state = a_created_vault(&scratch);
+    let four_minutes_later = NOW_US + 4 * 60 * ONE_SECOND;
+
+    let status = set_inactivity(&state, InactivityChoice::One, four_minutes_later);
+
+    assert_eq!(status.inactivity, InactivityChoice::One);
+    assert_eq!(status.idle_remaining_s, Some(60));
+    assert!(state.session().is_unlocked());
+}
+
+#[test]
+fn choosing_never_stops_the_countdown_altogether() {
+    let scratch = Scratch::new("never");
+    let state = a_created_vault(&scratch);
+
+    let status = set_inactivity(&state, InactivityChoice::Never, NOW_US);
+
+    assert_eq!(status.inactivity, InactivityChoice::Never);
+    assert_eq!(
+        status.idle_remaining_s, None,
+        "a vault that never locks was given a countdown to draw"
+    );
+    assert_eq!(state.session().due_to_lock(i64::MAX), None);
 }

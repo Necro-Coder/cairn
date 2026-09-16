@@ -578,6 +578,19 @@ pub async fn change_kdf_params(
     Ok(status_of(state, now))
 }
 
+/// Changes how long the vault may sit idle before it closes itself.
+///
+/// Takes effect at once and lasts as long as the process does. There is nowhere to keep it
+/// yet: the header is authenticated cryptographic material and has no room for a preference,
+/// and inventing a settings file here would mean inventing a format that the phase which
+/// brings storage is going to replace. So it returns to five minutes on the next start, which
+/// is the safe direction for a setting to forget itself in.
+pub fn set_inactivity(state: &AppState, choice: InactivityChoice, now: i64) -> VaultStatus {
+    state.session().set_timeout(choice.into(), now);
+
+    status_of(state, now)
+}
+
 /// Reports activity inside the window, and says how long is left.
 ///
 /// # Errors
@@ -723,6 +736,23 @@ pub async fn vault_change_kdf_params(
 )]
 pub fn session_heartbeat(state: tauri::State<'_, AppState>) -> Result<VaultStatus, VaultError> {
     heartbeat(&state, now_us())
+}
+
+/// Changes how long the vault may sit idle before it closes itself.
+///
+/// The choice is a closed set on both sides of the bridge, so a period nobody designed for
+/// cannot arrive from the WebView and become the lock policy.
+#[tauri::command]
+#[must_use]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn session_set_inactivity(
+    state: tauri::State<'_, AppState>,
+    inactivity: InactivityChoice,
+) -> VaultStatus {
+    set_inactivity(&state, inactivity, now_us())
 }
 
 #[cfg(test)]

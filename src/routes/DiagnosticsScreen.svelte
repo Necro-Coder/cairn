@@ -2,6 +2,7 @@
   import { ipc } from '$ipc';
   import type { Diagnostics } from '../lib/ipc.types';
   import { isWithinBudget, type StartupResult } from '../lib/startup';
+  import VaultPanel from './VaultPanel.svelte';
 
   interface Props {
     /** Measurements taken on the check screen, if it has run. */
@@ -117,6 +118,8 @@
       </dl>
     {/if}
   </div>
+
+  <VaultPanel />
 </section>
 
 <style>

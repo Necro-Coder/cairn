@@ -57,6 +57,7 @@ pub fn run() {
             commands::vault::vault_change_password,
             commands::vault::vault_change_kdf_params,
             commands::vault::session_heartbeat,
+            commands::vault::session_set_inactivity,
             commands::vault::password_strength
         ])
         .run(tauri::generate_context!())
