@@ -47,7 +47,7 @@ jobs:
           persist-credentials: false
 
       - name: Scan the working tree and the history for secrets
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           # On a pull request the scanner asks the API which commits it has to look at, so
           # it refuses to run without a token. This is the one the runner mints for this
