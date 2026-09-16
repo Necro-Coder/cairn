@@ -2,3 +2,32 @@
 # Control Flow Guard makes indirect calls check their target against a table generated at
 # compile time, which turns most control-flow hijacking primitives into a crash.
 rustflags = ["-C", "control-flow-guard=yes"]
+
+# How SQLCipher's copy of SQLite gets compiled.
+#
+# libsqlite3-sys builds SQLite from C and reads this variable last, after its own defaults,
+# so this is where the four settings the project requires are actually decided. It lives
+# here rather than in a build script because a build script can only configure its own
+# crate, and the C compilation happens in somebody else's.
+#
+# `SQLITE_DQS=0` removes the misfeature where a double quoted string that matches no
+# column silently becomes a string literal. That is how a typo in a column name turns into
+# a query that returns the wrong rows instead of an error.
+#
+# `SQLITE_THREADSAFE=1` is serialised mode. It is already the default here; naming it
+# means the requirement is visible in one place rather than inferred from a dependency.
+#
+# `SQLITE_TEMP_STORE=3` forces temporary tables, indices and sorter spill into memory.
+# The bundled SQLCipher build otherwise uses 2, which only makes memory the default and
+# still lets a pragma put plaintext temporaries on disk, outside the encrypted file.
+#
+# `-U` rather than `-D` on the last one: libsqlite3-sys defines
+# `SQLITE_ENABLE_LOAD_EXTENSION=1` itself, and loading a shared library chosen at runtime
+# into the process that holds the vault key is not a capability this application has any
+# use for.
+#
+# A test in cairn-db reads `PRAGMA compile_options` back out of the built library and
+# fails if any of the four did not arrive, because this file is a request and the C
+# compiler is what decides.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_TEMP_STORE=3 -USQLITE_ENABLE_LOAD_EXTENSION"

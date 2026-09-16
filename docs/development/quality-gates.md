@@ -67,6 +67,28 @@ One asserts that `package.json` declares no runtime dependencies. The frontend h
 
 The other asserts that `unsafe` appears nowhere except `crates/cairn-platform`.
 
+## The iOS compilation gate
+
+`ios-compile` cross compiles the five library crates for `aarch64-apple-ios` on a `macos-15` runner, on every pull request and every push. It is blocking: a red `ios-compile` means the pull request cannot be merged.
+
+It exists to answer one question early, with a measurement instead of an assumption: does SQLCipher, with OpenSSL built from source, cross compile to an iPhone. The whole storage design rests on that, and there is no way to find out except to try it. Finding out now costs days; finding out after eight phases of code have been written on top of the assumption costs rewriting the storage layer.
+
+**What it compiles.** `cairn-crypto`, `cairn-domain`, `cairn-db`, `cairn-sync` and `cairn-platform`, named one by one rather than as `--workspace`. The workspace also contains the desktop application, and building that for iOS needs Xcode scaffolding that does not exist yet. Including it would make the job fail for a reason that has nothing to do with what the job is measuring, and a gate that goes red for reasons nobody understands gets switched off within a week.
+
+**What it does not do.** It does not run anything. Not one line of this code is executed on a device or a simulator, because that would need a booted simulator or a phone, and neither is available to the pipeline. The job proves the code compiles and links for the architecture, and it says so in its own summary rather than letting the green tick imply more.
+
+It also does not produce an application. No `.ipa`, no signing, no Xcode project, no Apple ID. Those belong to the phase that puts the application on a phone, and none of them is needed to answer the question this job answers.
+
+**Which profile.** Pull requests build debug, so the loop stays short. Pushes to `dev` and `main` build release, which is the path that would actually ship: fat link time optimisation, one codegen unit, and OpenSSL's assembly. Both get exercised every day and neither slows the other down.
+
+**The caching.** Without a cache, every run rebuilds OpenSSL and SQLCipher from C, and that is most of the time the job takes. GitHub scopes caches by branch on its own: a pull request reads the cache of its base branch and writes only into its own scope, so one branch cannot poison another's. The declared threshold is ten minutes with a warm cache. If the job goes past that consistently, it moves to `dev` and manual runs only, and the reason gets written down rather than the job quietly becoming something people wait for.
+
+**What its summary contains.** The size of the compiled Rust libraries, the size of the SQLCipher and OpenSSL archives, and how long the build took. Three numbers, not a sentence. They are the baseline the phone phase will compare against, and a baseline that has to be reconstructed from a log is a baseline nobody reconstructs.
+
+**When it goes red.** Something in the core stopped crossing to iOS. Usually one of three things: a dependency that only builds for desktop, code behind a `cfg` that does not cover the target, or a new release of the OpenSSL sources. The last one is why `openssl-src` is pinned to one exact version in `Cargo.toml` as well as in the lockfile: pinned that way, the upgrade arrives as a pull request this gate gets to judge, rather than sideways the next time somebody regenerates the lockfile.
+
+Do not merge past it and do not make it non-blocking. It is blocking from its first day for a reason that will not come back: nothing depends on iOS yet, so the cost of it being red is zero, and this is the only moment in the project when that is true.
+
 ## The two tests that read configuration
 
 `src-tauri/tests/config_hardening.rs` parses `tauri.conf.json` and asserts every setting the WebView defence depends on: the isolation pattern, a content security policy with no inline or evaluated script, no global Tauri object, prototypes frozen, the asset protocol disabled, drag and drop off, and no capability granting any core permission at all.

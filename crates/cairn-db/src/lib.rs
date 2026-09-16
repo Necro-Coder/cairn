@@ -3,6 +3,17 @@
 //!
 //! No database is opened yet. The schema is defined in one place, versioned, and every
 //! migration is reversible, so this crate is where that contract will live.
+//!
+//! What it does already have is the dependency that will open it: SQLite built from
+//! source as SQLCipher, with its own copy of OpenSSL linked in. It is here this early on
+//! purpose. Cross compiling that C to the phone is the one assumption the storage design
+//! rests on that could turn out to be false, and a pipeline that compiles an empty crate
+//! for iOS proves nothing while looking exactly like one that proves everything.
+//!
+//! The crate exposes no API for it yet, and deliberately so. What it has instead is
+//! `tests/sqlcipher.rs`, which checks that the library linked in is SQLCipher rather than
+//! plain SQLite, that it was compiled with the options the design requires, and that a
+//! keyed file is genuinely unreadable without its key.
 #![forbid(unsafe_code)]
 
 /// The version of this crate, taken from its manifest at compile time.
