@@ -23,6 +23,8 @@
 mod aad;
 mod aead;
 mod error;
+mod hierarchy;
+mod kdf;
 mod keys;
 mod nonce;
 mod random;
@@ -30,7 +32,12 @@ mod random;
 pub use aad::{Aad, ID_LEN, MAX_NAME_LEN};
 pub use aead::{MAX_PLAINTEXT_LEN, Sealed, TAG_LEN, open, seal};
 pub use error::CryptoError;
-pub use keys::{DataKey, KEY_LEN, Kek};
+pub use hierarchy::{Purpose, database_key, export_key, sync_key, wrap_key};
+pub use kdf::{
+    Argon2Params, MAX_LANES, MAX_MEMORY_KIB, MAX_PASSES, MAX_PASSWORD_BYTES, MIN_MEMORY_KIB,
+    MIN_PASSES, SALT_LEN, derive_kek,
+};
+pub use keys::{DataKey, DatabaseKey, KEY_LEN, Kek, SyncKey};
 pub use nonce::{FreshNonce, NONCE_LEN};
 
 /// The version of this crate, taken from its manifest at compile time.

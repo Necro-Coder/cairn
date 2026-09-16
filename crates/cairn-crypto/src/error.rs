@@ -53,6 +53,44 @@ pub enum CryptoError {
         max: usize,
     },
 
+    /// A master password was longer than this accepts.
+    ///
+    /// Not a rule about what makes a good password, which is a decision for the layer that
+    /// talks to a person. It is a bound on work: Argon2id hashes whatever it is handed, so
+    /// a field somebody pasted a file into is a denial of service with no attacker in it.
+    #[error("the password is {len} bytes, and at most {max} are accepted")]
+    PasswordTooLong {
+        /// How long it was, in bytes of UTF-8.
+        len: usize,
+        /// How long it is allowed to be.
+        max: usize,
+    },
+
+    /// An Argon2id parameter was outside the range a vault may ask for.
+    ///
+    /// Says which field and which bound, because the number came out of a file rather than
+    /// out of a person. The floor stops somebody making a brute force attempt cheap; the
+    /// ceiling stops a header claiming more memory than the machine has.
+    #[error("{field} is {value}, and the allowed range is {min} to {max}")]
+    ParamOutOfRange {
+        /// Which field, named as it is in the header layout.
+        field: &'static str,
+        /// What the header asked for.
+        value: u32,
+        /// The lowest value allowed.
+        min: u32,
+        /// The highest value allowed.
+        max: u32,
+    },
+
+    /// Argon2id itself refused to run.
+    ///
+    /// In practice this means the parameters, though inside the allowed range, could not be
+    /// turned into an allocation on this machine. It is deliberately separate from a failed
+    /// unwrapping, because it is a fact about the machine rather than about the password.
+    #[error("the key derivation could not be run")]
+    Kdf,
+
     /// A stored blob was too short to be a nonce followed by a tag.
     ///
     /// This is a structural check that runs before any key is involved, which is why it is

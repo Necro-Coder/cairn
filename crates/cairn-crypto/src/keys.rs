@@ -1,14 +1,18 @@
-//! The two kinds of thirty-two byte key this crate deals in.
+//! The thirty-two byte keys this crate deals in, and what keeps them apart.
 //!
 //! [`Kek`] is what Argon2id produces from the master password. It encrypts exactly one
 //! thing, the wrapped data key, and it is thrown away the moment the vault locks.
 //!
-//! [`DataKey`] is what [`crate::seal`] encrypts with. The data encryption key is one, and
-//! so are the subkeys derived from it for other purposes, because "a thirty-two byte key
-//! that goes into the cipher" is one concept and giving it two names would mean two sets
-//! of the same tests.
+//! [`DataKey`] is what [`crate::seal`] encrypts with: the data encryption key, and the
+//! subkeys derived for wrapping and for exports, because to the cipher they are the same
+//! thing.
 //!
-//! Both are the same thing underneath, and both keep that thing private. Bytes go in,
+//! [`DatabaseKey`] and [`SyncKey`] are derived too, and are deliberately not data keys.
+//! One is handed to SQLCipher and never goes near this cipher; the other is the only key in
+//! the hierarchy that is used over a network. Domain separation that exists only in the
+//! derivation is a convention; separating them by type is the compiler enforcing it.
+//!
+//! All of them are the same thing underneath, and all of them keep that thing private. Bytes go in,
 //! bytes come out only inside this crate, `Debug` says nothing, and equality is a constant
 //! time comparison because the ordinary one returns early on the first differing byte and
 //! how long that took is a measurement of how much of the key was guessed right.
@@ -27,11 +31,11 @@ pub const KEY_LEN: usize = 32;
 
 /// A thirty-two byte secret on the heap, zeroized when it is dropped.
 ///
-/// Private, and wrapped by the two public types below rather than being one of them. The
-/// key encryption key and a data key are interchangeable as bytes and must never be
-/// interchangeable as values: passing the key that unwraps the vault where the key that
-/// encrypts records belongs is a mistake the compiler can catch, and it only can if they
-/// are different types.
+/// Private, and wrapped by the public types below rather than being one of them. Every key
+/// in this crate is interchangeable as bytes and none of them may be interchangeable as
+/// values: passing the key that unwraps the vault where the key that encrypts records
+/// belongs is a mistake the compiler can catch, and it only can if they are different
+/// types.
 struct Key32(SecretBox<[u8; KEY_LEN]>);
 
 impl Key32 {
@@ -67,8 +71,8 @@ impl ConstantTimeEq for Key32 {
 
 /// The key encryption key: what Argon2id produces from the master password.
 ///
-/// It encrypts one thing, the wrapped data key, and it changes whenever the password or
-/// the derivation parameters change. Nothing else in the system hangs off it, which is why
+/// It encrypts one thing, the wrapped data key, and it changes whenever the password or the
+/// derivation parameters change. Nothing else in the system hangs off it, which is why
 /// changing the password does not re-encrypt a single record.
 ///
 /// Has no `Clone`, no `Copy` and no `Default`. A key that can be duplicated is a key whose
@@ -85,30 +89,43 @@ pub struct Kek(Key32);
 /// Has no `Clone`, no `Copy` and no `Default`, for the same reason as [`Kek`].
 pub struct DataKey(Key32);
 
-/// Gives a key type the handful of things every key type needs.
+/// The raw key SQLCipher is given for the whole database file.
+///
+/// A type of its own rather than another [`DataKey`], because it never goes near the
+/// cipher in this crate and handing it to [`crate::seal`] would be a mistake worth making
+/// impossible. It hangs off the data key, not off the key encryption key, which is what
+/// makes changing the master password a hundred and sixty-eight byte rewrite instead of
+/// re-encrypting the database.
+pub struct DatabaseKey(Key32);
+
+/// The pre-shared key for the synchronisation handshake.
+///
+/// Also its own type, and for a stronger reason: it is the only key in the hierarchy that
+/// is used over a network. Confusing it with the key that encrypts records at rest would
+/// put the contents of the vault on the wire, so the compiler is made to refuse.
+pub struct SyncKey(Key32);
+
+/// Gives a key type the two things every key type needs and nothing else.
 ///
 /// The types themselves are written out above rather than produced here, so that searching
 /// for `struct DataKey` finds it. What the macro generates is only the part that would
-/// otherwise be two identical copies, which is two places for one of them to quietly grow
+/// otherwise be four identical copies, which is four places for one of them to quietly grow
 /// a `Clone`, or a `Debug` that prints something.
+///
+/// Construction is deliberately not in here. Two of these keys are roots and are built from
+/// bytes or read from the system; the other two are derived and must only ever come out of
+/// the derivation. Generating a database key at random would produce something that works
+/// perfectly until the next time the vault is opened.
 macro_rules! impl_key {
     ($name:ident) => {
         impl $name {
-            /// Takes ownership of the bytes and clears the caller copy.
-            #[must_use]
-            pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+            /// Wraps bytes that came out of a derivation, clearing the caller copy.
+            ///
+            /// Private to the crate: every key type is constructible here because the
+            /// derivation lives here, and nowhere else, because nowhere else should be
+            /// inventing key material.
+            pub(crate) fn from_derived(bytes: [u8; KEY_LEN]) -> Self {
                 Self(Key32::from_bytes(bytes))
-            }
-
-            /// Reads a new key from the operating system.
-            ///
-            /// # Errors
-            ///
-            /// Returns [`CryptoError::Entropy`] if the operating system refuses. There is
-            /// no fallback, because a key from a weaker source looks exactly like a good
-            /// one right up until somebody predicts it.
-            pub fn generate() -> Result<Self, CryptoError> {
-                Ok(Self(Key32::generate()?))
             }
         }
 
@@ -138,14 +155,73 @@ macro_rules! impl_key {
 
 impl_key!(Kek);
 impl_key!(DataKey);
+impl_key!(DatabaseKey);
+impl_key!(SyncKey);
 
-impl DataKey {
+impl Kek {
     /// The key bytes, readable only inside this crate.
     ///
-    /// This is the boundary the hardest rule in the project rests on: no key and no
-    /// decrypted text crosses into JavaScript. Keeping the accessor private to the crate
-    /// means the compiler enforces that rule instead of a reviewer remembering it.
+    /// Crate private, and staying that way. This key and the data key are the two that must
+    /// never leave, because between them they open everything, and the hardest rule in the
+    /// project is that no key and no decrypted text crosses into JavaScript. Keeping the
+    /// accessor here means the compiler enforces that rather than a reviewer remembering it.
     pub(crate) fn expose(&self) -> &[u8; KEY_LEN] {
+        self.0.expose()
+    }
+
+    /// Takes ownership of bytes that came out of Argon2id, clearing the caller copy.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+        Self::from_derived(bytes)
+    }
+}
+
+impl DataKey {
+    /// The key bytes, readable only inside this crate. See [`Kek::expose`].
+    pub(crate) fn expose(&self) -> &[u8; KEY_LEN] {
+        self.0.expose()
+    }
+
+    /// Takes ownership of the bytes and clears the caller copy.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+        Self::from_derived(bytes)
+    }
+
+    /// Reads a new data key from the operating system.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::Entropy`] if the operating system refuses. There is no
+    /// fallback, because a key from a weaker source looks exactly like a good one right up
+    /// until somebody predicts it.
+    pub fn generate() -> Result<Self, CryptoError> {
+        Ok(Self(Key32::generate()?))
+    }
+}
+
+impl DatabaseKey {
+    /// The key bytes, which SQLCipher has to be given.
+    ///
+    /// The one derived key with a public accessor, and it is public because the database
+    /// layer is a different crate and cannot open the file without these thirty-two bytes.
+    /// That does not weaken the rule it looks like an exception to: the rule is that no key
+    /// crosses into JavaScript, and this one is handed from one Rust crate to another and
+    /// never reaches a command.
+    #[must_use]
+    pub fn expose(&self) -> &[u8; KEY_LEN] {
+        self.0.expose()
+    }
+}
+
+impl SyncKey {
+    /// The key bytes, which the handshake has to be given.
+    ///
+    /// Public for the same reason as [`DatabaseKey::expose`]: the code that uses it is a
+    /// different crate. It is the only key in the hierarchy that is used over a network,
+    /// which is why it has a type of its own rather than being another data key.
+    #[must_use]
+    pub fn expose(&self) -> &[u8; KEY_LEN] {
         self.0.expose()
     }
 }
