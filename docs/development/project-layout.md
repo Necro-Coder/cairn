@@ -70,3 +70,5 @@ One place: `[workspace.package]` in the root `Cargo.toml`. Every crate inherits 
 ## What is not here yet
 
 Nothing in `cairn-crypto`, `cairn-db` or `cairn-sync` is implemented. Each arrives with the work that justifies it, so that it can be reviewed on its own rather than buried in a commit that also moves scaffolding around. The cryptography in particular is meant to be read in isolation, by somebody looking for a mistake in it.
+
+`cairn-db` is one step ahead of that rule and the exception is deliberate. It has no API, no schema and no migrations, but it does already depend on SQLCipher, because whether SQLCipher cross compiles to a phone is the one assumption the storage design rests on that could turn out to be false. The gate that checks it has to have something real to compile, or it is a green tick over an empty crate. What the dependency brings with it is `tests/sqlcipher.rs`, which proves the library linked in encrypts rather than merely existing.
