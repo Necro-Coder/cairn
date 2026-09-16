@@ -372,4 +372,13 @@ jobs:
         # shape of a header by itself. That makes the run reproducible rather than
         # dependent on whatever somebody's machine happened to save, and a hundred and
         # sixty-eight bytes of fixed layout is a small enough space for it to matter little.
-        run: cargo fuzz run vault_header -- -max_total_time=120 -print_final_stats=1
+        #
+        # The toolchain is named in the environment rather than left to the directory.
+        # `rust-toolchain.toml` pins the version everything else is built with, and a file
+        # override beats an installed nightly, so without this the sanitizer flags reach a
+        # stable compiler that refuses them. The target is named for the same reason: the
+        # default on Linux is a musl triple whose standard library this toolchain does not
+        # carry.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: cargo fuzz run vault_header --target x86_64-unknown-linux-gnu -- -max_total_time=120 -print_final_stats=1
