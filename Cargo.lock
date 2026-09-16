@@ -290,10 +290,12 @@ dependencies = [
 name = "cairn"
 version = "0.0.1"
 dependencies = [
+ "cairn-crypto",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
