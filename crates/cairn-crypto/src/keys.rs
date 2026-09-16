@@ -19,7 +19,7 @@
 
 use core::fmt;
 
-use secrecy::{ExposeSecret as _, SecretBox};
+use cairn_platform::memory::LockedArray;
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::Zeroize as _;
 
@@ -29,14 +29,21 @@ use crate::random;
 /// Length of every key in this crate, in bytes.
 pub const KEY_LEN: usize = 32;
 
-/// A thirty-two byte secret on the heap, zeroized when it is dropped.
+/// A thirty-two byte secret in pages of its own, zeroized when it is dropped.
 ///
 /// Private, and wrapped by the public types below rather than being one of them. Every key
 /// in this crate is interchangeable as bytes and none of them may be interchangeable as
 /// values: passing the key that unwraps the vault where the key that encrypts records
 /// belongs is a mistake the compiler can catch, and it only can if they are different
 /// types.
-struct Key32(SecretBox<[u8; KEY_LEN]>);
+///
+/// The bytes live in a page the operating system is asked to keep resident, so that a key
+/// does not reach the page file. That is what replaced the boxed secret this used to hold:
+/// the call that keeps memory resident works on whole pages, and a page holding one key
+/// also holds whatever else the allocator put there, so dropping one key would take the
+/// protection off another. A type that owns its pages outright is the only correct shape of
+/// this, and it lives in the one crate allowed to make the call.
+struct Key32(LockedArray<KEY_LEN>);
 
 impl Key32 {
     /// Takes ownership of the bytes and clears the caller copy.
@@ -46,7 +53,8 @@ impl Key32 {
     /// array belonging to the caller that is being cleared, which is why it has to arrive
     /// by value and be mutable.
     fn from_bytes(mut bytes: [u8; KEY_LEN]) -> Self {
-        let key = Self(SecretBox::new(Box::new(bytes)));
+        let mut key = Self(LockedArray::zeroed());
+        key.0.as_mut_array().copy_from_slice(&bytes);
         bytes.zeroize();
         key
     }
@@ -59,7 +67,16 @@ impl Key32 {
     }
 
     fn expose(&self) -> &[u8; KEY_LEN] {
-        self.0.expose_secret()
+        self.0.as_array()
+    }
+
+    /// Whether the operating system agreed to keep this key out of the page file.
+    ///
+    /// Answered honestly rather than assumed. A machine with a small working set quota still
+    /// opens its vault, and the screen that reports what the build is doing can say which of
+    /// the two happened.
+    fn is_resident(&self) -> bool {
+        self.0.is_locked()
     }
 }
 
@@ -126,6 +143,18 @@ macro_rules! impl_key {
             /// inventing key material.
             pub(crate) fn from_derived(bytes: [u8; KEY_LEN]) -> Self {
                 Self(Key32::from_bytes(bytes))
+            }
+
+            /// Whether the operating system agreed to keep this key out of the page file.
+            ///
+            /// Public because it is the honest answer to a question the screen that reports
+            /// what the build is doing has to ask. Systems cap how much a process may keep
+            /// resident, the cap is small by default on some of them, and a machine that
+            /// refused still opens its vault. Saying so is better than a claim nothing
+            /// checked.
+            #[must_use]
+            pub fn is_resident(&self) -> bool {
+                self.0.is_resident()
             }
         }
 
@@ -312,5 +341,37 @@ mod tests {
         let second = DataKey::generate().unwrap();
         assert!(!bool::from(first.ct_eq(&second)));
         assert_ne!(first.expose(), &[0_u8; KEY_LEN]);
+    }
+}
+
+#[cfg(test)]
+mod residency {
+    use super::{DataKey, KEY_LEN, Kek};
+
+    #[test]
+    fn a_key_says_whether_its_pages_are_resident() {
+        // No assertion on which answer it is. Whether this machine allowed it is a property
+        // of the machine and of its working set quota, and pinning either answer would make
+        // this a report about whoever ran it rather than about the code.
+        let key = DataKey::generate().unwrap();
+        let _ = key.is_resident();
+
+        let kek = Kek::from_bytes([0x11; KEY_LEN]);
+        let _ = kek.is_resident();
+    }
+
+    #[test]
+    fn several_keys_alive_at_once_all_hold_their_own_bytes() {
+        // The shared page problem, asserted from this side. If two keys landed on one page
+        // and dropping one took the protection off the other, the bytes would still be
+        // right; what would be wrong is invisible from here. What is visible, and what this
+        // checks, is that no key overwrites another.
+        let first = Kek::from_bytes([0x01; KEY_LEN]);
+        let second = Kek::from_bytes([0x02; KEY_LEN]);
+        let third = Kek::from_bytes([0x03; KEY_LEN]);
+
+        assert_eq!(first.expose(), &[0x01; KEY_LEN]);
+        assert_eq!(second.expose(), &[0x02; KEY_LEN]);
+        assert_eq!(third.expose(), &[0x03; KEY_LEN]);
     }
 }
