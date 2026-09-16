@@ -38,3 +38,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_os = "ios")]
+compile_error!("throwaway: deliberately breaking the iOS build to prove the gate goes red");
