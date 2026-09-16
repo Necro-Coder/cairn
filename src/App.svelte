@@ -1,7 +1,14 @@
 <script lang="ts">
+  import { ipc } from '$ipc';
+
   import CheckScreen from './routes/CheckScreen.svelte';
   import DiagnosticsScreen from './routes/DiagnosticsScreen.svelte';
   import { measureStartup, type StartupResult } from './lib/startup';
+
+  // Null in every real build, so the banner below is not hidden by a condition: its text
+  // does not exist in the bundle at all. The module that invents the data is the one that
+  // says so, which is why this comes across the boundary rather than from a build flag.
+  const previewNotice = ipc.previewNotice;
 
   let startup = $state<StartupResult | null>(null);
   let diagnosticsOpen = $state(false);
@@ -38,6 +45,16 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if previewNotice !== null}
+  <!--
+    Sticky rather than fixed, so it takes its own row instead of covering the first one,
+    and with no way to close it. A warning that can be dismissed is a warning that will be,
+    two minutes into looking at a screen and an hour before somebody decides something
+    based on numbers this build invented.
+  -->
+  <p class="preview-banner" role="alert">{previewNotice}</p>
+{/if}
+
 <main>
   {#if diagnosticsOpen}
     <DiagnosticsScreen {startup} onclose={() => (diagnosticsOpen = false)} />
@@ -53,6 +70,24 @@
 </main>
 
 <style>
+  .preview-banner {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    max-width: none;
+    margin: 0;
+    padding: var(--space-3) var(--space-6);
+    border-bottom: var(--border-width) solid var(--colour-border-strong);
+    /* The one place in the interface that uses the warning colour as a background. It is
+     * meant to be impossible to mistake for part of the application. */
+    background-color: var(--colour-warning);
+    color: var(--colour-surface);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-align: center;
+    user-select: text;
+  }
+
   main {
     display: flex;
     flex: 1;

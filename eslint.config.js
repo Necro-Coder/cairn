@@ -26,7 +26,14 @@ import svelteConfig from './svelte.config.js';
  */
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'target/**', 'src-tauri/**', 'crates/**'],
+    ignores: [
+      'dist/**',
+      'dist-preview/**',
+      'node_modules/**',
+      'target/**',
+      'src-tauri/**',
+      'crates/**',
+    ],
   },
 
   js.configs.recommended,
