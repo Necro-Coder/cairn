@@ -12,9 +12,14 @@
 
 pub mod app_info;
 pub mod diagnostics;
+pub mod vault;
 
 // Only the types are re-exported. The command functions are referenced through their full
 // module path in `generate_handler!`, because the attribute macro generates companion
 // items next to each function that a `pub use` does not carry along.
 pub use app_info::AppInfo;
 pub use diagnostics::{DatabaseStatus, Diagnostics};
+pub use vault::{
+    ConditionReport, InactivityChoice, KdfReport, StatusInputs, StrengthReport, VaultError,
+    VaultStatus,
+};

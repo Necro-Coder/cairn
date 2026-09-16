@@ -24,10 +24,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 cairn-crypto.workspace = true
 cairn-domain.workspace = true
+zeroize = { version = "1.9", features = ["alloc"] }
+# The synchronisation primitives only. The runtime is the one Tauri already starts; these
+# types are agnostic about which runtime drives them, and naming the crate that defines them
+# is better than reaching for a re-export whose shape is not part of Tauri's contract.
+tokio = { version = "1", default-features = false, features = ["sync"] }
 thiserror.workspace = true
 
 [dev-dependencies]
 serde_json = "1.0"
+cairn-crypto.workspace = true
+zeroize = { version = "1.9", features = ["alloc"] }
 
 [lints]
 workspace = true

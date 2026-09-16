@@ -297,6 +297,8 @@ dependencies = [
  "tauri",
  "tauri-build",
  "thiserror 2.0.20",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

@@ -78,7 +78,7 @@ pub struct Session {
     /// Asynchronous rather than ordinary, because it is held across the await that runs the
     /// derivation on another thread, and a thread of the runtime blocked on an ordinary lock
     /// is a thread that is not drawing the window.
-    derivation: tauri::async_runtime::Mutex<()>,
+    derivation: tokio::sync::Mutex<()>,
 }
 
 impl Session {
@@ -91,7 +91,7 @@ impl Session {
                 last_activity_us: now_us,
                 timeout,
             }),
-            derivation: tauri::async_runtime::Mutex::new(()),
+            derivation: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -195,16 +195,56 @@ impl Session {
             return Ok(UnlockOutcome::AlreadyOpen);
         }
 
-        let derived = tauri::async_runtime::spawn_blocking(derive)
+        self.install(|| derive().map(|vault| (vault, ())), now_us)
+            .await?;
+
+        Ok(UnlockOutcome::Opened)
+    }
+
+    /// Runs a derivation that produces new keys and something else, and installs both.
+    ///
+    /// What creating a vault and rewriting its header both need. They differ from an unlock
+    /// in two ways: the vault being open already is no reason to skip the work, since the
+    /// work is what produces the header that has to be written, and there is a second value
+    /// to carry back out, which is that header.
+    ///
+    /// The keys are replaced rather than compared. The password was checked by the
+    /// derivation itself: a rewrap that produced keys at all produced them from the right
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// The same two as [`Session::unlock_with`].
+    pub async fn replace_with<F, T>(&self, derive: F, now_us: i64) -> Result<T, UnlockFailure>
+    where
+        F: FnOnce() -> Result<(UnlockedVault, T), CryptoError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let _permit = self.derivation.lock().await;
+
+        self.install(derive, now_us).await
+    }
+
+    /// Runs the derivation off the drawing thread and puts what it produced in the state.
+    ///
+    /// Private, and expects the permit to be held by the caller: the two public entry points
+    /// differ only in what they do before this, and sharing the body is what keeps the
+    /// blocking pool and the moment the timer restarts from being decided twice.
+    async fn install<F, T>(&self, derive: F, now_us: i64) -> Result<T, UnlockFailure>
+    where
+        F: FnOnce() -> Result<(UnlockedVault, T), CryptoError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (vault, carried) = tauri::async_runtime::spawn_blocking(derive)
             .await
             .map_err(|_joining| UnlockFailure::Interrupted)?
             .map_err(UnlockFailure::Refused)?;
 
         let mut state = self.state();
-        state.vault = Some(derived);
+        state.vault = Some(vault);
         state.last_activity_us = now_us;
 
-        Ok(UnlockOutcome::Opened)
+        Ok(carried)
     }
 
     /// Reads something out of the open vault without the vault leaving the lock.
@@ -402,6 +442,50 @@ mod tests {
             1,
             "two concurrent unlocks ran more than one derivation"
         );
+    }
+
+    #[test]
+    fn replacing_derives_even_though_the_vault_is_already_open() {
+        // Changing the password or the parameters happens with the vault open, and the work
+        // is what produces the header that then has to be written. Skipping it the way an
+        // unlock does would mean the operation silently did nothing.
+        let session = an_unlocked_session(InactivityTimeout::default());
+        let derivations = Arc::new(AtomicUsize::new(0));
+
+        let carried = {
+            let derivations = Arc::clone(&derivations);
+            tauri::async_runtime::block_on(session.replace_with(
+                move || {
+                    derivations.fetch_add(1, Ordering::SeqCst);
+                    Ok((an_open_vault(), "the new header"))
+                },
+                NOW_US,
+            ))
+        }
+        .expect("the derivation succeeded");
+
+        assert_eq!(carried, "the new header");
+        assert_eq!(derivations.load(Ordering::SeqCst), 1);
+        assert!(session.is_unlocked());
+    }
+
+    #[test]
+    fn a_replacement_that_fails_leaves_the_vault_open() {
+        // A password change that could not be completed must not lock somebody out of a
+        // vault they already had open. Nothing on disk changed either, so the keys in memory
+        // are still the right ones.
+        let session = an_unlocked_session(InactivityTimeout::default());
+        let before = session
+            .with_vault(|vault| *vault.key_id())
+            .expect("the vault is open");
+
+        let failure = tauri::async_runtime::block_on(
+            session.replace_with(|| Err::<(UnlockedVault, ()), _>(CryptoError::Open), NOW_US),
+        )
+        .expect_err("the derivation failed");
+
+        assert!(matches!(failure, UnlockFailure::Refused(CryptoError::Open)));
+        assert_eq!(session.with_vault(|vault| *vault.key_id()), Some(before));
     }
 
     #[test]
