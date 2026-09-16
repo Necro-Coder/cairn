@@ -1,0 +1,26 @@
+# The fuzzing targets, kept out of the workspace on purpose.
+#
+# `cargo fuzz` builds with a nightly toolchain and its own instrumentation flags. Inside the
+# workspace it would drag both into every ordinary `cargo build`, and the pinned stable
+# toolchain that makes this project reproducible would stop being the one that compiles it.
+[package]
+name = "cairn-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cairn-crypto = { path = "../crates/cairn-crypto" }
+
+[[bin]]
+name = "vault_header"
+path = "fuzz_targets/vault_header.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
