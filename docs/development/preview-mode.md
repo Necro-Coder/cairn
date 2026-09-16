@@ -60,6 +60,12 @@ npm run preview:mock -- --host
 
 That binds to every interface on the machine. Use it on a network you control, for as long as you need it, and stop it afterwards. Nothing here is published anywhere, and the preview is deliberately not deployed to any hosting: a page that looks like the interface of an application holding a password vault is worth nothing to anyone and is worth something to somebody building a convincing imitation of it.
 
+A dev server bound to a network serves files, not just the page. By default Vite will hand out anything inside the project directory to anybody who asks for it by name, and a working directory holds more than the files git tracks: notes, drafts, whatever was left there while working. So `server.fs.allow` in `vite.config.ts` lists what may be read — the entry page, the frontend sources, the isolation application and the installed packages — and everything else answers 403.
+
+An allowlist rather than a list of things to block. A denylist only ever covers the files somebody already thought of, and the one that matters is the one nobody thought of.
+
+This was checked by asking for those files over the network before the allowlist existed and getting them, then again afterwards and getting 403.
+
 ## The banner
 
 It is sticky, it takes its own row rather than covering the first one, and there is no way to close it.

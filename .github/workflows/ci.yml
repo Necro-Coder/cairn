@@ -120,6 +120,12 @@ jobs:
         run: |
           set -euo pipefail
           marker='CAIRN-PREVIEW-MOCK-DATA'
+          # Searching an empty directory finds nothing and would pass, which is the one way
+          # this step could report success without having looked at anything.
+          if [ ! -f dist/index.html ]; then
+            echo "::error::there is no bundle in dist/ to check"
+            exit 1
+          fi
           if grep -rlF "$marker" dist/; then
             echo "::error::the preview module reached the production bundle; the files above contain its marker"
             exit 1

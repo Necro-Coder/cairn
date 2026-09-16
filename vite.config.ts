@@ -47,6 +47,22 @@ export default defineConfig(({ mode }) => {
         // every cargo write for no benefit.
         ignored: ['**/src-tauri/**', '**/crates/**', '**/target/**'],
       },
+      fs: {
+        strict: true,
+        // An allowlist of what the dev server may read off disk, because the default is
+        // the whole project directory and that is more than the frontend needs.
+        //
+        // It matters because of preview mode. The documented way to look at the interface
+        // on a phone binds this server to the network, and a working directory contains
+        // more than the files git tracks: notes, drafts, anything left there while
+        // working. With the default, every one of them is one URL away from anybody who
+        // can reach the port.
+        //
+        // A list of what is allowed rather than a list of what is forbidden. A denylist
+        // only ever covers the files somebody already thought of, and the whole point is
+        // the file nobody thought of.
+        allow: ['index.html', 'src', 'src-isolation', 'node_modules'],
+      },
     },
     build: {
       // A preview build never goes near `dist/`. Sharing the directory would mean one

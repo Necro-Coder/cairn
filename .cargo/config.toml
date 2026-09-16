@@ -29,5 +29,10 @@ rustflags = ["-C", "control-flow-guard=yes"]
 # A test in cairn-db reads `PRAGMA compile_options` back out of the built library and
 # fails if any of the four did not arrive, because this file is a request and the C
 # compiler is what decides.
+# `force` because without it this table is only a default: cargo leaves the variable alone
+# if the surrounding environment already sets it. Somebody with `LIBSQLITE3_FLAGS` exported
+# for another project would silently build this one without any of the four settings, and
+# on a machine where the tests do not run — the iOS job compiles and never executes —
+# nothing would say so.
 [env]
-LIBSQLITE3_FLAGS = "-DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_TEMP_STORE=3 -USQLITE_ENABLE_LOAD_EXTENSION"
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_TEMP_STORE=3 -USQLITE_ENABLE_LOAD_EXTENSION", force = true }
