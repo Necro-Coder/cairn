@@ -6,66 +6,47 @@
  * WebView and the core is one short file that can be read in a single sitting. That is
  * the point: a boundary nobody can enumerate is a boundary nobody can audit.
  *
+ * Nothing imports this file by path either. The rest of the frontend imports the `$ipc`
+ * alias, and the build decides what is behind it: this module normally, and a stand-in
+ * that invents its answers when the interface is being looked at in an ordinary browser.
+ * Both are checked against `IpcSurface`, so neither can grow a function the other lacks.
+ *
  * Rules for adding to this file.
  *
  * A command is a complete business operation, not a generic accessor. `unlockVault` is a
  * command; `getField` is not, because it turns the boundary into an open query interface
  * and invites calling it in a loop.
  *
- * The return types below describe what the Rust side sends. TypeScript types do not
- * exist at runtime, so they are a convenience for the reader and the compiler, never a
- * guarantee. The value is trusted because it comes from our own core, not because it is
- * annotated here. Anything that is not our own core is hostile input and gets validated.
+ * The types describing what comes back live in `ipc.types.ts`, because they belong to the
+ * boundary rather than to either side of it. TypeScript types do not exist at runtime, so
+ * they are a convenience for the reader and the compiler, never a guarantee. The value is
+ * trusted because it comes from our own core, not because it is annotated.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
-/**
- * Which build produced the running binary.
- *
- * @public part of the boundary vocabulary, exported whether or not anything imports it
- * by name today.
- */
-export type BuildProfile = 'debug' | 'release';
-
-/** Name, version and build profile of the running application. */
-export interface AppInfo {
-  readonly name: string;
-  readonly version: string;
-  readonly profile: BuildProfile;
-}
-
-/**
- * Whether the encrypted database has been opened.
- *
- * Only one value exists until storage is implemented.
- *
- * @public part of the boundary vocabulary, exported whether or not anything imports it
- * by name today.
- */
-export type DatabaseStatus = 'notInitialized';
-
-/**
- * What the application will admit to about itself.
- *
- * Deliberately contains nothing that identifies the person or the machine: no paths, no
- * user name, no host name. A screenshot of the diagnostics screen is safe to share.
- */
-export interface Diagnostics {
-  readonly app: AppInfo;
-  readonly os: string;
-  readonly arch: string;
-  readonly webviewVersion: string | null;
-  readonly database: DatabaseStatus;
-  readonly uptimeMs: number;
-}
+import type { AppInfo, Diagnostics, IpcSurface } from './ipc.types';
 
 /** Reads the name, version and build profile of the running application. */
-export async function fetchAppInfo(): Promise<AppInfo> {
+async function fetchAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>('app_info');
 }
 
 /** Reads a snapshot of the application state for the diagnostics screen. */
-export async function fetchDiagnostics(): Promise<Diagnostics> {
+async function fetchDiagnostics(): Promise<Diagnostics> {
   return invoke<Diagnostics>('diagnostics');
 }
+
+/**
+ * The real boundary.
+ *
+ * Annotated with the shared type rather than merely happening to match it. Missing a
+ * function fails to compile, and so does adding one that `IpcSurface` does not declare,
+ * which is the half that keeps the stand-in honest: a new command cannot be added here
+ * and quietly forgotten there.
+ */
+export const ipc: IpcSurface = {
+  previewNotice: null,
+  fetchAppInfo,
+  fetchDiagnostics,
+};

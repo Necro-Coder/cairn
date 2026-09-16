@@ -1,5 +1,6 @@
 # Generated or owned by another toolchain.
 dist/
+dist-preview/
 target/
 node_modules/
 src-tauri/gen/

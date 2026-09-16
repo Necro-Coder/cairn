@@ -17,7 +17,14 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["svelte", "vite/client"]
+    "types": ["svelte", "vite/client"],
+    // The alias the whole frontend imports. It is pointed at the real boundary here and
+    // never at the stand-in, because the application is meant to be typed against what it
+    // will actually talk to. The stand-in is still checked: it is under `src/`, so the
+    // compiler reads it on its own and holds it to the same shared type.
+    "paths": {
+      "$ipc": ["./src/lib/ipc.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "svelte.config.js"],
   "exclude": ["node_modules", "dist", "src-tauri", "crates", "target"]

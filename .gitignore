@@ -52,6 +52,9 @@ secrets/
 node_modules/
 dist/
 dist-ssr/
+# The preview build, which must never be mistaken for the real bundle and must never be
+# published anywhere.
+dist-preview/
 *.tsbuildinfo
 npm-debug.log*
 yarn-error.log*

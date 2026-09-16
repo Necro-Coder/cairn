@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { fetchAppInfo, type AppInfo } from '../lib/ipc';
+  import { ipc } from '$ipc';
+  import type { AppInfo } from '../lib/ipc.types';
 
   type Status =
     | { readonly kind: 'idle' }
@@ -12,7 +13,7 @@
   async function check(): Promise<void> {
     status = { kind: 'loading' };
     try {
-      status = { kind: 'ready', appInfo: await fetchAppInfo() };
+      status = { kind: 'ready', appInfo: await ipc.fetchAppInfo() };
     } catch (cause) {
       // The core answering with an error is the only failure this screen can have, and
       // it means the boundary itself is broken. Saying so is more useful than a spinner

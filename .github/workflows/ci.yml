@@ -104,6 +104,28 @@ jobs:
       - name: Advisories
         run: npm audit --omit=dev
 
+      - name: Build the production bundle
+        run: npm run build
+
+      - name: Assert the preview module did not reach the bundle
+        # The module that invents data is meant to be absent from a production build, not
+        # merely unreachable in one. It is kept out by a build-time alias, and this checks
+        # the artefact rather than the intention: a build flag is not a defence on its own,
+        # because one badly placed import undoes it without saying anything.
+        #
+        # The marker is defined once, in that module, and shown to the person in the
+        # banner, so the thing searched for here and the thing on screen cannot drift
+        # apart. This step was verified by building in preview mode and confirming it is
+        # found, then building normally and confirming it is not.
+        run: |
+          set -euo pipefail
+          marker='CAIRN-PREVIEW-MOCK-DATA'
+          if grep -rlF "$marker" dist/; then
+            echo "::error::the preview module reached the production bundle; the files above contain its marker"
+            exit 1
+          fi
+          echo "The production bundle does not contain the preview marker."
+
   rust:
     name: rust
     runs-on: ubuntu-latest
