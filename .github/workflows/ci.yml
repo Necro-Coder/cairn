@@ -155,6 +155,128 @@ jobs:
       - name: Advisories
         run: cargo audit
 
+  ios-compile:
+    name: ios compile
+    # Pinned to an image rather than macos-latest. An image rollover changes the Xcode
+    # version, the SDK and the toolchain that builds OpenSSL, and this job exists to
+    # notice when the iOS build breaks. If the image moving underneath it were allowed to
+    # break it, the signal would be worth nothing.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml decides the version, here as everywhere else.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Add the iOS device target to the pinned toolchain
+        # Added by a separate command rather than by an input to the action above, because
+        # the action installs the toolchain it is named after and rust-toolchain.toml then
+        # overrides which one cargo actually uses. A target added to the first would not be
+        # present in the second, and the build would fail saying the target is not
+        # installed, several minutes into the job. Run from the repository, `rustup` reads
+        # the same override cargo does.
+        #
+        # The device target, not the simulator. What decides whether this architecture is
+        # viable is the binary that would end up on a phone, and the simulator build is an
+        # easier crossing that would answer a question nobody asked.
+        run: rustup target add aarch64-apple-ios
+
+      # Without a cache every run rebuilds OpenSSL and SQLCipher from C, which is most of
+      # the time this job takes. GitHub scopes caches by branch on its own: a pull request
+      # reads the cache of its base branch and writes only into its own scope, so one
+      # branch cannot poison another's. That isolation comes from the platform rather than
+      # from a key written here, which is why there is no per-branch key below.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # The two profiles produce different artefacts from the same sources, so they do
+          # not share an entry. The lockfile is already part of the key the action builds.
+          key: aarch64-apple-ios-${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
+
+      - name: Decide which profile to build
+        id: profile
+        # Pull requests build debug so the loop stays short. Pushes to dev and main build
+        # release, which is the path that actually ships: fat LTO, one codegen unit and
+        # OpenSSL's assembly. Both get exercised every day without either slowing the
+        # other down.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "name=debug" >> "$GITHUB_OUTPUT"
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=release" >> "$GITHUB_OUTPUT"
+            echo "flag=--release" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cross compile the core for aarch64-apple-ios
+        id: build
+        # The five library crates by name rather than --workspace. The workspace also
+        # contains the desktop binary, which needs the Xcode scaffolding that belongs to a
+        # much later phase and would fail here for a reason that has nothing to do with
+        # what this job measures. A gate that goes red for reasons nobody understands gets
+        # switched off within a week.
+        #
+        # --locked because the point of pinning the OpenSSL sources is lost if the pipeline
+        # is allowed to resolve something newer than the lockfile says.
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          cargo build --locked --target aarch64-apple-ios ${{ steps.profile.outputs.flag }} \
+            -p cairn-crypto \
+            -p cairn-domain \
+            -p cairn-db \
+            -p cairn-sync \
+            -p cairn-platform
+          echo "seconds=$(( $(date +%s) - started ))" >> "$GITHUB_OUTPUT"
+
+      - name: Report what it produced and how long it took
+        # Two numbers in the job summary rather than a sentence. This is the baseline the
+        # phase that puts the application on a phone will compare against, and a baseline
+        # that has to be reconstructed from a log is a baseline nobody reconstructs.
+        run: |
+          set -euo pipefail
+          profile='${{ steps.profile.outputs.name }}'
+          out="target/aarch64-apple-ios/$profile"
+
+          rust_bytes=0
+          for rlib in "$out"/libcairn_*.rlib; do
+            [ -e "$rlib" ] || continue
+            rust_bytes=$(( rust_bytes + $(wc -c < "$rlib") ))
+          done
+
+          native_bytes=0
+          while IFS= read -r archive; do
+            native_bytes=$(( native_bytes + $(wc -c < "$archive") ))
+          done < <(find "$out/build" \( -name 'libsqlite3.a' -o -name 'libcrypto.a' -o -name 'libssl.a' \) -print)
+
+          # Zero here would mean the C libraries were never built, which is the one way
+          # this job could pass while proving nothing at all.
+          if [ "$native_bytes" -eq 0 ]; then
+            echo "::error::no SQLCipher or OpenSSL archive was produced; the build linked something else"
+            exit 1
+          fi
+
+          human() { awk -v bytes="$1" 'BEGIN { printf "%.2f MB", bytes / 1048576 }'; }
+
+          {
+            echo "### iOS cross compilation"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| target | \`aarch64-apple-ios\` |"
+            echo "| profile | \`$profile\` |"
+            echo "| runner image | \`macos-15\` |"
+            echo "| build time | ${{ steps.build.outputs.seconds }} s |"
+            echo "| Rust libraries, five crates | $(human "$rust_bytes") |"
+            echo "| C libraries, SQLCipher and OpenSSL | $(human "$native_bytes") |"
+            echo
+            echo "Nothing was executed. This job compiles; it does not run a single line on"
+            echo "a device or a simulator, and it does not claim to."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   unsafe-code:
     name: unsafe code
     runs-on: ubuntu-latest
