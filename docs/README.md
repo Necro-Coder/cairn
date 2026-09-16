@@ -6,9 +6,7 @@ Three ways in, depending on what you want.
 - **[How it works](#how-it-works)** — you want to understand, audit or verify it.
 - **[Working on Cairn](#working-on-cairn)** — you want to build it or contribute.
 
-> The project is in early development. Pages marked *planned* do not exist yet; they are
-> written as the feature they describe is finished, so that nothing here describes
-> something that is not real.
+> The project is in early development. Pages marked *planned* do not exist yet; they are written as the feature they describe is finished, so that nothing here describes something that is not real.
 
 ## Using Cairn
 
@@ -25,8 +23,7 @@ Three ways in, depending on what you want.
 | Finances | *planned* |
 | Troubleshooting | *planned* |
 
-The user interface is in Spanish. This documentation is in English. See the note at the
-end of the [project README](../README.md).
+The user interface is in Spanish. This documentation is in English. See the note at the end of the [project README](../README.md).
 
 ## How it works
 
@@ -43,9 +40,7 @@ end of the [project README](../README.md).
 | iOS pipeline | *planned* — how the app is built and signed without a Mac |
 | Decision records | *planned* — the choices that are expensive to reverse |
 
-Two things this section will always do: explain the reasoning rather than restate the
-code, and be explicit about the weaknesses. A security document that only lists strengths
-is marketing.
+Two things this section will always do: explain the reasoning rather than restate the code, and be explicit about the weaknesses. A security document that only lists strengths is marketing.
 
 ## Working on Cairn
 

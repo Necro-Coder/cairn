@@ -1,22 +1,21 @@
 # ---------------------------------------------------------------------------
-# Private working material. Never published.
+# Local tooling. Every contributor uses different editors and helpers, and none
+# of that configuration belongs to anyone else. Dot directories at the root are
+# ignored by default; the two that are genuinely part of the project are let
+# back in explicitly.
 # ---------------------------------------------------------------------------
-/fases/
-/privado/
-/CLAUDE.md
-/STACK.md
-/brief-app.md
-/HARDWARE-SERVIDOR.md
-/.claude/
+/.*/
+!/.cargo/
+!/.github/
+!/.githooks/
+*.code-workspace
+
+# Personal working notes, kept next to the code but never published.
+/private/
 *.private.md
 *.local.md
 *.local.toml
 *.local.json
-
-# Editor and IDE settings
-.vscode/
-.idea/
-*.code-workspace
 
 # ---------------------------------------------------------------------------
 # Secrets and credentials. Nothing here ever reaches the repository.
@@ -53,8 +52,6 @@ secrets/
 node_modules/
 dist/
 dist-ssr/
-.vite/
-.svelte-kit/
 *.tsbuildinfo
 npm-debug.log*
 yarn-error.log*
