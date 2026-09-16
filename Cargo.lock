@@ -303,12 +303,12 @@ name = "cairn-crypto"
 version = "0.0.1"
 dependencies = [
  "argon2",
+ "cairn-platform",
  "chacha20poly1305",
  "crc32fast",
  "getrandom 0.4.3",
  "hkdf",
  "proptest",
- "secrecy",
  "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.20",
@@ -337,6 +337,12 @@ dependencies = [
 [[package]]
 name = "cairn-platform"
 version = "0.0.1"
+dependencies = [
+ "libc",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
 
 [[package]]
 name = "cairn-sync"
@@ -3158,15 +3164,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "secrecy"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
-dependencies = [
- "zeroize",
-]
 
 [[package]]
 name = "selectors"
