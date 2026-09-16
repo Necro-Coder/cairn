@@ -261,6 +261,11 @@ jobs:
 
           human() { awk -v bytes="$1" 'BEGIN { printf "%.2f MB", bytes / 1048576 }'; }
 
+          # Also to the log, not only to the job summary. A summary is readable in a
+          # browser and nowhere else, and a baseline that can only be read by a person
+          # looking at a web page is one that nothing else can check against later.
+          echo "ios-baseline profile=$profile seconds=${{ steps.build.outputs.seconds }} rust_bytes=$rust_bytes native_bytes=$native_bytes"
+
           {
             echo "### iOS cross compilation"
             echo
