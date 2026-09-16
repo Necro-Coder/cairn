@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+crc32fast = "1.5"
 getrandom = { version = "0.4", features = ["std"] }
 hkdf = "0.13"
 secrecy = "0.10"
@@ -19,6 +20,7 @@ sha2 = "0.11"
 subtle = "2.6"
 thiserror.workspace = true
 unicode-normalization = "0.1"
+uuid = { version = "1.26", default-features = false }
 zeroize = { version = "1.9", features = ["alloc", "derive"] }
 
 [lints]

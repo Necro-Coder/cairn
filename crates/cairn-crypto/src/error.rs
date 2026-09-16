@@ -91,6 +91,42 @@ pub enum CryptoError {
     #[error("the key derivation could not be run")]
     Kdf,
 
+    /// The header file was not exactly the size a header is.
+    ///
+    /// The first thing checked and the likeliest thing a power cut leaves behind, which is
+    /// why the format has one fixed size rather than a length field to be trusted.
+    #[error("a vault header cannot be {len} bytes long")]
+    HeaderSize {
+        /// How many bytes were offered.
+        len: usize,
+    },
+
+    /// The file did not begin with the eight bytes every header of ours begins with.
+    #[error("this is not a vault header")]
+    HeaderMagic,
+
+    /// The header announced a format version this build does not know.
+    ///
+    /// Refused rather than read hopefully. A reader that guesses at a layout it has never
+    /// seen is a reader that hands out the wrong bytes as a key.
+    #[error("this vault header is version {found}, which this build cannot read")]
+    HeaderVersion {
+        /// The version the file claimed.
+        found: u16,
+    },
+
+    /// The reserved field was not zero.
+    #[error("the reserved field of the vault header is not zero")]
+    HeaderReserved,
+
+    /// The checksum over the unauthenticated tail did not match.
+    ///
+    /// Detects corruption, not tampering. Anybody who can write the file can recompute the
+    /// checksum, and that is written down here and in the public documentation rather than
+    /// left for somebody to discover.
+    #[error("the vault header trailer is corrupt")]
+    HeaderTrailerChecksum,
+
     /// A stored blob was too short to be a nonce followed by a tag.
     ///
     /// This is a structural check that runs before any key is involved, which is why it is
