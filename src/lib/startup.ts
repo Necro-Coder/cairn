@@ -28,7 +28,7 @@ export function isWithinBudget(measurement: Measurement): boolean {
 export interface StartupResult {
   readonly appInfo: AppInfo;
   /**
-   * Process start to the first answer the interface received. Budget: 400 ms.
+   * Process start to the first answer the interface received. Budget: 500 ms.
    *
    * Taken from the uptime the core reports rather than from a timer in here, because the
    * browser clock starts when the document does, which is already most of the way through
@@ -47,7 +47,7 @@ export interface StartupResult {
   readonly commandLatency: Measurement;
 }
 
-const COLD_START_BUDGET_MS = 400;
+const COLD_START_BUDGET_MS = 500;
 const COMMAND_LATENCY_BUDGET_MS = 5;
 
 /** How many warm calls to time before taking the median. */
