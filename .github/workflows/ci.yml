@@ -337,3 +337,39 @@ jobs:
             exit 1
           fi
           echo "No unsafe code outside crates/cairn-platform."
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the nightly toolchain
+        # The only job that is not on the pinned version. libFuzzer needs the sanitizer
+        # support that is nightly only, and this job compiles one target with it; nothing
+        # that ships is built here.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # nightly
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz the vault header parser
+        # The parser reads a file an attacker can write, so it has to be total: every
+        # sequence of bytes is either a header or a refusal, and neither a panic nor a
+        # hang. Two minutes on every change will not find a deep bug, and it is not meant
+        # to; it is a floor that catches the shallow ones the same day they are written.
+        #
+        # The corpus is not committed, so each run starts from nothing and rediscovers the
+        # shape of a header by itself. That makes the run reproducible rather than
+        # dependent on whatever somebody's machine happened to save, and a hundred and
+        # sixty-eight bytes of fixed layout is a small enough space for it to matter little.
+        run: cargo fuzz run vault_header -- -max_total_time=120 -print_final_stats=1
