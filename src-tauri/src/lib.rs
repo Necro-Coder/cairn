@@ -9,6 +9,7 @@ pub mod session;
 pub mod state;
 pub mod vault;
 pub mod vault_file;
+pub mod window;
 
 use tauri::Manager as _;
 
@@ -38,8 +39,14 @@ pub fn run() {
             let directory = app.path().app_data_dir()?;
             app.manage(AppState::new(Vault::open_at(&directory)?));
 
+            // Started after the state is managed, because the first thing it does is ask for
+            // it. In the core rather than in the interface: a WebView that was made to stop
+            // sending heartbeats must not be able to hold the vault open.
+            window::spawn_watchdog(app.handle().clone());
+
             Ok(())
         })
+        .on_window_event(window::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::app_info::app_info,
             commands::diagnostics::diagnostics,

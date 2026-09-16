@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::clock::now_us;
-use crate::session::{UnlockFailure, UnlockOutcome};
+use crate::session::{LockReason, UnlockFailure, UnlockOutcome};
 use crate::state::AppState;
 use crate::vault::VaultCondition;
 use crate::vault_file::VaultFileError;
@@ -657,8 +657,11 @@ pub async fn vault_unlock(
     clippy::needless_pass_by_value,
     reason = "the command macro generates the call and requires the state guard by value"
 )]
-pub fn vault_lock(state: tauri::State<'_, AppState>) -> VaultStatus {
-    state.session().lock();
+pub fn vault_lock(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> VaultStatus {
+    // Through the window module rather than through the session, because closing the vault
+    // and telling the interface are one thing: a lock nobody was told about leaves the screen
+    // drawing what it had.
+    crate::window::lock_and_announce(&app, LockReason::Requested);
 
     status_of(&state, now_us())
 }

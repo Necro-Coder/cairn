@@ -22,7 +22,7 @@
 use std::sync::{Mutex, MutexGuard};
 
 use cairn_crypto::{CryptoError, UnlockedVault};
-use cairn_domain::session::{IdleDecision, InactivityTimeout, idle_decision};
+use cairn_domain::session::{IdleDecision, InactivityTimeout, focus_grace_elapsed, idle_decision};
 
 /// What an unlock did.
 ///
@@ -56,6 +56,23 @@ pub enum UnlockFailure {
     Interrupted,
 }
 
+/// Why the vault closed.
+///
+/// Carried by the one event the interface listens for, so that the screen it draws can say
+/// what happened rather than appearing for no visible reason. None of it is secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LockReason {
+    /// Nobody touched the window for as long as the setting allows.
+    Inactivity,
+    /// The window was away from the front for longer than the grace period.
+    FocusLost,
+    /// The window was minimised, which locks at once.
+    Minimised,
+    /// Somebody asked for it.
+    Requested,
+}
+
 /// Everything that has to change together when the vault opens or closes.
 #[derive(Debug)]
 struct SessionState {
@@ -65,6 +82,11 @@ struct SessionState {
     last_activity_us: i64,
     /// How long the vault may sit idle before it closes itself.
     timeout: InactivityTimeout,
+    /// When the window lost focus, while it still has not come back.
+    ///
+    /// An option rather than a moment and a flag, because a window that is in front and a
+    /// window that lost focus at the beginning of time are not two shades of the same thing.
+    focus_lost_at_us: Option<i64>,
 }
 
 /// The vault as this process holds it.
@@ -90,6 +112,7 @@ impl Session {
                 vault: None,
                 last_activity_us: now_us,
                 timeout,
+                focus_lost_at_us: None,
             }),
             derivation: tokio::sync::Mutex::new(()),
         }
@@ -143,29 +166,66 @@ impl Session {
         idle_decision(state.timeout, state.last_activity_us, now_us)
     }
 
-    /// Locks the vault if it has been idle long enough, answering whether it did.
+    /// Records that the window is no longer in front.
+    ///
+    /// Only the first of a run is kept. A platform that reports losing focus twice without
+    /// reporting it coming back must not restart the grace period each time, or a window that
+    /// is never coming back would never lock.
+    pub fn note_focus_lost(&self, now_us: i64) {
+        let mut state = self.state();
+        if state.focus_lost_at_us.is_none() {
+            state.focus_lost_at_us = Some(now_us);
+        }
+    }
+
+    /// Records that the window is in front again, cancelling the countdown.
+    pub fn note_focus_gained(&self) {
+        self.state().focus_lost_at_us = None;
+    }
+
+    /// Why the vault should close now, or `None` if it should stay open.
+    ///
+    /// Inactivity is checked before focus so that a session which is overdue on both is
+    /// reported as the one the person can do something about.
+    #[must_use]
+    pub fn due_to_lock(&self, now_us: i64) -> Option<LockReason> {
+        let state = self.state();
+        state.vault.as_ref()?;
+
+        if idle_decision(state.timeout, state.last_activity_us, now_us) == IdleDecision::Lock {
+            return Some(LockReason::Inactivity);
+        }
+        if state
+            .focus_lost_at_us
+            .is_some_and(|lost_at| focus_grace_elapsed(lost_at, now_us))
+        {
+            return Some(LockReason::FocusLost);
+        }
+
+        None
+    }
+
+    /// Closes the vault if something says it should, answering with what that was.
     ///
     /// Answering rather than announcing, because the event that tells the interface belongs
     /// to the layer that has a window to send it to.
-    pub fn lock_if_idle(&self, now_us: i64) -> bool {
-        let mut state = self.state();
-        if state.vault.is_none() {
-            return false;
-        }
-        if idle_decision(state.timeout, state.last_activity_us, now_us) != IdleDecision::Lock {
-            return false;
-        }
+    pub fn lock_if_due(&self, now_us: i64) -> Option<LockReason> {
+        let reason = self.due_to_lock(now_us)?;
+        self.lock();
 
-        state.vault = None;
-        true
+        Some(reason)
     }
 
     /// Closes the vault, answering whether it was open.
     ///
     /// Closing is dropping. The key clears itself on the way out, and there is no copy of it
-    /// anywhere else in this process to clear separately.
+    /// anywhere else in this process to clear separately. The focus countdown is cleared with
+    /// it, so that opening the vault again does not inherit one from before.
     pub fn lock(&self) -> bool {
-        self.state().vault.take().is_some()
+        let mut state = self.state();
+        state.focus_lost_at_us = None;
+
+        state.vault.take().is_some()
     }
 
     /// Runs the derivation and opens the vault with what it produced.
@@ -287,7 +347,7 @@ mod tests {
     use cairn_crypto::{Argon2Params, CryptoError, UnlockedVault};
     use cairn_domain::session::{IdleDecision, InactivityMinutes, InactivityTimeout};
 
-    use super::{Session, UnlockFailure, UnlockOutcome};
+    use super::{LockReason, Session, UnlockFailure, UnlockOutcome};
 
     /// A moment in the middle of the range, so the arithmetic either side of it is ordinary.
     const NOW_US: i64 = 1_700_000_000_000_000;
@@ -505,17 +565,24 @@ mod tests {
         // Even under never, because never describes when an open vault closes itself and
         // this one is already closed.
         assert_eq!(session.idle_decision(NOW_US), IdleDecision::Lock);
-        assert!(!session.lock_if_idle(NOW_US), "there was nothing to lock");
+        assert_eq!(
+            session.lock_if_due(NOW_US),
+            None,
+            "there was nothing to lock"
+        );
     }
 
     #[test]
     fn a_vault_left_alone_for_the_whole_period_locks_itself() {
         let session = an_unlocked_session(InactivityTimeout::default());
 
-        assert!(!session.lock_if_idle(NOW_US + FIVE_MINUTES_US - 1));
+        assert_eq!(session.lock_if_due(NOW_US + FIVE_MINUTES_US - 1), None);
         assert!(session.is_unlocked());
 
-        assert!(session.lock_if_idle(NOW_US + FIVE_MINUTES_US));
+        assert_eq!(
+            session.lock_if_due(NOW_US + FIVE_MINUTES_US),
+            Some(LockReason::Inactivity)
+        );
         assert!(!session.is_unlocked());
     }
 
@@ -525,7 +592,7 @@ mod tests {
 
         session.note_activity(NOW_US + FIVE_MINUTES_US - 1);
 
-        assert!(!session.lock_if_idle(NOW_US + FIVE_MINUTES_US));
+        assert_eq!(session.lock_if_due(NOW_US + FIVE_MINUTES_US), None);
         assert!(session.is_unlocked());
     }
 
@@ -542,9 +609,83 @@ mod tests {
                 .expect("the vault opens again");
 
         assert_eq!(reopened, UnlockOutcome::Opened);
-        assert!(
-            session.lock_if_idle(NOW_US + FIVE_MINUTES_US),
+        assert_eq!(
+            session.lock_if_due(NOW_US + FIVE_MINUTES_US),
+            Some(LockReason::Inactivity),
             "the timer was measured from the beat that arrived while it was locked"
+        );
+    }
+
+    #[test]
+    fn a_window_that_lost_focus_locks_once_the_grace_period_has_passed() {
+        let session = an_unlocked_session(InactivityTimeout::default());
+        let grace = 30 * 1_000_000;
+
+        session.note_focus_lost(NOW_US);
+
+        assert_eq!(session.due_to_lock(NOW_US + grace - 1), None);
+        assert_eq!(
+            session.lock_if_due(NOW_US + grace),
+            Some(LockReason::FocusLost)
+        );
+        assert!(!session.is_unlocked());
+    }
+
+    #[test]
+    fn a_window_that_came_back_cancels_the_countdown() {
+        let session = an_unlocked_session(InactivityTimeout::default());
+
+        session.note_focus_lost(NOW_US);
+        session.note_focus_gained();
+
+        assert_eq!(session.due_to_lock(NOW_US + 60 * 1_000_000), None);
+        assert!(session.is_unlocked());
+    }
+
+    #[test]
+    fn losing_focus_twice_without_coming_back_does_not_restart_the_countdown() {
+        // A platform that reports the same thing twice must not be able to hold the vault
+        // open forever by repeating itself.
+        let session = an_unlocked_session(InactivityTimeout::default());
+        let grace = 30 * 1_000_000;
+
+        session.note_focus_lost(NOW_US);
+        session.note_focus_lost(NOW_US + grace - 1);
+
+        assert_eq!(
+            session.lock_if_due(NOW_US + grace),
+            Some(LockReason::FocusLost)
+        );
+    }
+
+    #[test]
+    fn opening_the_vault_again_does_not_inherit_a_countdown_from_before() {
+        // Closing clears it. Otherwise a vault locked while the window was away would lock
+        // again the moment it was opened, with no way to tell why.
+        let session = an_unlocked_session(InactivityTimeout::default());
+
+        session.note_focus_lost(NOW_US);
+        session.lock();
+
+        let reopened =
+            tauri::async_runtime::block_on(session.unlock_with(|| Ok(an_open_vault()), NOW_US))
+                .expect("the vault opens again");
+
+        assert_eq!(reopened, UnlockOutcome::Opened);
+        assert_eq!(session.due_to_lock(NOW_US + 60 * 1_000_000), None);
+    }
+
+    #[test]
+    fn a_session_overdue_on_both_counts_reports_the_one_somebody_can_act_on() {
+        // Inactivity is a setting somebody chose and can change. Focus is not, so reporting
+        // focus here would send them looking for a setting that would not have helped.
+        let session = an_unlocked_session(InactivityTimeout::default());
+
+        session.note_focus_lost(NOW_US);
+
+        assert_eq!(
+            session.lock_if_due(NOW_US + FIVE_MINUTES_US),
+            Some(LockReason::Inactivity)
         );
     }
 
@@ -553,7 +694,7 @@ mod tests {
         let session = an_unlocked_session(InactivityTimeout::Never);
 
         assert_eq!(session.idle_decision(i64::MAX), IdleDecision::NeverLocks);
-        assert!(!session.lock_if_idle(i64::MAX));
+        assert_eq!(session.lock_if_due(i64::MAX), None);
         assert!(session.is_unlocked());
     }
 
@@ -573,8 +714,11 @@ mod tests {
             session.timeout(),
             InactivityTimeout::After(InactivityMinutes::One)
         );
-        assert!(!session.lock_if_idle(four_minutes_later));
-        assert!(session.lock_if_idle(four_minutes_later + 60 * 1_000_000));
+        assert_eq!(session.lock_if_due(four_minutes_later), None);
+        assert_eq!(
+            session.lock_if_due(four_minutes_later + 60 * 1_000_000),
+            Some(LockReason::Inactivity)
+        );
     }
 
     #[test]

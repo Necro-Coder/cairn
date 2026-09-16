@@ -168,6 +168,18 @@ pub const WARNING_BEFORE_LOCK_S: u32 = 30;
 /// they are about to use.
 pub const LOCK_AFTER_FOCUS_LOST_S: u32 = 30;
 
+/// Whether a window that lost focus at `lost_at_us` has been away long enough to lock.
+///
+/// A clock that has moved backwards answers no, for the same reason the inactivity timer
+/// waits rather than locking: a machine adjusting its clock is not somebody walking away.
+#[must_use]
+pub fn focus_grace_elapsed(lost_at_us: i64, now_us: i64) -> bool {
+    let grace_us = i64::from(LOCK_AFTER_FOCUS_LOST_S) * MICROS_PER_SECOND;
+    let locks_at = lost_at_us.saturating_add(grace_us);
+
+    now_us >= locks_at
+}
+
 /// What should happen to a session that has been idle since `last_activity_us`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleDecision {
@@ -220,7 +232,7 @@ mod tests {
     use super::{
         FAILURES_TO_REACH_CEILING, FIRST_BACKOFF_S, IdleDecision, InactivityMinutes,
         InactivityTimeout, LOCK_AFTER_FOCUS_LOST_S, MAX_BACKOFF_S, WARNING_BEFORE_LOCK_S,
-        backoff_remaining_s, backoff_seconds, idle_decision, locked_until_us,
+        backoff_remaining_s, backoff_seconds, focus_grace_elapsed, idle_decision, locked_until_us,
     };
 
     /// A moment in the middle of the range, so that arithmetic either side of it is ordinary.
@@ -415,6 +427,30 @@ mod tests {
                 IdleDecision::NeverLocks
             );
         }
+    }
+
+    #[test]
+    fn a_window_that_came_back_within_the_grace_period_does_not_lock() {
+        // Switching away for a second to copy something is constant. A vault that locked the
+        // moment it was not in front would become a vault whose automatic locking gets turned
+        // off, which is worse than a thirty second wait.
+        let grace = i64::from(LOCK_AFTER_FOCUS_LOST_S) * 1_000_000;
+
+        assert!(!focus_grace_elapsed(NOW_US, NOW_US));
+        assert!(!focus_grace_elapsed(NOW_US, NOW_US + grace - 1));
+        assert!(focus_grace_elapsed(NOW_US, NOW_US + grace));
+        assert!(focus_grace_elapsed(NOW_US, NOW_US + grace + 1));
+    }
+
+    #[test]
+    fn a_clock_moved_backwards_does_not_lock_a_window_that_is_still_in_front() {
+        assert!(!focus_grace_elapsed(NOW_US, NOW_US - 60 * 60 * 1_000_000));
+    }
+
+    #[test]
+    fn a_moment_at_the_end_of_the_range_does_not_wrap_into_an_immediate_lock() {
+        assert!(!focus_grace_elapsed(i64::MAX, i64::MAX - 1));
+        assert!(focus_grace_elapsed(i64::MAX, i64::MAX));
     }
 
     #[test]
