@@ -198,14 +198,15 @@ pub fn back_up_verified(paths: &VaultPaths) -> Result<(), VaultFileError> {
 
 /// Removes the backup once the operation it protected has finished.
 ///
+/// Asks for the removal rather than checking first. The removal already treats an absent
+/// file as success, so a check would be a second answer to the same question taken a moment
+/// earlier, and a moment earlier is exactly long enough for it to stop being true.
+///
 /// # Errors
 ///
-/// Returns [`VaultFileError::Io`] if the file exists and cannot be removed.
+/// Returns [`VaultFileError::Io`] if the file is there and cannot be removed.
 pub fn discard_backup(paths: &VaultPaths) -> Result<(), VaultFileError> {
-    if paths.backup.exists() {
-        remove(&paths.backup)?;
-    }
-    Ok(())
+    remove(&paths.backup)
 }
 
 /// Reads a header from a path, answering `None` if the file is not there.
