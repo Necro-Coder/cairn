@@ -27,31 +27,31 @@ The user interface is in Spanish. This documentation is in English. See the note
 
 ## How it works
 
-| Page               | What it covers                                                |
-| ------------------ | ------------------------------------------------------------- |
-| Overview           | _planned_ — the whole system in one page, read this first     |
-| Threat model       | _planned_ — who the attacker is and what each defense answers |
-| Cryptography       | _planned_ — key hierarchy, AEAD, nonces, associated data      |
-| Data model         | _planned_ — the schema and why every column exists            |
-| Storage            | _planned_ — the two layers of encryption at rest              |
-| Backup format      | _planned_ — the export file, byte by byte                     |
-| Sync               | _planned_ — transport, handshake and the merge algorithm      |
+| Page | What it covers |
+| --- | --- |
+| Overview | _planned_ — the whole system in one page, read this first |
+| Threat model | _planned_ — who the attacker is and what each defense answers |
+| Cryptography | _planned_ — key hierarchy, AEAD, nonces, associated data |
+| Data model | _planned_ — the schema and why every column exists |
+| Storage | _planned_ — the two layers of encryption at rest |
+| Backup format | _planned_ — the export file, byte by byte |
+| Sync | _planned_ — transport, handshake and the merge algorithm |
 | Platform hardening | _planned_ — operating system side channels on Windows and iOS |
-| iOS pipeline       | _planned_ — how the app is built and signed without a Mac     |
-| Decision records   | _planned_ — the choices that are expensive to reverse         |
+| iOS pipeline | _planned_ — how the app is built and signed without a Mac |
+| [Decision records](architecture/decisions/) | The choices that are expensive to reverse, including what was rejected and why. |
 
 Two things this section will always do: explain the reasoning rather than restate the code, and be explicit about the weaknesses. A security document that only lists strengths is marketing.
 
 ## Working on Cairn
 
-| Page             | What it covers                                               |
-| ---------------- | ------------------------------------------------------------ |
-| Getting started  | _planned_ — from a fresh clone to a running app              |
-| Project layout   | _planned_ — what lives where and what depends on what        |
-| Quality gates    | _planned_ — every check that runs, and what each one catches |
-| Testing          | _planned_ — the testing strategy and how to run each suite   |
-| Building for iOS | _planned_                                                    |
-| Releasing        | _planned_                                                    |
+| Page | What it covers |
+| --- | --- |
+| [Getting started](development/getting-started.md) | From a fresh clone to a running app, and what to do when something does not work. |
+| [Project layout](development/project-layout.md) | What lives where, and what is allowed to depend on what. |
+| [Quality gates](development/quality-gates.md) | Every check that runs, what each one catches, and the measured performance budgets. |
+| Testing | _planned_ — the testing strategy and how to run each suite |
+| Building for iOS | _planned_ |
+| Releasing | _planned_ |
 
 ## Conventions used here
 
