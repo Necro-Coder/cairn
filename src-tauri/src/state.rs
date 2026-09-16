@@ -1,25 +1,43 @@
 //! State that lives for as long as the application window does.
 //!
-//! Today it holds only the moment the process started. The session state that matters,
-//! whether the vault is locked and when it locks itself again, arrives with the
-//! cryptographic core and will live here too.
+//! Two things, and they measure different kinds of time on purpose. The uptime comes from a
+//! monotonic instant, because it is a duration and must not move when somebody adjusts the
+//! clock. The session measures against the wall clock, because the moments it compares
+//! against are written into a file and read back by a later process.
 
 use std::time::Instant;
+
+use cairn_domain::session::InactivityTimeout;
+
+use crate::clock::now_us;
+use crate::session::Session;
 
 /// Application-wide state, managed by Tauri and handed to commands by reference.
 #[derive(Debug)]
 pub struct AppState {
     /// When the process started. Used to report uptime, never to seed anything.
     started_at: Instant,
+    /// The vault, for as long as it is open.
+    session: Session,
 }
 
 impl AppState {
     /// Creates the state, taking the start of the process to be now.
+    ///
+    /// The vault starts locked. There is no path by which a process begins with keys in it:
+    /// opening one always goes through a password.
     #[must_use]
     pub fn new() -> Self {
         Self {
             started_at: Instant::now(),
+            session: Session::new(InactivityTimeout::default(), now_us()),
         }
+    }
+
+    /// The vault, for as long as it is open.
+    #[must_use]
+    pub fn session(&self) -> &Session {
+        &self.session
     }
 
     /// Milliseconds elapsed since the application started.

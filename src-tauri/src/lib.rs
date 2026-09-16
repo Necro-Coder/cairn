@@ -3,7 +3,9 @@
 //! Everything lives in the library rather than in `main.rs` so that the desktop binary
 //! and, later, the iOS entry point drive exactly the same code.
 
+pub mod clock;
 pub mod commands;
+pub mod session;
 pub mod state;
 pub mod vault_file;
 

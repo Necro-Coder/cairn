@@ -291,6 +291,7 @@ name = "cairn"
 version = "0.0.1"
 dependencies = [
  "cairn-crypto",
+ "cairn-domain",
  "serde",
  "serde_json",
  "tauri",
