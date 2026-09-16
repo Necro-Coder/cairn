@@ -144,6 +144,30 @@ mod tests {
     }
 
     #[test]
+    fn uptime_tracks_a_real_clock_rather_than_reporting_a_number() {
+        // Pins that the value is a measurement. A constant would satisfy both of the tests
+        // either side of this one, and a constant is exactly what the cold start figure on
+        // the diagnostics screen must never be.
+        //
+        // Spinning rather than sleeping, because what is being waited for is that time has
+        // genuinely passed, and the loop guarantees it has before the second reading.
+        use std::time::{Duration, Instant};
+
+        let state = Scratch::new("grows").state();
+        let before = state.uptime_ms();
+
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(5) {
+            std::hint::spin_loop();
+        }
+
+        assert!(
+            state.uptime_ms() > before,
+            "the uptime did not move after five milliseconds of real time"
+        );
+    }
+
+    #[test]
     fn uptime_does_not_go_backwards() {
         let scratch = Scratch::new("monotonic");
         let state = scratch.state();

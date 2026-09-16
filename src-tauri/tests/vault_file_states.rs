@@ -303,3 +303,56 @@ fn the_whole_sequence_of_a_password_change_survives_being_stopped_anywhere() {
     assert_eq!(recovery, Recovery::HeaderWasFine);
     assert!(unlock(&header.unwrap(), new_password).is_ok());
 }
+
+#[test]
+fn discarding_a_backup_removes_it_rather_than_leaving_it_where_it_was() {
+    // The copy exists for the duration of one rewrite and not afterwards. Leaving it behind
+    // means the next startup has two candidates and has to guess, and the one it would guess
+    // is the older of the two.
+    let scratch = Scratch::new("discard-removes");
+    let paths = scratch.paths();
+    write_header(&paths, &a_header()).unwrap();
+    back_up_verified(&paths).unwrap();
+    assert!(paths.backup().exists(), "the copy was not taken");
+
+    discard_backup(&paths).unwrap();
+
+    assert!(
+        !paths.backup().exists(),
+        "the copy was still there after being discarded"
+    );
+}
+
+#[test]
+fn a_header_that_cannot_be_read_for_another_reason_is_not_treated_as_absent() {
+    // The difference between "there is no header" and "the header could not be read" is the
+    // difference between offering to create a vault and saying something is wrong. A
+    // directory where the file should be produces the second, and a guard that folded them
+    // together would have the application offer to create a vault over a live one.
+    let scratch = Scratch::new("header-unreadable");
+    let paths = scratch.paths();
+    fs::create_dir_all(paths.header()).unwrap();
+
+    assert!(
+        matches!(read_or_recover(&paths), Err(VaultFileError::Io { .. })),
+        "a header that could not be read was reported as a machine with no vault"
+    );
+}
+
+#[test]
+fn a_leftover_backup_that_cannot_be_removed_is_reported_rather_than_ignored() {
+    // Removing the copy is the last step of a rewrite and of a clean startup. Reporting
+    // success for a copy that is still there would leave the next startup considering a stale
+    // file, which is the one case where an older header gets used in place of a good one.
+    let scratch = Scratch::new("backup-stuck");
+    let paths = scratch.paths();
+    write_header(&paths, &a_header()).unwrap();
+    // A directory cannot be removed by the call that removes a file, so this stands in for
+    // any reason the removal fails.
+    fs::create_dir_all(paths.backup()).unwrap();
+
+    assert!(
+        matches!(read_or_recover(&paths), Err(VaultFileError::Io { .. })),
+        "a copy that could not be removed was reported as removed"
+    );
+}
