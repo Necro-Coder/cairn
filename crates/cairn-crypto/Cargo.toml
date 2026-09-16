@@ -10,6 +10,16 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+getrandom = { version = "0.4", features = ["std"] }
+secrecy = "0.10"
+subtle = "2.6"
+thiserror.workspace = true
+zeroize = { version = "1.9", features = ["alloc", "derive"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+trybuild = "1.0.121"

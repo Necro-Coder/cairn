@@ -1,0 +1,13 @@
+error[E0369]: binary operation `==` cannot be applied to type `DataKey`
+ --> tests/ui/compare_keys_with_equals.rs:8:23
+  |
+8 |     let _same = first == second;
+  |                 ----- ^^ ------ DataKey
+  |                 |
+  |                 DataKey
+  |
+note: `DataKey` does not implement `PartialEq`
+ --> src/keys.rs
+  |
+  | pub struct DataKey(Key32);
+  | ^^^^^^^^^^^^^^^^^^ `DataKey` is defined in another crate
