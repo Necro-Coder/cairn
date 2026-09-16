@@ -10,6 +10,17 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rusqlite.workspace = true
+
+# Not named by a single line of Rust in this crate, and that is deliberate: declaring it
+# is the only way to pin the exact version of the OpenSSL sources that rusqlite pulls in
+# transitively, because a version requirement can only be written where a dependency is
+# declared. The reason for pinning it is in the workspace manifest.
+#
+# `cargo udeps` will report this as unused. It is unused as Rust code and load-bearing as
+# a version constraint, and removing it would silently hand the choice of OpenSSL release
+# to whoever runs `cargo update` next.
+openssl-src.workspace = true
 
 [lints]
 workspace = true

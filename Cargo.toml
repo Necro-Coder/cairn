@@ -27,6 +27,35 @@ cairn-platform = { path = "crates/cairn-platform" }
 
 thiserror = "2.0"
 
+# SQLite, built from source as SQLCipher with its own copy of OpenSSL linked in.
+#
+# The feature is what makes the encrypted database possible on every platform this
+# project targets. iOS ships no OpenSSL an application may link against and Windows
+# ships none at all, so the only way to get one build of one cipher on both is to
+# compile it here, from source, as part of this build.
+#
+# The cost is real and is written down in docs/development/getting-started.md: the
+# first build compiles OpenSSL and SQLCipher in C and takes minutes rather than
+# seconds, and on Windows it needs Perl and NASM on PATH.
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+
+# Named here even though no line of Rust in this workspace uses it, and pinned to one
+# exact version rather than a range.
+#
+# It is the most fragile link in the chain: it carries the OpenSSL sources and the
+# build logic that cross-compiles them, and a new release of it is the single most
+# likely thing to break the iOS build on a morning when nobody touched this repository.
+# Pinned exactly, that upgrade can only arrive as a pull request the pipeline gets to
+# judge, instead of arriving sideways the next time the lockfile is regenerated.
+#
+# The lockfile alone would not do this: it records what was resolved, not what is
+# allowed, so `cargo update` would move it without anyone deciding to.
+#
+# The number is the one openssl-sys itself resolves to. Naming any other one does not
+# override it: cargo would simply add a second, unused copy of the crate to the graph and
+# leave the real build exactly where it was.
+openssl-src = "=300.6.1"
+
 # Lints applied to every crate in the workspace through `[lints] workspace = true`.
 # Setting them here rather than in each lib.rs means a new crate cannot be created
 # with a laxer policy by accident.
