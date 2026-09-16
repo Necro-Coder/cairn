@@ -59,11 +59,11 @@ name = "cairn-crypto"
 version = "0.0.1"
 dependencies = [
  "argon2",
+ "cairn-platform",
  "chacha20poly1305",
  "crc32fast",
  "getrandom",
  "hkdf",
- "secrecy",
  "sha2",
  "subtle",
  "thiserror",
@@ -78,6 +78,16 @@ version = "0.0.0"
 dependencies = [
  "cairn-crypto",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "cairn-platform"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "thiserror",
+ "windows-sys",
+ "zeroize",
 ]
 
 [[package]]
@@ -325,15 +335,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "secrecy"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
-dependencies = [
- "zeroize",
-]
-
-[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -440,6 +441,21 @@ name = "uuid"
 version = "1.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "zeroize"
