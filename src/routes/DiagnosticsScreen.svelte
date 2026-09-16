@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { fetchDiagnostics, type Diagnostics } from '../lib/ipc';
+  import { ipc } from '$ipc';
+  import type { Diagnostics } from '../lib/ipc.types';
   import { isWithinBudget, type StartupResult } from '../lib/startup';
 
   interface Props {
@@ -21,7 +22,7 @@
   async function load(): Promise<void> {
     status = { kind: 'loading' };
     try {
-      status = { kind: 'ready', snapshot: await fetchDiagnostics() };
+      status = { kind: 'ready', snapshot: await ipc.fetchDiagnostics() };
     } catch (cause) {
       status = {
         kind: 'failed',

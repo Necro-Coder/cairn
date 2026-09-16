@@ -11,7 +11,8 @@
  * application is ever sent anywhere.
  */
 
-import { fetchAppInfo, fetchDiagnostics, type AppInfo } from './ipc';
+import { ipc } from '$ipc';
+import type { AppInfo } from './ipc.types';
 
 /** A timing, in milliseconds, together with the budget it is being held to. */
 export interface Measurement {
@@ -81,14 +82,14 @@ function round(value: number): number {
  */
 export async function measureStartup(): Promise<StartupResult> {
   // The first call doubles as the cold start measurement and as the channel warm-up.
-  const snapshot = await fetchDiagnostics();
+  const snapshot = await ipc.fetchDiagnostics();
 
   const samples: number[] = [];
   for (let attempt = 0; attempt < LATENCY_SAMPLES; attempt += 1) {
     const startedAt = performance.now();
     // Sequential on purpose: running them at once would measure how well the runtime
     // parallelises, not how long one command takes.
-    await fetchAppInfo();
+    await ipc.fetchAppInfo();
     samples.push(performance.now() - startedAt);
   }
 
