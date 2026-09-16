@@ -60,7 +60,8 @@ impl VaultPaths {
 ///
 /// Separate from the cryptographic errors because these are about the disk rather than about
 /// the password. The command boundary still collapses everything an unlock can produce into
-/// one message; this exists so that the log can say which of them it was.
+/// one message; this exists so that whoever is repairing a machine can still tell which of
+/// them it was.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum VaultFileError {
@@ -69,7 +70,7 @@ pub enum VaultFileError {
     Io {
         /// What was being attempted, in a form that fits the sentence above.
         operation: &'static str,
-        /// The underlying failure, kept so that the cause survives to the log.
+        /// The underlying failure, kept so the cause is not lost on the way out.
         #[source]
         cause: io::Error,
     },

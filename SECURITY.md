@@ -44,7 +44,9 @@ No key and no decrypted text crosses into the WebView beyond the values being di
 
 There is no account recovery. If the master password is lost, the data is gone. That is a design decision, not a missing feature.
 
-A fuller description lives in the architecture documentation as each part of the system is built.
+There is no account recovery and no way to tell why an unlock failed. Both are deliberate and both are argued in full in [decision 0004](docs/architecture/decisions/0004-no-recovery-and-one-unlock-error.md).
+
+The full description lives in [the cryptography page](docs/architecture/cryptography.md) and [the threat model](docs/architecture/threat-model.md), which are kept in step with what is actually built rather than written in advance. Both are explicit about the parts that are not defended, including the twelve bytes of the vault header that cannot be authenticated and what that costs.
 
 ## Supported versions
 

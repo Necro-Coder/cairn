@@ -132,7 +132,8 @@ impl From<PasswordProblem> for VaultError {
 impl From<VaultFileError> for VaultError {
     fn from(_error: VaultFileError) -> Self {
         // Collapsed on purpose. The difference between a full disk and a header that would
-        // not parse is useful in a log and is an oracle in a return value.
+        // not parse is worth keeping where somebody repairing a machine can reach it, and is
+        // an oracle in a value the interface can read.
         Self::Storage
     }
 }
@@ -847,7 +848,8 @@ mod tests {
 
     #[test]
     fn a_storage_failure_never_says_which_storage_failure_it_was() {
-        // A full disk and a header that would not parse are useful apart in a log and are an
+        // A full disk and a header that would not parse are worth telling apart when repairing
+        // a machine, and are an
         // oracle in a return value.
         assert_eq!(
             VaultError::from(VaultFileError::BackupNotVerified),
