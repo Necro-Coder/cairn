@@ -63,6 +63,33 @@
    */
   const WARNING_BEFORE_LOCK_S = 30;
 
+  /**
+   * Whether the vault was open the last time this was looked at.
+   *
+   * A plain variable rather than state, because the effect below writes it and nothing
+   * draws it. Making it reactive would make that effect depend on its own result.
+   */
+  let wasUnlocked = false;
+
+  // Closing the vault has to take the diagnostics panel with it. The panel is drawn above
+  // the router, so without this a lock that happens while it is open leaves it on screen,
+  // with whatever was half typed into the change forms still sitting in their fields, and
+  // the lock screen never appears. That is the one thing the automatic lock exists to
+  // prevent: somebody sitting down at a machine whose owner walked away.
+  //
+  // Watched as a transition rather than as a condition. A condition would make the panel
+  // impossible to open at all while the vault is closed, and reading the version is how
+  // anybody works out what is wrong with a machine that will not open.
+  $effect(() => {
+    const unlocked = session.status.unlocked;
+
+    if (wasUnlocked && !unlocked) {
+      diagnosticsOpen = false;
+    }
+
+    wasUnlocked = unlocked;
+  });
+
   const closingSoon = $derived(
     session.status.idleRemainingS !== null && session.status.idleRemainingS <= WARNING_BEFORE_LOCK_S
       ? session.status.idleRemainingS
