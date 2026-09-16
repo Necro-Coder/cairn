@@ -216,9 +216,14 @@ fn the_configuration_does_not_pin_a_version_of_its_own() {
 }
 
 #[test]
-fn no_capability_grants_more_than_the_core_defaults() {
-    // Every permission beyond the core defaults is a new thing injected script can ask
-    // for. Adding one is a deliberate act that has to come through this test.
+fn no_capability_grants_any_core_permission() {
+    // Every permission granted here is a core API that script injected into the WebView can
+    // ask for. `core:default` is a convenience bundle rather than a minimal list, and it
+    // includes path resolution, which is how an attacker turns a scripting bug into the
+    // name of the account running the application. Nothing here needs it: a custom command
+    // is reachable without a capability entry, which was confirmed by emptying the list and
+    // watching the application still work. Adding one back is a deliberate act that has to
+    // come through this test.
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
     let entries = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()));
@@ -240,19 +245,16 @@ fn no_capability_grants_more_than_the_core_defaults() {
             .and_then(Value::as_array)
             .unwrap_or_else(|| panic!("{} declares no permissions array", path.display()));
 
-        for permission in permissions {
-            let name = permission
-                .as_str()
-                .unwrap_or_else(|| panic!("{} has a non-string permission", path.display()));
-            assert_eq!(
-                name,
-                "core:default",
-                "{} grants `{name}`. Nothing in this phase needs a permission beyond the \
-                 core defaults, so this is either a mistake or a decision that has not \
-                 been written down",
-                path.display()
-            );
-        }
+        assert!(
+            permissions.is_empty(),
+            "{} grants {permissions:?}. The commands this application exposes are its own, \
+             and a custom command does not need a capability entry, so the list should be \
+             empty. Every entry here is a core API that script injected into the WebView \
+             could call: `core:default` alone would hand it path resolution, which is how \
+             an attacker learns the account name. Adding one is a deliberate decision that \
+             belongs in the description next to it, and in this assertion.",
+            path.display()
+        );
         checked += 1;
     }
 
