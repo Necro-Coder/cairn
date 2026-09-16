@@ -1,0 +1,70 @@
+# Dependency updates.
+#
+# Weekly, and grouped into one pull request per ecosystem for anything that is not a major
+# version, because a wall of separate updates is a wall nobody reads, and an update nobody
+# reads is an update nobody reviewed.
+#
+# Major versions deliberately arrive one at a time and ungrouped. A breaking change earns
+# its own diff, its own test run and its own revert; bundling it with six harmless patches
+# costs all three.
+#
+# Nothing merges without the gates passing, and an update that touches a cryptographic
+# crate is reviewed by hand whatever the pipeline says.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      rust-dependencies:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'build(deps)'
+    labels: ['area:ci']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-tooling:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # TypeScript is capped by what the tools built on it accept, not by what TypeScript
+      # releases. Today svelte-check asks for `^5 || ^6` and typescript-eslint for
+      # `>=4.8.4 <6.1.0`, so the real ceiling is 6.0.x and even a minor bump breaks
+      # installation outright. Proposing 7.x every week produces a pull request that
+      # cannot pass, and a recurring red pull request teaches people to ignore red.
+      #
+      # Remove this entry when typescript-eslint widens its range past 6.1 and
+      # svelte-check accepts the same major. Moving TypeScript is a coordinated upgrade of
+      # three packages, which is a decision rather than a bump.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+    commit-message:
+      prefix: 'build(deps)'
+    labels: ['area:ci']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'ci(deps)'
+    labels: ['area:ci']

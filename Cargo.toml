@@ -1,0 +1,86 @@
+[workspace]
+resolver = "3"
+members = [
+    "src-tauri",
+    "crates/cairn-crypto",
+    "crates/cairn-domain",
+    "crates/cairn-db",
+    "crates/cairn-sync",
+    "crates/cairn-platform",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+authors = ["Rubén Núñez Cotano"]
+repository = "https://github.com/Necro-Coder/cairn"
+publish = false
+
+[workspace.dependencies]
+cairn-crypto = { path = "crates/cairn-crypto" }
+cairn-domain = { path = "crates/cairn-domain" }
+cairn-db = { path = "crates/cairn-db" }
+cairn-sync = { path = "crates/cairn-sync" }
+cairn-platform = { path = "crates/cairn-platform" }
+
+thiserror = "2.0"
+
+# Lints applied to every crate in the workspace through `[lints] workspace = true`.
+# Setting them here rather than in each lib.rs means a new crate cannot be created
+# with a laxer policy by accident.
+[workspace.lints.rust]
+# `unsafe_code` is denied rather than forbidden so that `cairn-platform`, which is the
+# one crate allowed to contain it, can relax the level in its own manifest. Every other
+# crate additionally carries `#![forbid(unsafe_code)]`, which cannot be turned off.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+missing_docs = "warn"
+# The MSVC linker prints an informational line every time it produces the import library
+# for a cdylib, which the application crate is so that the same code can be driven by the
+# iOS entry point later. It is not actionable and it is not a diagnostic about our code,
+# but it would fail the `-D warnings` gate on every Windows build.
+linker_messages = "allow"
+
+[workspace.lints.clippy]
+# Anything that can abort the process on a value the code did not check. These are the
+# rules from the project conventions, enforced by the linter instead of by review.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+integer_division = "deny"
+# Money and time are never floating point in this project.
+float_arithmetic = "deny"
+# Leftovers from debugging must not survive into a commit.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Broad quality groups, kept at warn so that they guide rather than block.
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Every crate in the workspace is private to it, so the version metadata lint is noise.
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# A panic with the vault unlocked kills the process instead of unwinding. Unwinding past
+# a half-applied invariant is worse than stopping: there is no safe state to recover to.
+panic = "abort"
+strip = "symbols"
+# Release builds disable overflow checks by default. For cryptographic and financial
+# arithmetic that default is unacceptable, and the few percent it costs is worth
+# removing an entire class of silent wraparound bugs.
+overflow-checks = true
+debug = false
+incremental = false
+
+[profile.release.package."*"]
+opt-level = 3

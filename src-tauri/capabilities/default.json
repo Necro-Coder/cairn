@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The permissions the main window has. Empty on purpose: the two commands this application exposes are its own, and a custom command is reachable without a capability entry. Every permission listed here would be a core API that injected script could call, so the list only grows when a feature genuinely needs one and the entry says which feature.",
+  "windows": ["main"],
+  "permissions": []
+}
