@@ -13,5 +13,17 @@ publish.workspace = true
 thiserror.workspace = true
 zeroize = { version = "1.9", features = ["alloc"] }
 
+[target.'cfg(windows)'.dependencies]
+# The raw system calls this crate exists to wrap. Chosen over a safe wrapper crate because
+# the wrapping is three calls and the audit of this crate has to read them anyway.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
