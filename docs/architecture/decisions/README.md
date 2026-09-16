@@ -8,5 +8,7 @@ Each one says what the situation was, what was chosen, what was rejected and why
 | --- | --- | --- |
 | [0001](0001-workspace-and-crate-boundaries.md) | A workspace of five crates, all created before they are needed | accepted |
 | [0002](0002-svelte-and-no-runtime-dependencies.md) | Svelte, hand written CSS, and no runtime dependencies | accepted |
+| [0003](0003-wrapped-data-key.md) | A wrapped data key, with every other key derived from it | accepted |
+| [0004](0004-no-recovery-and-one-unlock-error.md) | No recovery path, and one indistinguishable unlock failure | accepted |
 
 A record is never edited to say something different once it is accepted. If a decision is replaced, the new one gets its own number and the old one is marked as superseded, so that the reasoning behind a change is still readable afterwards.

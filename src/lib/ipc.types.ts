@@ -80,4 +80,126 @@ export interface IpcSurface {
 
   /** Reads a snapshot of the application state for the diagnostics screen. */
   readonly fetchDiagnostics: () => Promise<Diagnostics>;
+
+  /** Reads everything the interface needs to decide what to draw about the vault. */
+  readonly fetchVaultStatus: () => Promise<VaultStatus>;
+
+  /** Creates the vault and opens it. Rejects with a {@link VaultError}. */
+  readonly createVault: (password: string, params: KdfParams) => Promise<VaultStatus>;
+
+  /** Opens the vault. Rejects with a {@link VaultError}. */
+  readonly unlockVault: (password: string) => Promise<VaultStatus>;
+
+  /** Closes the vault, clearing every key in the core. */
+  readonly lockVault: () => Promise<VaultStatus>;
+
+  /** Changes the master password, keeping every stored byte as it is. */
+  readonly changeMasterPassword: (current: string, next: string) => Promise<VaultStatus>;
+
+  /** Changes the derivation parameters, keeping the password and every stored byte. */
+  readonly changeKdfParams: (password: string, params: KdfParams) => Promise<VaultStatus>;
+
+  /** Reports keyboard or mouse activity inside the window. */
+  readonly sendHeartbeat: () => Promise<VaultStatus>;
+
+  /** Changes how long the vault may sit idle before it closes itself. */
+  readonly setInactivity: (choice: InactivityChoice) => Promise<VaultStatus>;
+
+  /**
+   * Estimates how strong a password looks.
+   *
+   * Asked of the core rather than computed here, because the alternative puts several
+   * megabytes of word list into the bundle and evaluates the master password in JavaScript.
+   */
+  readonly estimatePasswordStrength: (password: string) => Promise<PasswordStrength>;
+
+  /**
+   * Listens for the vault closing, and hands back the way to stop listening.
+   *
+   * The only event that crosses the boundary. Everything else the interface wants it asks
+   * for, because an event carrying state is an event that can be missed.
+   */
+  readonly onVaultLocked: (handler: (reason: LockReason) => void) => Promise<() => void>;
+}
+
+/**
+ * What reading the vault header at startup found.
+ *
+ * `unreadable` is the one that changes what the interface may offer. A header that is there
+ * and cannot be parsed is still a vault, so the screen that appears has to be the one about
+ * restoring a copy and never the one about creating a vault.
+ */
+export type VaultCondition = 'noVaultYet' | 'readable' | 'restoredFromBackup' | 'unreadable';
+
+/**
+ * How long the vault may sit idle before it closes itself.
+ *
+ * A closed set on both sides of the boundary, so a period nobody designed for cannot be sent
+ * across and become the lock policy.
+ */
+export type InactivityChoice = 'one' | 'five' | 'fifteen' | 'thirty' | 'never';
+
+/**
+ * Why the vault closed.
+ *
+ * Carried by the only event the core sends, so that the screen which appears can say what
+ * happened instead of arriving for no visible reason.
+ */
+export type LockReason = 'inactivity' | 'focusLost' | 'minimised' | 'requested';
+
+/** How strong a password looks. An estimate, never a measurement, and it never blocks. */
+export type PasswordStrength = 'weak' | 'fair' | 'good' | 'strong';
+
+/** The Argon2id parameters currently in force. None of it is secret. */
+export interface KdfReport {
+  readonly memoryKib: number;
+  readonly passes: number;
+  readonly lanes: number;
+  readonly writtenAtUs: number;
+}
+
+/** Everything the interface needs to decide what to draw. */
+export interface VaultStatus {
+  readonly exists: boolean;
+  readonly unlocked: boolean;
+  readonly condition: VaultCondition;
+  readonly kdf: KdfReport | null;
+  readonly failedAttempts: number;
+  readonly lockedOutForS: number;
+  readonly inactivity: InactivityChoice;
+  /** Seconds left before the vault closes itself, or `null` when it is closed or never does. */
+  readonly idleRemainingS: number | null;
+}
+
+/**
+ * Why an operation on the vault did not happen.
+ *
+ * Every reason the vault failed to open is `notOpened`, on purpose: telling a wrong password
+ * apart from an edited header would say which half of the problem to work on. The tag is what
+ * the interface matches on, and the numbers beside it are what it puts in a sentence.
+ */
+export type VaultError =
+  | { readonly kind: 'notOpened' }
+  | { readonly kind: 'lockedOut'; readonly remainingS: number }
+  | { readonly kind: 'noVault' }
+  | { readonly kind: 'alreadyExists' }
+  | { readonly kind: 'locked' }
+  | { readonly kind: 'passwordTooShort'; readonly chars: number; readonly min: number }
+  | { readonly kind: 'passwordTooLong'; readonly bytes: number; readonly max: number }
+  | { readonly kind: 'passwordRejected' }
+  | {
+      readonly kind: 'paramOutOfRange';
+      readonly field: string;
+      readonly value: number;
+      readonly min: number;
+      readonly max: number;
+    }
+  | { readonly kind: 'derivationRefused' }
+  | { readonly kind: 'storage' };
+
+/** The Argon2id parameters an operation is asked to use. */
+export interface KdfParams {
+  readonly memoryKib: number;
+  readonly passes: number;
+  readonly lanes: number;
 }

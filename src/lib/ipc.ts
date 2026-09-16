@@ -21,11 +21,27 @@
  * boundary rather than to either side of it. TypeScript types do not exist at runtime, so
  * they are a convenience for the reader and the compiler, never a guarantee. The value is
  * trusted because it comes from our own core, not because it is annotated.
+ *
+ * Nothing that crosses this boundary is a key or anything decrypted with one. Passwords go
+ * one way only, and what comes back is booleans, counts and enumerations.
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
-import type { AppInfo, Diagnostics, IpcSurface } from './ipc.types';
+import type {
+  AppInfo,
+  Diagnostics,
+  InactivityChoice,
+  IpcSurface,
+  KdfParams,
+  LockReason,
+  PasswordStrength,
+  VaultStatus,
+} from './ipc.types';
+
+/** The name the core sends the one event under. It must match `window.rs`. */
+const LOCKED_EVENT = 'session://locked';
 
 /** Reads the name, version and build profile of the running application. */
 async function fetchAppInfo(): Promise<AppInfo> {
@@ -35,6 +51,68 @@ async function fetchAppInfo(): Promise<AppInfo> {
 /** Reads a snapshot of the application state for the diagnostics screen. */
 async function fetchDiagnostics(): Promise<Diagnostics> {
   return invoke<Diagnostics>('diagnostics');
+}
+
+/** Reads everything the interface needs to decide what to draw about the vault. */
+async function fetchVaultStatus(): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_status');
+}
+
+/** Creates the vault and opens it. */
+async function createVault(password: string, params: KdfParams): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_create', {
+    password,
+    memoryKib: params.memoryKib,
+    passes: params.passes,
+    lanes: params.lanes,
+  });
+}
+
+/** Opens the vault. */
+async function unlockVault(password: string): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_unlock', { password });
+}
+
+/** Closes the vault, clearing every key in the core. */
+async function lockVault(): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_lock');
+}
+
+/** Changes the master password, keeping every stored byte as it is. */
+async function changeMasterPassword(current: string, next: string): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_change_password', { current, new: next });
+}
+
+/** Changes the derivation parameters, keeping the password and every stored byte. */
+async function changeKdfParams(password: string, params: KdfParams): Promise<VaultStatus> {
+  return invoke<VaultStatus>('vault_change_kdf_params', {
+    password,
+    memoryKib: params.memoryKib,
+    passes: params.passes,
+    lanes: params.lanes,
+  });
+}
+
+/** Reports keyboard or mouse activity inside the window. */
+async function sendHeartbeat(): Promise<VaultStatus> {
+  return invoke<VaultStatus>('session_heartbeat');
+}
+
+/** Changes how long the vault may sit idle before it closes itself. */
+async function setInactivity(choice: InactivityChoice): Promise<VaultStatus> {
+  return invoke<VaultStatus>('session_set_inactivity', { inactivity: choice });
+}
+
+/** Estimates how strong a password looks. */
+async function estimatePasswordStrength(password: string): Promise<PasswordStrength> {
+  return invoke<PasswordStrength>('password_strength', { password });
+}
+
+/** Listens for the vault closing, and hands back the way to stop listening. */
+async function onVaultLocked(handler: (reason: LockReason) => void): Promise<() => void> {
+  return listen<{ reason: LockReason }>(LOCKED_EVENT, (event) => {
+    handler(event.payload.reason);
+  });
 }
 
 /**
@@ -49,4 +127,14 @@ export const ipc: IpcSurface = {
   previewNotice: null,
   fetchAppInfo,
   fetchDiagnostics,
+  fetchVaultStatus,
+  createVault,
+  unlockVault,
+  lockVault,
+  changeMasterPassword,
+  changeKdfParams,
+  sendHeartbeat,
+  setInactivity,
+  estimatePasswordStrength,
+  onVaultLocked,
 };

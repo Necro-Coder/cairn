@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod password;
+pub mod session;
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

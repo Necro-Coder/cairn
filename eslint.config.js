@@ -54,7 +54,9 @@ export default tseslint.config(
   },
 
   {
-    files: ['**/*.svelte'],
+    // A `.svelte.ts` file is a module that may use runes, so it needs the same parser as a
+    // component. Without this the first rune in one is reported as a syntax error.
+    files: ['**/*.svelte', '**/*.svelte.ts'],
     languageOptions: {
       parser: svelteParser,
       parserOptions: {

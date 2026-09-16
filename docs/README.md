@@ -10,18 +10,18 @@ Three ways in, depending on what you want.
 
 ## Using Cairn
 
-| Page                    | What it covers                                                        |
-| ----------------------- | --------------------------------------------------------------------- |
-| Installation on Windows | _planned_                                                             |
-| Installation on iPhone  | _planned_                                                             |
-| Getting started         | _planned_ — creating your master password and first records           |
-| Security model          | _planned_ — what Cairn protects, and what it does not, in plain words |
-| Backup and restore      | _planned_ — how encrypted exports work and why you need them          |
-| Syncing your devices    | _planned_                                                             |
-| Habits                  | _planned_                                                             |
-| Vault                   | _planned_                                                             |
-| Finances                | _planned_                                                             |
-| Troubleshooting         | _planned_                                                             |
+| Page | What it covers |
+| --- | --- |
+| Installation on Windows | _planned_ |
+| Installation on iPhone | _planned_ |
+| Getting started | _planned_ — creating your master password and first records |
+| Security model | _planned_ — what Cairn protects, and what it does not, in plain words. Meanwhile the [threat model](architecture/threat-model.md) says the same things for a technical reader |
+| Backup and restore | _planned_ — how encrypted exports work and why you need them |
+| Syncing your devices | _planned_ |
+| Habits | _planned_ |
+| Vault | _planned_ |
+| Finances | _planned_ |
+| Troubleshooting | _planned_ |
 
 The user interface is in Spanish. This documentation is in English. See the note at the end of the [project README](../README.md).
 
@@ -30,8 +30,8 @@ The user interface is in Spanish. This documentation is in English. See the note
 | Page | What it covers |
 | --- | --- |
 | Overview | _planned_ — the whole system in one page, read this first |
-| Threat model | _planned_ — who the attacker is and what each defense answers |
-| Cryptography | _planned_ — key hierarchy, AEAD, nonces, associated data |
+| [Threat model](architecture/threat-model.md) | Who the attacker is, what each defence answers, and what it does not. |
+| [Cryptography](architecture/cryptography.md) | The key hierarchy, the vault header byte by byte, nonces and associated data. |
 | Data model | _planned_ — the schema and why every column exists |
 | Storage | _planned_ — the two layers of encryption at rest |
 | Backup format | _planned_ — the export file, byte by byte |
