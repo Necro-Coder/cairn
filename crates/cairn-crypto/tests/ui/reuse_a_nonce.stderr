@@ -1,0 +1,10 @@
+error[E0382]: use of moved value: `nonce`
+  --> tests/ui/reuse_a_nonce.rs:11:30
+   |
+ 8 |     let nonce = FreshNonce::generate().unwrap();
+   |         ----- move occurs because `nonce` has type `FreshNonce`, which does not implement the `Copy` trait
+ 9 |
+10 |     let _first = seal(&key, nonce, &aad, b"primero").unwrap();
+   |                             ----- value moved here
+11 |     let _second = seal(&key, nonce, &aad, b"segundo").unwrap();
+   |                              ^^^^^ value used here after move
