@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use cairn_crypto::UnlockedVault;
 use cairn_db::codec::FieldCodec;
+use cairn_db::search::{Match, TitleIndex};
 use cairn_db::{
     DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
 };
@@ -31,6 +32,12 @@ pub struct Storage {
     /// or not they are in the same transaction. Taken for the length of one increment and
     /// released, so it is never held while a statement runs.
     clock: Mutex<Clock>,
+    /// The titles of the vault, opened, for as long as this value exists.
+    ///
+    /// The one piece of plaintext this application keeps outside a single call, and it is here
+    /// rather than beside the window for exactly that reason: this is what the lock destroys.
+    /// Behind a lock of its own so a search does not wait on a write.
+    titles: Mutex<TitleIndex>,
 }
 
 impl Storage {
@@ -67,12 +74,71 @@ impl Storage {
         // out a reading a row already carries.
         let resumed = database.with(|connection| clock::resume(connection, device))?;
 
+        // The titles are the only thing the vault cannot search in SQL, so they are opened here,
+        // once, while the key is already in hand. A failure to open one is a failure to unlock:
+        // an application that opened with a search that silently finds nothing is worse than one
+        // that says the file is damaged.
+        let mut titles = TitleIndex::empty();
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        database.with(|connection| titles.build(connection, &codec))?;
+
         Ok(Self {
             database,
             device,
             schema_version: applied.to,
             clock: Mutex::new(resumed),
+            titles: Mutex::new(titles),
         })
+    }
+
+    /// The entries whose title contains what was typed.
+    ///
+    /// Reads the index rather than the file. Nothing is decrypted here, because everything this
+    /// answers with was decrypted once, on the unlock.
+    #[must_use]
+    pub fn search_titles(&self, needle: &str) -> Vec<Match> {
+        self.with_titles(|index| index.matches(needle))
+    }
+
+    /// Opens every live title again, replacing what the index held.
+    ///
+    /// Called after a write that changes a title. Rebuilding the whole list rather than patching
+    /// one row is deliberate: a patch that misses a case leaves a title somebody can still find
+    /// after deleting it, and the whole list is a few hundred kilobytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Sealed`] if a title does not open and [`DbError::Sqlite`] if the read
+    /// fails. The index is left empty rather than stale.
+    pub fn rebuild_titles(&self, vault: &UnlockedVault) -> Result<(), DbError> {
+        let codec = self.codec(vault);
+        self.with_titles(|index| {
+            self.database
+                .with(|connection| index.build(connection, &codec))
+        })
+    }
+
+    /// How many titles the index holds, and whether it holds all of them.
+    #[must_use]
+    pub fn title_index_size(&self) -> (usize, bool) {
+        self.with_titles(|index| (index.len(), index.is_complete()))
+    }
+
+    /// Takes the index, recovering from a poisoned lock the way the clock does.
+    ///
+    /// A panic elsewhere must not turn the search into a permanent failure, and there is no
+    /// invariant to protect: the worst a half written index can be is out of date, and the next
+    /// rebuild replaces it.
+    fn with_titles<T>(&self, work: impl FnOnce(&mut TitleIndex) -> T) -> T {
+        let mut index = match self.titles.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.titles.clear_poison();
+                poisoned.into_inner()
+            }
+        };
+
+        work(&mut index)
     }
 
     /// The next clock reading, for one write.
@@ -134,6 +200,11 @@ impl Storage {
     ///
     /// Returns [`DbError::Sqlite`] if SQLite refuses because something still holds a statement.
     pub fn close(self) -> Result<(), DbError> {
+        // Before the file, and whether or not the file agrees to close. The index is plaintext,
+        // and a database that refuses to let go is no reason to leave every title of the vault
+        // readable in this process.
+        self.with_titles(TitleIndex::clear);
+
         self.database.close()
     }
 }

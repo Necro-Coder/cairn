@@ -16,3 +16,4 @@
 pub mod habits;
 pub mod settings;
 pub mod sync_state;
+pub mod vault;
