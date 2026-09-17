@@ -12,6 +12,13 @@
 //! not change, so every subkey below it does not change, so not one record and not one byte
 //! of the database file is rewritten. That is the property the whole design is arranged
 //! around, and it is demonstrated rather than asserted by the test beside this file.
+//!
+//! One key is deliberately absent from [`UnlockedVault`]. There is no way to ask an open
+//! vault for the key a backup is sealed with, because a backup that could only be opened by
+//! a machine holding this vault's data key would be unreadable on exactly the machines a
+//! backup is for. That key is derived in [`crate::export_key`] from a key encryption key of
+//! the backup file's own, over the salt and parameters that file carries. See decision
+//! record 0011.
 
 use crate::aead::{Sealed, open, seal};
 use crate::error::CryptoError;
@@ -58,12 +65,6 @@ impl UnlockedVault {
     #[must_use]
     pub fn database_key(&self) -> DatabaseKey {
         hierarchy::database_key(&self.data_key)
-    }
-
-    /// The key an exported backup is encrypted with.
-    #[must_use]
-    pub fn export_key(&self) -> DataKey {
-        hierarchy::export_key(&self.data_key)
     }
 
     /// The pre-shared key for the synchronisation handshake.

@@ -21,8 +21,9 @@
 )]
 
 use cairn_crypto::{
-    Aad, Argon2Params, FreshNonce, MIN_MEMORY_KIB, MIN_PASSES, Sealed, UnlockedVault, VaultHeader,
-    change_kdf_params, change_password, create, database_key, open, seal, unlock,
+    Aad, Argon2Params, FreshNonce, Kek, MIN_MEMORY_KIB, MIN_PASSES, Sealed, UnlockedVault,
+    VaultHeader, change_kdf_params, change_password, create, database_key, export_key, open, seal,
+    unlock,
 };
 use subtle::ConstantTimeEq as _;
 
@@ -323,7 +324,12 @@ fn every_subkey_differs_from_every_other_and_from_the_data_key() {
     let (_, vault) = create(PASSWORD, cheap(), CREATED_AT_US).unwrap();
 
     let database = vault.database_key();
-    let export = vault.export_key();
+    // Not from the vault. There is no way to ask an open vault for the key a backup is
+    // sealed with, and that absence is the point: a backup whose key hung off this vault's
+    // data key could only be opened by a machine that could already open this vault. What a
+    // backup is sealed with comes from a key encryption key of its own file, and the one
+    // built here stands in for it.
+    let export = export_key(&Kek::from_bytes([0x5a; 32]));
     let sync = vault.sync_key();
 
     assert_ne!(

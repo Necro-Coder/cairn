@@ -58,6 +58,26 @@ impl FreshNonce {
         Ok(Self(bytes))
     }
 
+    /// Wraps a nonce that a counter produced rather than the operating system.
+    ///
+    /// Private to this crate and reachable from exactly one caller,
+    /// [`crate::stream::ChunkNonces`], which is what actually holds the guarantee: a random
+    /// base of sixteen bytes read from the operating system, a counter that only goes
+    /// forward, no way to clone it and no way to rewind it. This function exists because
+    /// that guarantee lives in a type rather than in a call, and a type cannot hand itself
+    /// to [`crate::seal`] without one.
+    ///
+    /// It is not public and must not become public. A public constructor from bytes is a
+    /// way to produce two nonces with the same value, which is the one failure this module
+    /// exists to prevent, and the `tests/ui` case that asserts the compiler refuses it is
+    /// there to keep somebody from adding one as a convenience.
+    pub(crate) fn from_counter(bytes: [u8; NONCE_LEN]) -> Self {
+        #[cfg(test)]
+        harness::record(&bytes);
+
+        Self(bytes)
+    }
+
     /// The bytes, consumed.
     ///
     /// Private to the crate and taking `self` by value, so that reading the bytes is the

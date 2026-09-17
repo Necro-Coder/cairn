@@ -22,6 +22,7 @@
 
 mod aad;
 mod aead;
+pub mod backup;
 mod digest;
 mod error;
 mod header;
@@ -30,10 +31,16 @@ mod kdf;
 mod keys;
 mod nonce;
 mod random;
+pub mod stream;
 mod vault;
 
 pub use aad::{Aad, ID_LEN, MAX_NAME_LEN};
 pub use aead::{MAX_PLAINTEXT_LEN, Sealed, TAG_LEN, open, seal};
+pub use backup::chunk::{CHUNK_AAD_LEN, ChunkOpener, ChunkSealer};
+pub use backup::header::{
+    BACKUP_FORMAT_VERSION, BACKUP_HEADER_LEN, BACKUP_MAGIC, BackupHeader, CHUNK_LEN, Compression,
+    MAX_CHUNK_LEN, MIN_CHUNK_LEN, OLDEST_READABLE_FORMAT_VERSION,
+};
 pub use digest::{DIGEST_LEN, digest};
 pub use error::CryptoError;
 pub use header::{
@@ -47,6 +54,7 @@ pub use kdf::{
 pub use keys::{DataKey, DatabaseKey, KEY_LEN, Kek, SyncKey};
 pub use nonce::{FreshNonce, NONCE_LEN};
 pub use random::fill as fill_random;
+pub use stream::{ChunkNonces, MAX_CHUNKS, NONCE_BASE_LEN, chunk_nonce};
 pub use vault::{UnlockedVault, change_kdf_params, change_password, create, unlock};
 
 /// The version of this crate, taken from its manifest at compile time.

@@ -127,6 +127,55 @@ pub enum CryptoError {
     #[error("the vault header trailer is corrupt")]
     HeaderTrailerChecksum,
 
+    /// The file does not begin the way a backup of ours begins.
+    ///
+    /// Covers a wrong length and a wrong magic together, because they answer one question
+    /// and a caller told which of the two it was learns nothing it can act on. It is the
+    /// first of the four things an import is ever allowed to say.
+    #[error("this is not a Cairn backup")]
+    NotABackup,
+
+    /// The backup announced a format version this build cannot read.
+    ///
+    /// Older than the conversion path covers, or newer than this build knows about.
+    /// Refused rather than read hopefully: guessing at a layout somebody else defined is
+    /// how a restore corrupts data with the best of intentions.
+    #[error("this backup is version {found}, which this build cannot read")]
+    BackupVersion {
+        /// The version the file claimed.
+        found: u16,
+    },
+
+    /// The backup was compressed with something this build does not carry.
+    #[error("this backup uses compression {found}, which this build does not carry")]
+    BackupCompression {
+        /// The code the file claimed.
+        found: u16,
+    },
+
+    /// The reserved field of the backup header was not zero.
+    ///
+    /// Refused so that a later version of the format can put something there and know for
+    /// certain that no file of this version ever meant anything by those bytes.
+    #[error("the reserved field of the backup header is not zero")]
+    BackupReserved,
+
+    /// The file ended somewhere a file cannot end.
+    ///
+    /// Structural, decided before any key is involved: a body with no room for a tag is not
+    /// a body under any key at all, so saying so is not an oracle. Anything that depends on
+    /// a key arrives as [`CryptoError::Open`] instead.
+    #[error("the backup is damaged or incomplete")]
+    Damaged,
+
+    /// One nonce base cannot cover another chunk.
+    ///
+    /// Refusing rather than wrapping. A wrapped counter reuses the nonce of the first
+    /// chunk, and losing an export is a far better outcome than writing one that leaks the
+    /// exclusive or of two chunks and can have its tags forged.
+    #[error("this backup has more chunks than one nonce base may cover")]
+    ChunkCountExhausted,
+
     /// A stored blob was too short to be a nonce followed by a tag.
     ///
     /// This is a structural check that runs before any key is involved, which is why it is
