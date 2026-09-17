@@ -47,6 +47,7 @@ Two things this section will always do: explain the reasoning rather than restat
 | Page | What it covers |
 | --- | --- |
 | [Getting started](development/getting-started.md) | From a fresh clone to a running app, and what to do when something does not work. |
+| [Design system](design/design-system.md) | Every colour, size, space and rule the interface is built from. Read before changing anything in `src/`. |
 | [Project layout](development/project-layout.md) | What lives where, and what is allowed to depend on what. |
 | [Quality gates](development/quality-gates.md) | Every check that runs, what each one catches, and the measured performance budgets. |
 | [Preview mode](development/preview-mode.md) | Opening the interface in a browser with invented data, and why it validates nothing about the core. |
