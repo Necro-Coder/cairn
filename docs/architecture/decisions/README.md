@@ -11,5 +11,6 @@ Each one says what the situation was, what was chosen, what was rejected and why
 | [0003](0003-wrapped-data-key.md) | A wrapped data key, with every other key derived from it | accepted |
 | [0004](0004-no-recovery-and-one-unlock-error.md) | No recovery path, and one indistinguishable unlock failure | accepted |
 | [0005](0005-argon2-parameters-and-platform-storage.md) | Argon2id parameters in the header, and the shape of platform storage | accepted |
+| [0006](0006-tabbed-navigation-and-bundled-type.md) | Tabbed navigation, and typefaces bundled as assets | accepted |
 
 A record is never edited to say something different once it is accepted. If a decision is replaced, the new one gets its own number and the old one is marked as superseded, so that the reasoning behind a change is still readable afterwards.

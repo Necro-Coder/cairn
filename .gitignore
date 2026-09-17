@@ -56,6 +56,11 @@ dist-ssr/
 # published anywhere.
 dist-preview/
 *.tsbuildinfo
+
+# What the accessibility gate leaves behind: a report, and a trace for anything that
+# failed. Both are rebuilt by every run and neither belongs in the history.
+test-results/
+playwright-report/
 npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*

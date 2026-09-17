@@ -13,3 +13,7 @@ Cargo.lock
 
 # The licence text is reproduced verbatim and must not be reflowed.
 LICENSE
+
+# The bundled typefaces and the licence text that has to ship beside them. One is
+# binary, and the other is reproduced verbatim and must not be reflowed.
+src/lib/fonts/

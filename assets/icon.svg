@@ -5,22 +5,23 @@
     A cairn: stones stacked by hand to mark a place, stable only because each one is
     placed deliberately on the one below it.
 
-    Drawn for the smallest size it has to survive. At sixteen pixels the taskbar shows
-    roughly three bands of light on dark, so the silhouette is four stones with clear gaps
-    and nothing else. No thin strokes, no gradients, no text, no detail that turns to mud
-    when the icon is a few pixels tall.
+    The same three stones as the brand glyph in `src/lib/icons/BrandMark.svelte`, scaled
+    up. Three rather than four, and the top one a circle rather than a bar, because that
+    is the silhouette that still reads as a stack at sixteen pixels in a taskbar.
+
+    Flat vermilion on ink, hard corners, no gradient and no thin stroke: the same rules as
+    everything else in `docs/design/design-system.md`. The square is deliberate — an icon
+    with a large corner radius is the one part of this system that would look soft.
   -->
 
-  <rect width="512" height="512" rx="112" fill="#14161A" />
+  <rect width="512" height="512" fill="#101011" />
 
-  <g fill="#E8EAED">
+  <g fill="#ff5a1f">
     <!-- Base: the widest and heaviest stone, seated low. -->
-    <rect x="104" y="368" width="304" height="72" rx="36" />
-    <!-- Third stone, offset slightly to break the symmetry, as a real stack would be. -->
-    <rect x="132" y="272" width="240" height="70" rx="35" />
-    <!-- Second stone. -->
-    <rect x="158" y="180" width="188" height="66" rx="33" />
-    <!-- Capstone, in the accent colour: the one that makes the pile a marker. -->
-    <rect x="196" y="96" width="120" height="58" rx="29" fill="#7AA2F7" />
+    <rect x="96" y="352" width="320" height="80" />
+    <!-- The middle stone, narrower, with a clear gap under it. -->
+    <rect x="136" y="232" width="240" height="80" />
+    <!-- The capstone: round, which is what makes the pile read as a marker. -->
+    <circle cx="256" cy="144" r="68" />
   </g>
 </svg>

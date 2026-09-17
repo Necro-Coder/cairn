@@ -21,13 +21,16 @@ Suppressing one of these is allowed and is meant to be uncomfortable. It takes a
 
 ## Frontend
 
-| Command                | What it catches                                     |
-| ---------------------- | --------------------------------------------------- |
-| `npm run format:check` | Formatting drift.                                   |
-| `npm run lint`         | Lints, including the rules that defend the WebView. |
-| `npm run check`        | Types, using the Svelte compiler.                   |
-| `npm run knip`         | Files, exports and dependencies nothing uses.       |
-| `npm audit --omit=dev` | Known vulnerabilities in anything that would ship.  |
+| Command | What it catches |
+| --- | --- |
+| `npm run format:check` | Formatting drift. |
+| `npm run lint` | Lints, including the rules that defend the WebView. |
+| `npm run tokens` | Colours, lengths and durations written by hand instead of taken from a token. |
+| `npm run check` | Types, using the Svelte compiler. |
+| `npm run test:unit` | The frontend unit tests. |
+| `npm run test:a11y` | Accessibility violations, with `axe`, on every preview screen in both themes. |
+| `npm run knip` | Files, exports and dependencies nothing uses. |
+| `npm audit --omit=dev` | Known vulnerabilities in anything that would ship. |
 
 Four lint rules exist for the threat model rather than for tidiness, and a change that trips one of them is not a style disagreement.
 
@@ -46,6 +49,36 @@ This is a division of labour, not a hole.
 The lint parser compiles a component into virtual TypeScript in order to type it, and that transformation does not carry the narrowing a template performs. Code inside `{#if status.kind === 'ready'}` reads as `any` to the type-aware rules, so they report a union that is in fact fully discriminated. Leaving them on would produce either a wall of false positives or a scattering of suppressions, and a suppression people learn to add without reading is worse than no rule at all.
 
 Types inside components are checked by `npm run check`, which runs the Svelte compiler itself and understands the narrowing. That gate is not optional, and it is the one that catches a real type error in a component. The rules that defend the WebView are syntactic and apply everywhere regardless.
+
+### The design token gate
+
+`scripts/check-tokens.mjs` reads every `.css` and `.svelte` file under `src/` and fails on a colour literal, a `px` or `rem` length, or a duration in `ms` or `s`. Every one of those has a token in `src/lib/styles/tokens.css`, and [the design system](../design/design-system.md) is where each value comes from and why.
+
+It rejects a length even when the number happens to be on the scale. `padding: 16px` is exactly `--space-4` today; a component that writes the number has nonetheless stopped reading the tokens, and the next number it writes will not be on the scale. What it does not police is `em`, `ch`, `%`, `fr` and the viewport units, because each of those says "the same as something this element already has" rather than being a value typed in from nowhere.
+
+Two things are exempt. `tokens.css` itself, which is the whole point of there being one file. And a media query prelude, because a media query cannot read a custom property — there are exactly two breakpoints in this application, 880px and 420px, and both are named in the design system.
+
+Anything else needs a comment on the line above saying `tokens-exempt:` followed by a reason. That list started empty and is meant to stay short: erosion happens one reasonable exception at a time, and a gate is what makes each one argue for itself in the diff. A `tokens-exempt:` with no reason after it is not an exemption, and there is a test for that.
+
+It has no dependencies. The alternative was stylelint with `postcss-html` and the Svelte plugin, which is three packages and their transitive graph to run three regular expressions over a directory. Its own behaviour is covered by `scripts/check-tokens.test.mjs`, and it was verified end to end by adding a colour, a length and a duration to a real file and watching the build go red.
+
+### The accessibility gate
+
+`npm run test:a11y` starts the preview build, drives each screen the way a person reaches it, and runs `axe-core` over it: WCAG 2.2 at level AA plus the best practice set. Every screen is checked twice, once in each theme, because contrast is a property of the pair and a palette that passes on paper says nothing about ink.
+
+It uses a real browser, and that is the whole reason Playwright is a dependency. Half of the AA rules are about computed colour and computed layout — contrast, overlap, target size, focus visibility — and `jsdom` has neither, so it evaluates none of them and reports a clean run. A gate that passes without having looked is worse than no gate, because it is believed.
+
+The browser is not in the repository and is not installed by `npm ci`. Run `npx playwright install chromium` once. In the pipeline it is cached against the version in the lockfile, so a run normally restores it rather than downloading it.
+
+Both Playwright and `axe-core` are development dependencies. The gate that asserts `package.json` declares no runtime dependencies is unaffected and still reads zero.
+
+It was verified by adding an `<input>` with no `<label>` to a screen and confirming the gate fails, and it found two real defects on the day it was switched on: the diagnostics screen had no level-one heading, and it skipped from that heading straight to level three.
+
+### The unit tests
+
+`npm run test:unit` is `node --test` over `scripts/**/*.test.mjs` and `src/**/*.test.ts`. There is no test framework, because Node 24 runs TypeScript directly and carries a runner, and a framework would be several packages in the graph for something already installed.
+
+What it covers is the logic that can be tested without a browser: the token gate itself, and the state machine behind the tab strip. Anything that needs a rendered page belongs in the accessibility gate or in a manual test, and anything in the core belongs in `cargo test`.
 
 ## Secrets and personal data
 

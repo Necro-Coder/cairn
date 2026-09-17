@@ -108,7 +108,7 @@
 
   .result {
     width: 100%;
-    min-height: 6.5rem;
+    min-height: var(--card-min-height);
     padding: var(--space-4);
     border: var(--border-width) solid var(--colour-border);
     border-radius: var(--radius-lg);
@@ -131,7 +131,7 @@
 
   dl div {
     display: grid;
-    grid-template-columns: 9rem 1fr;
+    grid-template-columns: var(--definition-label-width) 1fr;
     gap: var(--space-3);
     align-items: baseline;
   }

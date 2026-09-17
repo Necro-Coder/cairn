@@ -136,7 +136,12 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Private network addresses.
 # ---------------------------------------------------------------------------
-readonly IP_PATTERN='(^|[^0-9.])(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)[0-9]'
+# A whole dotted quad, not a prefix. The earlier version matched `10.` followed by any
+# digit, which is a contrast ratio of 10.3:1, an SVG coordinate of 10.5, and a version
+# number. It refused a commit on all three. A guard that cries wolf is a guard people
+# learn to bypass, and bypassing this one is exactly the habit it exists to prevent.
+readonly IP_OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+readonly IP_PATTERN="(^|[^0-9.])(10\.${IP_OCTET}\.${IP_OCTET}\.${IP_OCTET}|192\.168\.${IP_OCTET}\.${IP_OCTET}|172\.(1[6-9]|2[0-9]|3[01])\.${IP_OCTET}\.${IP_OCTET}|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.${IP_OCTET}\.${IP_OCTET})([^0-9.]|$)"
 
 if git diff --cached -U0 -- . ':!*.lock' ':!.githooks/pre-commit' \
     | grep -E '^\+' \

@@ -149,7 +149,7 @@
 
 <div class="panel">
   <section>
-    <h3>Derivación de la clave</h3>
+    <h2>Derivación de la clave</h2>
     {#if kdf === null}
       <p class="muted">Este equipo todavía no tiene ninguna caja fuerte.</p>
     {:else}
@@ -171,7 +171,7 @@
   </section>
 
   <section>
-    <h3>Cerrar sola por inactividad</h3>
+    <h2>Cerrar sola por inactividad</h2>
     <p class="muted">
       Actividad significa teclado o ratón dentro de esta ventana. Lo que hagas en otro programa no
       cuenta.
@@ -202,7 +202,7 @@
 
   {#if status.exists}
     <section>
-      <h3>Cambiar la contraseña maestra</h3>
+      <h2>Cambiar la contraseña maestra</h2>
       {#if !changingPassword}
         <button type="button" class="reveal" onclick={() => (changingPassword = true)}>
           Cambiar la contraseña maestra
@@ -270,7 +270,7 @@
     </section>
 
     <section>
-      <h3>Cambiar los parámetros</h3>
+      <h2>Cambiar los parámetros</h2>
       <p class="muted">
         Subirlos hace más cara cada prueba de quien intente adivinar la contraseña, y también más
         lenta cada apertura legítima. No se vuelve a cifrar nada: solo cambia la cabecera.
@@ -357,8 +357,12 @@
     gap: var(--space-3);
   }
 
-  h3 {
+  /* Sized down from the display scale: the element carries the hierarchy, the size only
+   * says how loud it is, and a thirty pixel subheading inside a panel is shouting. */
+  h2 {
     margin: 0;
+    font-size: var(--text-lg);
+    letter-spacing: normal;
   }
 
   dl {
@@ -369,7 +373,7 @@
 
   dl div {
     display: grid;
-    grid-template-columns: 12rem 1fr;
+    grid-template-columns: var(--definition-label-width) 1fr;
     gap: var(--space-3);
     align-items: baseline;
   }
@@ -413,7 +417,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    max-width: 28rem;
+    max-width: var(--field-max-width);
   }
 
   label {

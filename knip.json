@@ -1,6 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src-isolation/index.js", "src/lib/preview/ipc.ts"],
-  "project": ["src/**/*.{ts,svelte}", "src-isolation/**/*.js"],
+  "entry": [
+    "src-isolation/index.js",
+    "src/lib/preview/ipc.ts",
+    "scripts/*.test.mjs",
+    "tests/a11y/*.spec.ts",
+    "src/lib/icons/*.svelte"
+  ],
+  "project": ["src/**/*.{ts,svelte}", "src-isolation/**/*.js", "scripts/**/*.mjs", "tests/**/*.ts"],
   "ignoreDependencies": ["@tauri-apps/cli"]
 }

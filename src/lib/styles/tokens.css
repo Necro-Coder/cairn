@@ -1,42 +1,116 @@
 /*
  * Design tokens.
  *
- * Every colour, space and size in the application comes from this file. There is no CSS
- * framework and no component library, because each npm package in the bundle is attack
- * surface in an application that holds a password vault, and custom properties do
- * everything a project this size needs.
+ * Every colour, space, size, radius and duration in the application comes from this file.
+ * There is no CSS framework and no component library, because each npm package in the
+ * bundle is attack surface in an application that holds a password vault, and custom
+ * properties do everything a project this size needs.
  *
- * Dark is the default because that is what the author runs. Light is opt-in through the
- * system setting, which is why the light values live inside a media query rather than the
- * other way round.
+ * `docs/design/design-system.md` is where these values come from and where the reasoning
+ * for each one is written. This file is the values; that document is the argument. A
+ * change here without a change there is a change nobody will be able to justify later.
+ *
+ * Paper is the base and ink is the variant, in that order and on purpose. The references
+ * this system is drawn from are cream paper with saturated figures on top; on near-black
+ * the same vermilion, blue and yellow go quiet. Written this way round, anybody copying
+ * the tokens starts where the references start.
+ *
+ * `scripts/check-tokens.mjs` fails the build on a colour, a length or a duration written
+ * by hand anywhere else under `src/`. This file is the one place exempt from it, which is
+ * the whole point of it being one file.
  */
 
 :root {
-  color-scheme: dark light;
+  /*
+   * Both, with light first, so the form controls the platform draws for us follow the
+   * same order the tokens below do.
+   */
+  color-scheme: light dark;
 
-  /* Surfaces, from furthest back to closest to the reader. */
-  --colour-surface: #14161a;
-  --colour-surface-raised: #1c1f25;
-  --colour-surface-sunken: #0f1013;
-  --colour-border: #2a2f38;
-  --colour-border-strong: #3c4350;
+  /* ---------------------------------------------------------------- paper surfaces */
+  /* Warm and slightly off, like the references, never pure white. */
+  --colour-surface: #f4f1ea;
+  --colour-surface-raised: #fbf9f5;
+  --colour-surface-sunken: #e9e5db;
+  --colour-border: #d9d3c6;
+  --colour-border-strong: #b3ab9b;
+  /* The thick line under a screen title. Ink, never the accent. */
+  --colour-rule: #14130f;
 
-  /* Text, in descending order of importance. */
-  --colour-text: #e8eaed;
-  --colour-text-muted: #a2a9b5;
-  --colour-text-faint: #6f7683;
+  /* ------------------------------------------------------------------- paper text */
+  --colour-text: #14130f;
+  --colour-text-muted: #55514a;
+  --colour-text-faint: #6b665d;
+  /*
+   * The same role as muted, on the two screens held to AAA: the lock screen and anything
+   * showing a password. Muted itself measures 7.0:1 on the base surface and 6.8:1 on the
+   * raised one, so it is a hair under the 7:1 floor exactly where it would matter.
+   */
+  --colour-text-muted-strong: #4a4740;
 
-  /* One accent, used for the single most important action on a screen. */
-  --colour-accent: #7aa2f7;
-  --colour-accent-strong: #9ab8ff;
-  --colour-accent-contrast: #0f1013;
+  /* ----------------------------------------------------------------- paper accent */
+  /*
+   * Two steps darker than the vermilion the references use, and the difference is not
+   * taste. At #dd3f0c this reads 3.9:1 as text on paper and gives near-white on top of it
+   * only 4.2:1; both fail AA. At #c4380a it is 4.8:1 and 5.1:1. It is still a vermilion.
+   */
+  --colour-accent: #c4380a;
+  --colour-accent-strong: #a82e06;
+  --colour-accent-contrast: #fbf9f5;
 
-  /* Status. Never the only signal: always paired with a word. */
-  --colour-positive: #7fca88;
-  --colour-warning: #e0b978;
-  --colour-negative: #f2777a;
+  /* ----------------------------------------------------------------- paper status */
+  /* Muted with a point of saturation. Never the only signal: always beside a word. */
+  --colour-positive: #2c7a44;
+  --colour-warning: #8a5d10;
+  --colour-negative: #b8272c;
+  --colour-info: #2450c8;
 
-  /* Spacing, on a four pixel grid. */
+  /* ---------------------------------------------------------------- module colour */
+  /*
+   * Which section of the application something came from. This family means something,
+   * which is what separates it from the mark palette below and why every value here is
+   * held to the same contrast floor as any other text colour.
+   *
+   * Three tokens each: the colour the module is written in, the tint it is filled with,
+   * and the colour its figure is drawn in. For three of the four they are the same hue.
+   * Finances is the exception and the reason the split exists: full-saturation yellow is
+   * unreadable as text on cream, so the word is dark ochre and only the shape is yellow.
+   */
+  --module-panel: #c4380a;
+  --module-panel-tint: #fdece4;
+  --module-panel-mark: #ff5a1f;
+
+  --module-habits: #1b4fd8;
+  --module-habits-tint: #e2e8fa;
+  --module-habits-mark: #1b4fd8;
+
+  --module-passwords: #14130f;
+  --module-passwords-tint: #e5e2db;
+  --module-passwords-mark: #14130f;
+
+  --module-finances: #8a5d10;
+  --module-finances-tint: #f8edcb;
+  --module-finances-mark: #f2c007;
+
+  /* ----------------------------------------------------------------- mark palette */
+  /*
+   * For geometric marks only: never text, never behind a number, never carrying meaning.
+   * That last one is what buys this family its exemption from the contrast rules.
+   */
+  --mark-vermilion: #ff5a1f;
+  --mark-blue: #1b4fd8;
+  --mark-yellow: #f2c007;
+  --mark-ink: #14130f;
+
+  /*
+   * The brand glyph, in full vermilion. The single named exception to "vermilion means
+   * action", fenced by two prohibitions written in the design system: the glyph never
+   * appears next to a primary button, and it is never clickable.
+   */
+  --brand-glyph: #c4380a;
+
+  /* ------------------------------------------------------------------------ space */
+  /* A four pixel grid. Nothing in between, ever. */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -44,55 +118,192 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
   --space-7: 3rem;
+  --space-8: 4rem;
 
-  /* Type. The system stack keeps the binary small and renders natively on both targets. */
-  --font-sans: system-ui, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Roboto, sans-serif;
-  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  /* ------------------------------------------------------------------------- type */
+  /*
+   * Two bundled faces and one system stack. The bundled ones are assets rather than
+   * packages: they are files in `src/lib/fonts/`, declared with a local `@font-face` in
+   * `base.css`, and the runtime dependency count stays at zero. Each stack ends in a real
+   * fallback, so a build that cannot load a face renders a plain page rather than a blank
+   * one.
+   */
+  --font-display: 'Archivo', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, monospace;
 
+  /* A modular scale at 1.25 anchored on a 15px body: 15, 19, 24, 30, 38, 47. The three
+   * below the body are not on the ratio; they are the sizes a label actually needs. */
+  --text-label: 0.6875rem;
+  --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
   --text-base: 0.9375rem;
-  --text-lg: 1.125rem;
+  --text-lg: 1.1875rem;
   --text-xl: 1.5rem;
-  --text-2xl: 2rem;
+  --text-2xl: 1.875rem;
+  --text-3xl: 2.375rem;
+  --text-4xl: 2.9375rem;
 
-  --leading-tight: 1.25;
+  --leading-tight: 1.1;
+  --leading-snug: 1.3;
   --leading-normal: 1.55;
 
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --tracking-display: -0.03em;
+  --tracking-tight: -0.01em;
+  --tracking-label: 0.09em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ------------------------------------------------------------------------ shape */
+  /* Hard edges. Nothing is fully rounded and there are no pills. */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
 
   --border-width: 1px;
+  /* The thick line under a screen title, and the edge of an active tab. */
+  --rule-width: 3px;
+  /* The coloured top edge of a card, which is the widest rule in the system. */
+  --card-edge-width: 6px;
 
-  /* Motion. Short enough to feel immediate, and switched off entirely when asked. */
+  /*
+   * Elevation does not exist. There is no shadow scale, and adding one is a change to the
+   * design system rather than to a component.
+   */
+
+  /* ----------------------------------------------------------------------- motion */
+  /* Short enough to feel immediate, and switched off entirely when asked. */
   --duration-fast: 90ms;
   --duration-normal: 160ms;
   --easing: cubic-bezier(0.2, 0, 0.2, 1);
 
-  /* The width a column of prose stays readable at. */
-  --measure: 68ch;
+  /* ----------------------------------------------------------------------- layout */
+  /* The width a column of prose stays readable at. Lists and tables take the width. */
+  --measure: 62ch;
+  /* Content is capped here and centred in whatever is left. */
+  --content-max: 1100px;
+
+  /*
+   * Sizes that belong to one component each and would otherwise be typed into it. They
+   * live here because the gate forbids a length in a component, and they are named after
+   * what they are rather than where they are used.
+   */
+  --icon-size: 1.25rem;
+  --icon-size-sm: 1rem;
+  --chip-size: 0.6875rem;
+  --chip-size-sm: 0.5625rem;
+  --tab-max-width: 14.375rem;
+  --card-min-height: 9.125rem;
+  --control-min-size: 1.5rem;
+  --window-control-width: 2.875rem;
+  --header-height: 2.75rem;
+  --empty-mark-max: 10rem;
+  --layer-width-menu: 17.375rem;
+  --layer-width-palette: 38.75rem;
+  --layer-width-picker: 35rem;
+  --layer-max-height: 23.75rem;
+  --field-max-width: 28rem;
+  --form-max-width-narrow: 30rem;
+  --form-max-width: 34rem;
+  --definition-label-width: 12rem;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --colour-surface: #f7f8fa;
-    --colour-surface-raised: #ffffff;
-    --colour-surface-sunken: #eceef2;
-    --colour-border: #d8dce3;
-    --colour-border-strong: #b6bdc9;
+/*
+ * Ink, the variant.
+ *
+ * Declared twice: once for a system that asks for dark, and once for a person who chose
+ * it in Settings. The selector attribute wins over the media query because it comes
+ * later, which is what lets somebody run a dark desktop and a light Cairn.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --colour-surface: #101011;
+    --colour-surface-raised: #191a1c;
+    --colour-surface-sunken: #0a0a0b;
+    --colour-border: #2a2b2e;
+    --colour-border-strong: #3e4044;
+    --colour-rule: #f2efe9;
 
-    --colour-text: #16181d;
-    --colour-text-muted: #545c68;
-    --colour-text-faint: #7b828e;
+    --colour-text: #f2efe9;
+    --colour-text-muted: #a5a29b;
+    --colour-text-faint: #8a8781;
+    --colour-text-muted-strong: #b4b1a9;
 
-    --colour-accent: #2c5cc5;
-    --colour-accent-strong: #1e47a3;
-    --colour-accent-contrast: #ffffff;
+    --colour-accent: #ff5a1f;
+    --colour-accent-strong: #ff7a45;
+    --colour-accent-contrast: #101011;
 
-    --colour-positive: #2f7d3c;
-    --colour-warning: #8a5d10;
-    --colour-negative: #b3282c;
+    --colour-positive: #63c281;
+    --colour-warning: #e8b931;
+    --colour-negative: #f2696d;
+    --colour-info: #5b8cff;
+
+    --module-panel: #ff5a1f;
+    --module-panel-tint: #2e1710;
+    --module-panel-mark: #ff5a1f;
+
+    --module-habits: #5b8cff;
+    --module-habits-tint: #151b2f;
+    --module-habits-mark: #5b8cff;
+
+    --module-passwords: #f2efe9;
+    --module-passwords-tint: #202022;
+    --module-passwords-mark: #f2efe9;
+
+    --module-finances: #e8b931;
+    --module-finances-tint: #2a2312;
+    --module-finances-mark: #f2c007;
+
+    --mark-ink: #f2efe9;
+
+    --brand-glyph: #ff5a1f;
   }
+}
+
+:root[data-theme='dark'] {
+  --colour-surface: #101011;
+  --colour-surface-raised: #191a1c;
+  --colour-surface-sunken: #0a0a0b;
+  --colour-border: #2a2b2e;
+  --colour-border-strong: #3e4044;
+  --colour-rule: #f2efe9;
+
+  --colour-text: #f2efe9;
+  --colour-text-muted: #a5a29b;
+  --colour-text-faint: #8a8781;
+  --colour-text-muted-strong: #b4b1a9;
+
+  --colour-accent: #ff5a1f;
+  --colour-accent-strong: #ff7a45;
+  --colour-accent-contrast: #101011;
+
+  --colour-positive: #63c281;
+  --colour-warning: #e8b931;
+  --colour-negative: #f2696d;
+  --colour-info: #5b8cff;
+
+  --module-panel: #ff5a1f;
+  --module-panel-tint: #2e1710;
+  --module-panel-mark: #ff5a1f;
+
+  --module-habits: #5b8cff;
+  --module-habits-tint: #151b2f;
+  --module-habits-mark: #5b8cff;
+
+  --module-passwords: #f2efe9;
+  --module-passwords-tint: #202022;
+  --module-passwords-mark: #f2efe9;
+
+  --module-finances: #e8b931;
+  --module-finances-tint: #2a2312;
+  --module-finances-mark: #f2c007;
+
+  --mark-ink: #f2efe9;
+
+  --brand-glyph: #ff5a1f;
 }
 
 /*

@@ -49,7 +49,7 @@
 <section class="diagnostics">
   <header>
     <div>
-      <h2>Diagnóstico</h2>
+      <h1>Diagnóstico</h1>
       <p class="lede">
         Nada de lo que hay aquí identifica al equipo ni a la persona. No aparecen rutas, ni nombre
         de usuario, ni nada que salga de la base de datos.
@@ -94,7 +94,7 @@
   </div>
 
   <div class="budgets">
-    <h3>Presupuestos</h3>
+    <h2>Presupuestos</h2>
     {#if startup === null}
       <p class="muted">
         Sin medir todavía. Vuelve a la pantalla anterior y pulsa el botón para tomar la medida.
@@ -170,7 +170,7 @@
 
   dl div {
     display: grid;
-    grid-template-columns: 12rem 1fr;
+    grid-template-columns: var(--definition-label-width) 1fr;
     gap: var(--space-3);
     align-items: baseline;
   }
@@ -184,6 +184,13 @@
     margin: 0;
     font-family: var(--font-mono);
     user-select: text;
+  }
+
+  /* Sized down from the display scale: the element carries the hierarchy, the size only
+   * says how loud it is, and a thirty pixel subheading inside a panel is shouting. */
+  .budgets h2 {
+    font-size: var(--text-lg);
+    letter-spacing: normal;
   }
 
   .budgets {
