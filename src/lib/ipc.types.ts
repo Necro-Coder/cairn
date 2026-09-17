@@ -145,6 +145,64 @@ export interface Diagnostics {
 }
 
 /**
+ * Which password a backup is sealed with.
+ *
+ * A closed set of two rather than a flag, because these are two different operations with
+ * two different checks behind them: the master password is checked against the vault, and a
+ * separate one is checked against the password policy.
+ */
+export type BackupPasswordSource = 'master' | 'separate';
+
+/**
+ * What one export wrote.
+ *
+ * The name of the file and three numbers. Never the folder it is in: a folder carries the
+ * account name and very often the machine name, and a screenshot of any screen here has to
+ * be safe to paste into a public issue.
+ */
+export interface BackupExportReport {
+  readonly fileName: string;
+  readonly bytes: number;
+  readonly chunks: number;
+  readonly records: number;
+}
+
+/** What reading a backup back found. Same rule about the folder. */
+export interface BackupVerifyReport {
+  readonly fileName: string;
+  readonly bytes: number;
+  readonly chunks: number;
+  readonly formatVersion: number;
+  readonly records: number;
+}
+
+/**
+ * Why a backup operation did not happen.
+ *
+ * Four of these are everything a reader is allowed to say about a file somebody else wrote:
+ * it is not a Cairn backup, this version cannot be read, the password does not open it, and
+ * it is damaged or incomplete. Never which byte and never which check, because a reader that
+ * says where it stopped tells whoever is editing the file how close they got.
+ */
+export type BackupError =
+  | { readonly kind: 'locked' }
+  | { readonly kind: 'wrongPassword' }
+  | { readonly kind: 'lockedOut'; readonly remainingS: number }
+  | { readonly kind: 'weakPassword'; readonly chars: number; readonly min: number }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'notABackup' }
+  | { readonly kind: 'unsupportedVersion' }
+  | { readonly kind: 'badPassword' }
+  | { readonly kind: 'damaged' }
+  | { readonly kind: 'io' }
+  | { readonly kind: 'crypto' };
+
+/** How far along a running export or verification is, in bytes processed. */
+export interface BackupProgress {
+  readonly done: number;
+}
+
+/**
  * Everything the interface may ask of whatever is on the other side of the boundary.
  *
  * Every implementation is checked against this, so a function that exists on one side and
@@ -230,10 +288,39 @@ export interface IpcSurface {
   readonly estimatePasswordStrength: (password: string) => Promise<PasswordStrength>;
 
   /**
+   * Writes everything in the vault to one encrypted file, and reads it back before saying so.
+   *
+   * Takes no path, and this is the reason the whole surface exists in this shape: the core
+   * opens a file dialog the operating system draws, and a path arriving from here would be
+   * directory traversal handed over on a plate. Rejects with a {@link BackupError}.
+   */
+  readonly exportBackup: (
+    password: string,
+    source: BackupPasswordSource,
+  ) => Promise<BackupExportReport>;
+
+  /**
+   * Reads a backup end to end and reports what is in it, writing nothing.
+   *
+   * Same rule about the path. Rejects with a {@link BackupError}.
+   */
+  readonly verifyBackup: (password: string) => Promise<BackupVerifyReport>;
+
+  /**
+   * Listens for how far along a running export or verification is.
+   *
+   * The second event that crosses the boundary, and the exception that proves the rule about
+   * events carrying state: this one carries no state, only a number that makes the difference
+   * between slow and stuck visible. Missing one costs nothing, because the next one replaces
+   * it and the answer that matters arrives as the result of the call.
+   */
+  readonly onBackupProgress: (handler: (progress: BackupProgress) => void) => Promise<() => void>;
+
+  /**
    * Listens for the vault closing, and hands back the way to stop listening.
    *
-   * The only event that crosses the boundary. Everything else the interface wants it asks
-   * for, because an event carrying state is an event that can be missed.
+   * The only event that carries state across the boundary. Everything else the interface
+   * wants it asks for, because an event carrying state is an event that can be missed.
    */
   readonly onVaultLocked: (handler: (reason: LockReason) => void) => Promise<() => void>;
 

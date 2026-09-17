@@ -66,6 +66,32 @@ impl Sealed {
         bytes
     }
 
+    /// Rebuilds a sealed value whose nonce was never written down.
+    ///
+    /// For the one format that recomputes its nonces instead of storing them: an exported
+    /// backup derives each chunk's nonce from a base and the chunk's index, so the file
+    /// holds ciphertext and tag and nothing else. A nonce read out of a file is a nonce the
+    /// attacker chose; a nonce recomputed from a position is one that reordering a chunk
+    /// gets wrong, which makes the tag fail twice over.
+    ///
+    /// This takes plain bytes rather than a [`FreshNonce`] for the same reason
+    /// [`Sealed::from_bytes`] does. A `FreshNonce` is permission to encrypt once, and this
+    /// builds a value that is about to be decrypted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::MalformedSealed`] if the ciphertext is too short to carry a
+    /// tag. A shape check, made before any key is involved, so it is not an oracle.
+    pub fn from_parts(nonce: [u8; NONCE_LEN], ciphertext: Vec<u8>) -> Result<Self, CryptoError> {
+        if ciphertext.len() < TAG_LEN {
+            return Err(CryptoError::MalformedSealed {
+                len: ciphertext.len(),
+            });
+        }
+
+        Ok(Self { nonce, ciphertext })
+    }
+
     /// Reads back what [`Sealed::to_bytes`] wrote.
     ///
     /// # Errors
@@ -297,6 +323,62 @@ mod tests {
             open(&key(), &restored, &aad()).unwrap().as_slice(),
             b"ida y vuelta"
         );
+    }
+
+    #[test]
+    fn a_value_rebuilt_from_its_parts_opens() {
+        // The read path of a format whose nonces are recomputed rather than stored. What it
+        // proves is that a value taken apart and put back together with the same nonce is
+        // the same value, which is what lets a backup hold no nonces at all.
+        let sealed = seal(
+            &key(),
+            FreshNonce::generate().unwrap(),
+            &aad(),
+            b"por partes",
+        )
+        .unwrap();
+        let rebuilt = Sealed::from_parts(*sealed.nonce(), sealed.ciphertext().to_vec()).unwrap();
+
+        assert_eq!(rebuilt, sealed);
+        assert_eq!(
+            open(&key(), &rebuilt, &aad()).unwrap().as_slice(),
+            b"por partes"
+        );
+    }
+
+    #[test]
+    fn a_value_rebuilt_under_another_nonce_does_not_open() {
+        let sealed = seal(
+            &key(),
+            FreshNonce::generate().unwrap(),
+            &aad(),
+            b"por partes",
+        )
+        .unwrap();
+        let mut elsewhere = *sealed.nonce();
+        elsewhere[0] ^= 0x01;
+
+        let rebuilt = Sealed::from_parts(elsewhere, sealed.ciphertext().to_vec()).unwrap();
+        assert!(matches!(
+            open(&key(), &rebuilt, &aad()),
+            Err(CryptoError::Open)
+        ));
+    }
+
+    #[test]
+    fn parts_with_no_room_for_a_tag_are_refused() {
+        // The boundary, both sides of it. A ciphertext of exactly a tag is an encryption of
+        // nothing and is legal; one byte less cannot be anything at all.
+        for len in 0..TAG_LEN {
+            assert!(
+                matches!(
+                    Sealed::from_parts([0_u8; NONCE_LEN], vec![0_u8; len]),
+                    Err(CryptoError::MalformedSealed { .. })
+                ),
+                "a ciphertext of {len} bytes was accepted"
+            );
+        }
+        assert!(Sealed::from_parts([0_u8; NONCE_LEN], vec![0_u8; TAG_LEN]).is_ok());
     }
 
     #[test]

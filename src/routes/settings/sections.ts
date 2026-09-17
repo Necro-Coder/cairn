@@ -37,7 +37,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   {
     id: 'data',
     title: 'Datos',
-    lede: 'Copias, importar y exportar. Todavía no hay nada que copiar.',
+    lede: 'Copias, importar y exportar. Exportar y comprobar ya funcionan.',
   },
   {
     id: 'diagnostics',

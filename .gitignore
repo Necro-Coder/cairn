@@ -92,6 +92,11 @@ DerivedData/
 *.cairnbackup
 backups/
 
+# The one exception, and it is deliberate. The frozen backup fixtures are the only proof
+# that a file written by an older build still opens, so they have to be in the repository.
+# They hold six invented rows and a password that is printed in the test beside them.
+!crates/cairn-db/tests/fixtures/*.cairn
+
 # ---------------------------------------------------------------------------
 # Test, coverage and audit artifacts
 # ---------------------------------------------------------------------------

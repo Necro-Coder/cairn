@@ -108,9 +108,17 @@ pub fn database_key(dek: &DataKey) -> DatabaseKey {
 }
 
 /// The key an exported backup is encrypted with.
+///
+/// Takes a key encryption key rather than the data key, and that difference is the whole
+/// reason a backup is worth making. A key hanging off the data key can only be derived
+/// with the vault already open, so the file would be unreadable on a clean installation,
+/// on a new machine and on a phone, which are the only three places anybody ever wants to
+/// open one. The key encryption key handed in here is a fresh one, derived with Argon2id
+/// over the salt and the parameters the backup file carries in its own header, so the file
+/// opens with the password and nothing else. See decision record 0011.
 #[must_use]
-pub fn export_key(dek: &DataKey) -> DataKey {
-    DataKey::from_derived(derive(dek.expose(), Purpose::Export))
+pub fn export_key(kek: &Kek) -> DataKey {
+    DataKey::from_derived(derive(kek.expose(), Purpose::Export))
 }
 
 /// The pre-shared key for the synchronisation handshake.
@@ -193,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn the_other_three_hang_off_the_data_key() {
+    fn the_database_and_synchronisation_keys_hang_off_the_data_key() {
         let dek = DataKey::from_bytes(KEY_BYTES);
 
         assert_eq!(
@@ -201,9 +209,39 @@ mod tests {
             &derive(&KEY_BYTES, Purpose::Database)
         );
         assert_eq!(sync_key(&dek).expose(), &derive(&KEY_BYTES, Purpose::Sync));
+    }
 
-        let expected_export = DataKey::from_bytes(derive(&KEY_BYTES, Purpose::Export));
-        assert!(bool::from(export_key(&dek).ct_eq(&expected_export)));
+    #[test]
+    fn the_export_key_hangs_off_a_key_encryption_key() {
+        let kek = Kek::from_bytes(KEY_BYTES);
+        let expected = DataKey::from_bytes(derive(&KEY_BYTES, Purpose::Export));
+
+        assert!(bool::from(export_key(&kek).ct_eq(&expected)));
+    }
+
+    #[test]
+    fn the_export_key_cannot_be_reached_from_the_data_key() {
+        // The property the whole backup design rests on. If the export key were derivable
+        // from the data key, a backup could only be opened by a machine that could already
+        // open the vault, which is every machine except the ones a backup exists for. The
+        // two derivations share an `info` string, so the only thing keeping them apart is
+        // the key they are given, and this is what says so out loud.
+        let same_bytes_as_a_data_key = Kek::from_bytes(KEY_BYTES);
+        let dek = DataKey::from_bytes(KEY_BYTES);
+
+        let from_a_key_encryption_key = export_key(&same_bytes_as_a_data_key);
+        let anything_reachable_from_the_data_key = [
+            database_key(&dek).expose().to_owned(),
+            sync_key(&dek).expose().to_owned(),
+            dek.expose().to_owned(),
+        ];
+
+        for reachable in anything_reachable_from_the_data_key {
+            assert!(
+                !bool::from(from_a_key_encryption_key.ct_eq(&DataKey::from_bytes(reachable))),
+                "a key reachable from the data key alone is the key a backup is sealed with"
+            );
+        }
     }
 
     #[test]

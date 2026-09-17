@@ -31,6 +31,8 @@
 
 import type {
   AppInfo,
+  BackupError,
+  BackupProgress,
   Diagnostics,
   InactivityChoice,
   InstanceState,
@@ -145,6 +147,14 @@ let maximised = false;
 /** The listeners the interface has registered for the lock event. */
 const lockListeners = new Set<(reason: LockReason) => void>();
 
+/**
+ * The listeners registered for export and verification progress.
+ *
+ * Kept, and never called. Nothing here reads a file, so there is no progress to report; the
+ * set exists so that subscribing and unsubscribing behave the way they will in the window.
+ */
+const progressListeners = new Set<(progress: BackupProgress) => void>();
+
 /** Tells every listener the vault has closed. */
 function announceLock(reason: LockReason): void {
   for (const listener of lockListeners) {
@@ -161,6 +171,12 @@ function announceLock(reason: LockReason): void {
  */
 function reject(error: VaultError | SampleError): Promise<never> {
   // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the real boundary rejects with exactly this plain tagged object, and a stand-in that wrapped it in an Error would let a screen be written against a shape the core never produces
+  return Promise.reject(error);
+}
+
+/** The same, for the backup commands, which have an error set of their own. */
+function rejectBackup(error: BackupError): Promise<never> {
+  // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- see the note on `reject` above; the reason is the same one
   return Promise.reject(error);
 }
 
@@ -445,6 +461,29 @@ export const ipc: IpcSurface = {
     }
 
     return Promise.resolve(strength);
+  },
+
+  /*
+   * Exporting and verifying, which in a browser tab can only ever be refused.
+   *
+   * There is no file dialog to open, no disk to write to and no Argon2id to run, and a
+   * stand-in that answered with an invented report would be a stand-in claiming a backup
+   * exists. So both answer the way the real core answers somebody who closed the dialog:
+   * nothing was chosen, so nothing happened. That is the one outcome of these two that a
+   * browser can honestly reproduce, and it lets the screen around them be looked at with
+   * every path through it intact.
+   */
+  exportBackup: () => rejectBackup({ kind: 'cancelled' }),
+
+  verifyBackup: () => rejectBackup({ kind: 'cancelled' }),
+
+  // Nothing ever runs here, so nothing ever reports progress. The handler is kept and
+  // dropped so that a screen which subscribes and unsubscribes behaves as it will.
+  onBackupProgress: (handler) => {
+    progressListeners.add(handler);
+    return Promise.resolve(() => {
+      progressListeners.delete(handler);
+    });
   },
 
   onVaultLocked: (handler) => {

@@ -17,6 +17,7 @@
 //! machines can be reasoned about.
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod clock;
 pub mod codec;
 pub mod device;

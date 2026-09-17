@@ -11,6 +11,7 @@
 //! that can be tested without a window.
 
 pub mod app_info;
+pub mod backup;
 pub mod diagnostics;
 pub mod instance;
 pub mod sample;
@@ -20,6 +21,10 @@ pub mod vault;
 // module path in `generate_handler!`, because the attribute macro generates companion
 // items next to each function that a `pub use` does not carry along.
 pub use app_info::AppInfo;
+pub use backup::{
+    BackupError, BackupExportReport, BackupProgress, BackupVerifyReport, PROGRESS_EVENT,
+    PasswordSource,
+};
 pub use diagnostics::{DatabaseStatus, Diagnostics};
 pub use sample::{KeysetPage, SampleError, SampleHabit, SeedReport, SeededTable};
 pub use vault::{
