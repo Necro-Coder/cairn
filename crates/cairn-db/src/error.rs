@@ -120,6 +120,38 @@ pub enum DbError {
     /// There is no row with that identifier, or it is already a tombstone.
     #[error("there is no such row")]
     NotFound,
+
+    /// The file offered to an import does not begin the way a backup of ours begins.
+    ///
+    /// The first of the four things an import may say. There are four and there will not be
+    /// a fifth: every extra distinction is something whoever is editing the file learns
+    /// about how close they got.
+    #[error("this is not a Cairn backup")]
+    NotABackup,
+
+    /// The backup is in a format version this build cannot read.
+    ///
+    /// The second. A version older than the conversion path covers, or newer than this
+    /// build knows about. Guessing at a layout somebody else defined is how a restore
+    /// corrupts data with the best of intentions.
+    #[error("this backup is in a format this version cannot read")]
+    UnsupportedVersion,
+
+    /// The password does not open the backup.
+    ///
+    /// The third. Reported when the first chunk does not open, which is the only point at
+    /// which the key can be distinguished from the file: after one chunk has opened, the
+    /// key has been proved right and anything later is damage.
+    #[error("the password does not open this backup")]
+    WrongPassword,
+
+    /// Something read out of a backup is not what a backup holds.
+    ///
+    /// Deliberately carries nothing: not which line, not which field, not how far the
+    /// reader got. An import is allowed to say four things in total, and every one of them
+    /// has to be answerable without telling whoever edited the file how close they came.
+    #[error("the backup is damaged or incomplete")]
+    Malformed,
 }
 
 impl From<rusqlite::Error> for DbError {
