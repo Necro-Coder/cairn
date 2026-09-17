@@ -64,6 +64,21 @@ export interface SearchHit {
  */
 export const MAX_HITS = 50;
 
+/**
+ * The longest query a provider is ever handed.
+ *
+ * The ceiling on results has a twin, and it is the one that matters more. In phase 03 this
+ * string stops being matched against eight command titles in the WebView and starts being an
+ * argument to a command in the core, which is to say an allocation in the process that holds
+ * the keys, sized by whatever somebody pasted into a text field. Every input gets an explicit
+ * length, and the place to write this one is the contract, before there is a provider to
+ * forget it.
+ *
+ * Two hundred characters. The longest title in this application is four words, so anything
+ * past this cannot match more than it already does; it can only cost more.
+ */
+export const MAX_QUERY = 200;
+
 /** What a module has to offer for its data to be reachable from the palette. */
 export interface SearchProvider {
   /** Which module this speaks for. */
@@ -71,13 +86,26 @@ export interface SearchProvider {
   /**
    * Answers a query with at most `limit` hits, best first.
    *
-   * `limit` is compulsory and is clamped by {@link clampLimit} before it is passed, so a
-   * provider is never asked for more than the ceiling above. A provider that cannot answer
+   * Both arguments arrive already bounded: `limit` is clamped to {@link MAX_HITS} and the
+   * query to {@link MAX_QUERY} before they are passed, so a provider is never asked for more
+   * than the ceilings above and never has to check. A provider that cannot answer
    * — because the vault closed underneath it, or because it is not written yet — returns
    * an empty list rather than throwing: one module being unavailable is not a reason for
    * the palette to show nothing.
    */
   search(query: string, limit: number): Promise<readonly SearchHit[]>;
+}
+
+/**
+ * Brings a query within what the contract allows.
+ *
+ * Truncating rather than rejecting, because a query is not a command: somebody who pasted
+ * too much wants the search to happen, and a search that refused to run would be reported as
+ * the field being broken. Private for the same reason as {@link clampLimit} — the bound
+ * belongs to the contract, not to whoever is calling.
+ */
+function clampQuery(query: string): string {
+  return query.slice(0, MAX_QUERY);
 }
 
 /**
@@ -107,8 +135,9 @@ export async function searchAll(
   limit: number,
 ): Promise<readonly SearchHit[]> {
   const capped = clampLimit(limit);
+  const asked = clampQuery(query);
   const answers = await Promise.allSettled(
-    providers.map(async (provider) => provider.search(query, capped)),
+    providers.map(async (provider) => provider.search(asked, capped)),
   );
 
   return answers

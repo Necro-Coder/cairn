@@ -26,7 +26,7 @@
 
   import Badge from '../Badge.svelte';
   import IconSearch from '../../icons/IconSearch.svelte';
-  import { MAX_HITS, searchAll, type SearchHit } from '../../search/contract';
+  import { MAX_HITS, MAX_QUERY, searchAll, type SearchHit } from '../../search/contract';
   import { PROVIDERS, SEARCH_IS_READY, SEARCH_NOTICE } from '../../search/providers';
   import { sectionOf } from '../sections';
   import { isClosable as closable } from '../tabs';
@@ -206,6 +206,7 @@
           oninput={() => (here = 0)}
           id="palette-query"
           type="text"
+          maxlength={MAX_QUERY}
           role="combobox"
           autocomplete="off"
           spellcheck="false"

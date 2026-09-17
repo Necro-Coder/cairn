@@ -201,8 +201,15 @@ pub fn shut_down<E>(
 /// A command of our own rather than `core:window:allow-start-dragging` in the capability
 /// list. The standard route would add four core APIs to what script injected into the
 /// WebView could call, and the list is currently two permissions that can only listen to
-/// events this application emits. A custom command needs no entry at all, so the surface
-/// stays exactly where it is.
+/// events this application emits.
+///
+/// Saying that a custom command leaves the surface untouched would be flattering it, and
+/// this is a file an audit reads. These four are reachable from injected script exactly as a
+/// core API would be — that is what an IPC command is. What differs is their shape: none of
+/// them takes an argument, and each acts on the one window named in the configuration, so
+/// what a compromised WebView gains is the ability to move, minimise, maximise or close that
+/// window rather than a general window API to aim. Minimising and closing both shut the
+/// vault, which is the direction a surface should fail in.
 ///
 /// # Errors
 ///
