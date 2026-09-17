@@ -13,6 +13,7 @@
    * The action is shown and it reacts. A button that does nothing looks like a broken
    * application; one that explains looks like an unfinished one, which is what this is.
    */
+  import Badge from '../lib/shell/Badge.svelte';
   import Marks from '../lib/shell/Marks.svelte';
   import ScreenHeader from '../lib/shell/ScreenHeader.svelte';
   import type { Section } from '../lib/shell/sections';
@@ -33,7 +34,7 @@
 
 <ScreenHeader {section} title={section.title} />
 
-<div class="empty" style="--module-colour: {section.colour}; --module-tint: {section.tint}">
+<div class="empty">
   <Marks />
 
   <p>{empty}</p>
@@ -42,7 +43,11 @@
     <button type="button" class="primary" onclick={() => (explained = true)}>{action}</button>
 
     {#if explained}
-      <span class="badge">En desarrollo · llega en la fase de este módulo</span>
+      <Badge
+        colour={section.colour}
+        tint={section.tint}
+        text="En desarrollo · llega en la fase de este módulo"
+      />
     {/if}
   </div>
 </div>
@@ -80,16 +85,5 @@
 
   .primary:hover {
     background-color: var(--colour-accent-strong);
-  }
-
-  .badge {
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    background-color: var(--module-tint);
-    color: var(--module-colour);
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
   }
 </style>

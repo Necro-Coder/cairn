@@ -15,6 +15,11 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
+    // For the modules that `node --test` runs directly. Node strips the types and then
+    // resolves the imports itself, and an ESM resolver needs the extension; the bundler
+    // resolver does not care either way. Nothing is emitted from here, so writing the
+    // extension is free, and it is written only in the files that have to run under Node.
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["svelte", "vite/client"],
@@ -34,5 +39,9 @@
     "svelte.config.js",
     "playwright.config.ts"
   ],
-  "exclude": ["node_modules", "dist", "src-tauri", "crates", "target"]
+  // The tests that `node --test` runs are checked by `tsconfig.test.json` instead, which is
+  // the only place Node's type definitions are visible. Letting them resolve here would make
+  // `process` and the rest of the standard library typecheck inside a component that runs in
+  // a WebView with nothing behind it.
+  "exclude": ["node_modules", "dist", "src-tauri", "crates", "target", "src/**/*.test.ts"]
 }

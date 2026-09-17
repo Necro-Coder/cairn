@@ -1,0 +1,20 @@
+{
+  // The configuration for the modules `node --test` runs, and only those.
+  //
+  // It exists so that Node's type definitions do not reach the application. `node:test` and
+  // `node:assert` have to be typed for the tests to be checked at all, and adding `node` to
+  // the types of the main configuration would also make `process`, `Buffer` and the whole
+  // standard library resolve inside a component that runs in a WebView with no Node behind
+  // it — code that would typecheck, build, and then fail in a window.
+  //
+  // The tests are still held to everything else: this extends the main configuration and
+  // changes nothing but which ambient types are visible and which files are read.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/**/*.test.ts"],
+  // Restated because `exclude` is inherited, and the main configuration excludes exactly the
+  // files this one is for.
+  "exclude": ["node_modules", "dist", "src-tauri", "crates", "target"]
+}

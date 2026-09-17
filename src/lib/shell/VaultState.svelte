@@ -8,6 +8,7 @@
    * would be a second opinion about when the vault closes, and the core's is the one that
    * decides.
    */
+  import IconLockClosed from '../icons/IconLockClosed.svelte';
   import IconLockOpen from '../icons/IconLockOpen.svelte';
   import { session } from '../session.svelte';
 
@@ -43,8 +44,14 @@
 
   <span class="hint"><kbd>Ctrl</kbd> <kbd>K</kbd></span>
 
-  <button type="button" class="lock" onclick={() => void session.lock()}>
-    Cerrar la caja fuerte
+  <button
+    type="button"
+    class="lock"
+    title="Cerrar la caja fuerte"
+    onclick={() => void session.lock()}
+  >
+    <span class="glyph" aria-hidden="true"><IconLockClosed /></span>
+    <span class="words">Cerrar la caja fuerte</span>
   </button>
 </div>
 
@@ -76,6 +83,8 @@
   }
 
   .lock {
+    display: flex;
+    align-items: center;
     padding: var(--space-2) var(--space-3);
     border: var(--border-width) solid var(--colour-border-strong);
     border-radius: var(--radius-sm);
@@ -90,12 +99,26 @@
     background-color: var(--colour-surface-sunken);
   }
 
+  /* Only drawn where the words are not, so the button is never both. */
+  .glyph {
+    display: none;
+  }
+
   /*
-   * Below the window minimum the header keeps the menu, the state and the palette
-   * reminder, and drops the words on the button. The shortcut is still written above.
+   * Below the window minimum the header keeps the menu, the state and the palette reminder
+   * — the design system says all three stay at every width — and the button gives up its
+   * words for its glyph. It is the widest thing in the row and the one whose meaning
+   * survives being a padlock; the reminder is two keys and there is nothing to shorten it
+   * to, and it is what tells somebody the palette exists at all.
+   *
+   * The button keeps its name through its `title`, which is also what the tooltip says.
    */
   @media (max-width: 880px) {
-    .hint {
+    .glyph {
+      display: flex;
+    }
+
+    .words {
       display: none;
     }
   }

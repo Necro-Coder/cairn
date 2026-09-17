@@ -9,10 +9,15 @@
  * open vault is discarded in one place instead of in however many screens happened to be
  * showing something.
  *
- * What gets discarded is everything except the name of the screen that was open. Somebody who
- * comes back to an application that locked while they were away should find themselves where
- * they were, and a module name is not something worth protecting: it is the same handful of
- * words that are printed in the navigation.
+ * What gets discarded is everything: the tabs, the panel and what has been run from the
+ * palette. It is held in `workspace.svelte.ts` as one object precisely so that discarding it
+ * is one assignment, and this file is what decides when that happens.
+ *
+ * Nothing is kept across a lock, not even which screen was open. An earlier version of this
+ * file kept that, on the argument that a module name is not worth protecting, and it is not.
+ * What is worth protecting is the promise the lock makes: somebody who locks the window with
+ * six tabs open and comes back to it finds the application as it is on a fresh unlock, with
+ * no trace in the strip and none in the palette of what they were doing.
  *
  * No key and nothing decrypted is ever here, because no key and nothing decrypted ever
  * crosses the boundary. The password is not here either: it lives in the field somebody typed
@@ -21,6 +26,7 @@
 
 import { ipc } from '$ipc';
 import type { InactivityChoice, LockReason, VaultStatus } from './ipc.types';
+import { workspace } from './shell/workspace.svelte';
 
 /**
  * How often the interface reports that somebody is using it.
@@ -42,18 +48,6 @@ const UNKNOWN: VaultStatus = {
   idleRemainingS: null,
 };
 
-/**
- * Everything derived from an open vault, which is thrown away when it closes.
- *
- * One object rather than several variables, so that discarding it is one assignment and
- * cannot half happen. Today it holds the name of the screen and nothing else; whatever later
- * phases put in here is discarded by the same line.
- */
-interface OpenVaultState {
-  /** Which screen was open. Kept across a lock on purpose: it is not worth protecting. */
-  readonly screen: string;
-}
-
 /** The session, as one piece of state the whole interface reads. */
 class Session {
   /** The last answer the core gave. */
@@ -61,12 +55,6 @@ class Session {
 
   /** Why the vault closed, while there is still something to say about it. */
   lockReason = $state<LockReason | null>(null);
-
-  /** Everything derived from an open vault. Null whenever it is closed. */
-  open = $state<OpenVaultState | null>(null);
-
-  /** The screen to come back to, which survives a lock because it is not worth hiding. */
-  lastScreen = $state('inicio');
 
   /** Stops the heartbeat and the event listener. */
   #stop: (() => void) | null = null;
@@ -178,18 +166,18 @@ class Session {
     this.#stop = null;
   }
 
-  /** Records a status, discarding the open state if the core says the vault is closed. */
+  /** Records a status, discarding the workspace if the core says the vault is closed. */
   #apply(next: VaultStatus): void {
-    const wasOpen = this.status.unlocked;
+    const wasOpen = this.status.unlocked || workspace.state !== null;
     this.status = next;
 
     if (next.unlocked) {
       this.lockReason = null;
-      this.open ??= { screen: this.lastScreen };
+      workspace.follow(true);
       return;
     }
 
-    if (wasOpen || this.open !== null) {
+    if (wasOpen) {
       // Closed between two answers without an event arriving, which happens when a command
       // is what closed it. The state goes the same way it would have gone on the event.
       this.#discard(this.lockReason ?? 'requested');
@@ -199,14 +187,12 @@ class Session {
   /**
    * Throws away everything that came from an open vault.
    *
-   * The screen name is copied out first and kept, because coming back to where you were is
-   * worth more than hiding which of six modules somebody had open.
+   * One call, and it takes the tabs, the panel and the palette history with it. Which screen
+   * was open goes too: the strip is what somebody was doing, and a lock that left it behind
+   * would be a lock that kept a record of the afternoon on an unattended window.
    */
   #discard(reason: LockReason): void {
-    if (this.open !== null) {
-      this.lastScreen = this.open.screen;
-    }
-    this.open = null;
+    workspace.follow(false);
     this.lockReason = reason;
     this.status = { ...this.status, unlocked: false, idleRemainingS: null };
   }

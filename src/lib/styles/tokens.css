@@ -197,6 +197,9 @@
   --chip-size-sm: 0.5625rem;
   --tab-max-width: 14.375rem;
   --card-min-height: 9.125rem;
+  /* The narrowest a panel card is allowed to get before the grid drops it to the next row.
+   * Wide enough for a title and a sentence under it without either breaking twice. */
+  --card-min-width: 17.5rem;
   --control-min-size: 1.5rem;
   --window-control-width: 2.875rem;
   --header-height: 2.75rem;

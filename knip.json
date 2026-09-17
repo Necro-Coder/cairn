@@ -5,6 +5,8 @@
     "src/lib/preview/ipc.ts",
     "scripts/*.test.mjs",
     "tests/a11y/*.spec.ts",
+    "src/**/*.test.ts",
+    "src/**/*.test-d.ts",
     "src/lib/icons/*.svelte"
   ],
   "project": ["src/**/*.{ts,svelte}", "src-isolation/**/*.js", "scripts/**/*.mjs", "tests/**/*.ts"],

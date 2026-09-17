@@ -104,3 +104,62 @@ test('the diagnostics screen', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1, name: 'Diagnóstico' })).toBeVisible();
   await expectNoViolations(page, 'the diagnostics screen');
 });
+
+/** Opens the palette the way it is meant to be opened. */
+async function openPalette(page: Page): Promise<void> {
+  await page.keyboard.press('Control+KeyK');
+  await expect(page.getByRole('dialog', { name: 'Paleta de comandos' })).toBeVisible();
+}
+
+test('the tab strip with several tabs open', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+
+  await openSection(page, 'Hábitos');
+  // A double click is what makes a tab permanent, so the strip under test holds one of
+  // each: the panel, a pinned tab and the temporary one.
+  await page.getByRole('button', { name: 'Hábitos', exact: true }).dblclick();
+  await openSection(page, 'Finanzas');
+
+  await expect(page.getByRole('navigation', { name: 'Pestañas abiertas' })).toBeVisible();
+  await expectNoViolations(page, 'the tab strip');
+});
+
+test('the card picker', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await page.getByRole('button', { name: 'Añadir tarjeta' }).click();
+
+  await expect(page.getByRole('menu', { name: 'Tarjetas disponibles' })).toBeVisible();
+  await expectNoViolations(page, 'the card picker');
+});
+
+test('the panel with cards on it', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await page.getByRole('button', { name: 'Añadir tarjeta' }).click();
+  await page.getByRole('menuitemcheckbox', { name: /Resumen del mes/ }).click();
+  await page.keyboard.press('Escape');
+
+  await expect(page.getByRole('heading', { level: 2, name: 'Resumen del mes' })).toBeVisible();
+  await expectNoViolations(page, 'the panel with cards');
+});
+
+test('the command palette', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openPalette(page);
+
+  await expectNoViolations(page, 'the command palette');
+});
+
+test('the command palette with something typed', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openPalette(page);
+  // Without the accent, on purpose: the fold is what makes the palette usable in Spanish.
+  await page.getByLabel('Buscar o ejecutar').fill('habitos');
+
+  await expect(page.getByRole('option', { name: /Hábitos/ })).toBeVisible();
+  await expectNoViolations(page, 'the command palette with a query');
+});
