@@ -52,6 +52,15 @@ impl DeviceId {
         Ok(Self(uuid::Builder::from_random_bytes(bytes).into_uuid()))
     }
 
+    /// The identifier a stored row carries, read back from its sixteen bytes.
+    ///
+    /// Any sixteen bytes are accepted. What the schema guarantees is the length; whether they
+    /// name a device this vault has ever seen is a question for the merge, not for a decoder.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; ID_LEN]) -> Self {
+        Self(Uuid::from_bytes(bytes))
+    }
+
     /// The identifier as a UUID.
     #[must_use]
     pub const fn as_uuid(&self) -> Uuid {

@@ -298,12 +298,18 @@ jobs:
         # what this job measures. A gate that goes red for reasons nobody understands gets
         # switched off within a week.
         #
+        # --lib for the same reason, one level down. What this job asks is whether the core
+        # libraries, SQLCipher and OpenSSL included, cross to the phone; the repair tool that
+        # lives beside cairn-db is a command line program for a platform with no command
+        # line, and linking an executable here fails on the deployment target rather than on
+        # anything about the code.
+        #
         # --locked because the point of pinning the OpenSSL sources is lost if the pipeline
         # is allowed to resolve something newer than the lockfile says.
         run: |
           set -euo pipefail
           started=$(date +%s)
-          cargo build --locked --target aarch64-apple-ios ${{ steps.profile.outputs.flag }} \
+          cargo build --locked --lib --target aarch64-apple-ios ${{ steps.profile.outputs.flag }} \
             -p cairn-crypto \
             -p cairn-domain \
             -p cairn-db \
