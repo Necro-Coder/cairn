@@ -290,6 +290,18 @@ pub const TABLES: &[TableSpec] = &[
             column("note", ColumnKind::Sealed),
         ]
     ),
+    // Last, because nothing points at it and because it is the one table whose rows are about
+    // the data rather than part of it. It is carried anyway: when a backup was made, and when
+    // one was restored, is a question somebody asks about their own history, and a restore that
+    // quietly dropped the answer would make the record of every export before it disappear.
+    table!(
+        "audit_events",
+        [
+            column("kind", ColumnKind::Text),
+            column("occurred_at", ColumnKind::Integer),
+            column("detail", ColumnKind::Sealed),
+        ]
+    ),
 ];
 
 /// The tables the schema has that a backup deliberately does not carry.

@@ -66,6 +66,12 @@ pub const MIGRATIONS: &[Migration] = &[
         up: include_str!("sql/0004_finances.sql"),
         down: include_str!("sql/0004_finances.down.sql"),
     },
+    Migration {
+        version: 5,
+        name: "audit",
+        up: include_str!("sql/0005_audit.sql"),
+        down: include_str!("sql/0005_audit.down.sql"),
+    },
 ];
 
 /// Every table of user data a fully migrated database has, in the order they were created in.
@@ -95,6 +101,7 @@ pub const DATA_TABLES: &[&str] = &[
     "categories",
     "transactions",
     "budgets",
+    "audit_events",
 ];
 
 /// The newest schema version this build knows.
