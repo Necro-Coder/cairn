@@ -208,9 +208,22 @@ impl<R: io::Read> Decrypting<'_, '_, R> {
     }
 
     /// Turns a failure to open a chunk into one of the four things this may say.
+    ///
+    /// The one judgement here is what a chunk that will not open means, and it depends on
+    /// whether an earlier one did. Before anything has opened, the only honest answer is that
+    /// the password is wrong: a file encrypted under a different password and a file whose
+    /// first bytes were mangled are indistinguishable without the key. Once a chunk has
+    /// opened, the password has proved itself, and a later chunk that will not open can only
+    /// be damage.
+    ///
+    /// The condition has to be written this way round. `from_crypto` already turns
+    /// [`CryptoError::Open`] into [`DbError::WrongPassword`], so an arm guarded on
+    /// `!opened_something` would fall through to exactly the same answer and the distinction
+    /// would quietly not exist — which is what it did, and what made a damaged backup tell
+    /// somebody their password was wrong.
     fn explain(&self, failure: CryptoError) -> DbError {
         match failure {
-            CryptoError::Open if !self.opened_something => DbError::WrongPassword,
+            CryptoError::Open if self.opened_something => DbError::Malformed,
             other => from_crypto(other),
         }
     }
@@ -356,7 +369,6 @@ impl Reading {
                 if manifest.record_version > RECORD_VERSION {
                     return Err(DbError::UnsupportedVersion);
                 }
-
                 self.seen_manifest = true;
                 self.record_version = manifest.record_version;
                 self.schema_version = manifest.schema_version;
@@ -790,6 +802,98 @@ mod tests {
 
         let damaged = with_a_byte_changed(&path, len - 1);
         assert!(restored_into(&destination, &damaged, PASSWORD).is_err());
+    }
+
+    /// A sandbox whose export is comfortably more than one chunk long.
+    ///
+    /// The values are pseudorandom so the compressor cannot fold them away, and there are
+    /// enough of them that the file runs to a couple of megabytes. Everything else in this
+    /// file exports to a few kilobytes, which is one chunk, and one chunk cannot show what
+    /// happens to the second one.
+    fn seeded_across_several_chunks(label: &str) -> Sandbox {
+        let sandbox = Sandbox::new(label);
+        let device = DeviceId::generate().expect("random bytes");
+
+        sandbox
+            .database()
+            .with(|connection| {
+                for index in 0..48_u64 {
+                    let mut noise = vec![0_u8; 40 * 1024];
+                    let mut state = u32::try_from(index).unwrap_or(0).wrapping_add(1);
+                    for byte in &mut noise {
+                        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        *byte = u8::try_from(state >> 24).unwrap_or(0);
+                    }
+
+                    settings::put(
+                        connection,
+                        &sandbox.codec(),
+                        device,
+                        Hlc::new(2_000 + index, 0, [2; 6]),
+                        NOW_US,
+                        &format!("ruido-{index}"),
+                        Some(&noise),
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("the seed writes");
+
+        sandbox
+    }
+
+    #[test]
+    fn damage_after_the_first_chunk_is_reported_as_damage_and_not_as_a_wrong_password() {
+        // A regression, and one that would have sent somebody looking for a password they
+        // already had. The first chunk is what proves the password; once it has opened, a
+        // chunk that will not open is the file being damaged and nothing else. The check
+        // that draws the line was written the wrong way round and fell through to the same
+        // answer, so every damaged backup claimed the password was wrong.
+        let source = seeded_across_several_chunks("verify-late-damage");
+        let path = exported(&source, "late-damage.cairn");
+        let len = length_of(&path);
+
+        // Well past the first chunk, which is sixty-four kibibytes of plaintext.
+        let damaged = with_a_byte_changed(&path, len - 1_024);
+        let refused = verify_backup(&damaged, PASSWORD, &mut |_so_far| {})
+            .expect_err("a damaged file is refused");
+
+        assert!(matches!(refused, DbError::Malformed), "{refused:?}");
+    }
+
+    #[test]
+    fn damage_to_the_first_chunk_is_still_reported_as_a_wrong_password() {
+        // The other side of the same line, and not a leak. A file whose first chunk never
+        // opened has said nothing that tells a wrong password apart from mangled bytes:
+        // without the key the two are the same event, and whoever is holding the file can
+        // derive the key at their leisure and find out either way.
+        let source = seeded_across_several_chunks("verify-early-damage");
+        let path = exported(&source, "early-damage.cairn");
+
+        // Inside the first chunk, past the cleartext header.
+        let damaged = with_a_byte_changed(&path, BACKUP_HEADER_LEN + 8);
+        let refused = verify_backup(&damaged, PASSWORD, &mut |_so_far| {})
+            .expect_err("a damaged file is refused");
+
+        assert!(matches!(refused, DbError::WrongPassword), "{refused:?}");
+    }
+
+    #[test]
+    fn a_backup_of_several_chunks_reads_back_as_the_rows_it_was_made_from() {
+        // Everything else in this file exports to a single chunk. Whatever holds the
+        // boundary between one chunk and the next together is only exercised here.
+        let source = seeded_across_several_chunks("verify-many-chunks");
+        let path = exported(&source, "many-chunks.cairn");
+
+        let report = verify_backup(&path, PASSWORD, &mut |_so_far| {}).expect("it verifies");
+
+        assert!(report.chunks > 1, "the fixture is only one chunk long");
+        let settings_rows = report
+            .records
+            .iter()
+            .find(|(name, _rows)| name == "settings")
+            .map(|(_name, rows)| *rows);
+        assert_eq!(settings_rows, Some(48));
     }
 
     #[test]
