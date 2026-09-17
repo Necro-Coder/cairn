@@ -150,20 +150,22 @@ None of them is something this project can fix by changing its own code, and non
 
 These are measured, not estimated, and a budget without a measured number behind it is not treated as met.
 
-| Measure                    | Budget | Measured                                 |
-| -------------------------- | ------ | ---------------------------------------- |
-| Release executable size    | 15 MB  | 10.2 MB                                  |
-| Command round trip         | 5 ms   | 1.5 to 1.9 ms, median of nine warm calls |
-| Cold start to first answer | 500 ms | 469 to 475 ms                            |
+| Measure                    | Budget | Measured                                      |
+| -------------------------- | ------ | --------------------------------------------- |
+| Release executable size    | 15 MB  | 10.2 MB                                       |
+| Command round trip         | 5 ms   | 2 ms, median of nine warm calls on that build |
+| Cold start to first answer | 500 ms | 143 ms, installed release build on Windows    |
 
 The executable grew from 3.96 MB to 10.2 MB when the database arrived, and the growth is one thing: SQLCipher is built from source and links OpenSSL statically, because a cipher that arrives from whatever copy of OpenSSL happens to be on the machine is a cipher nobody can reason about. Six megabytes is what that costs. It is worth saying out loud rather than discovering later that the number moved: a jump of this size in one phase would be alarming if it had no explanation, and the explanation is the reason the dependency was chosen.
 
 Cold start is measured from the uptime the core reports at the moment the interface receives its first answer, so it covers the whole wait: process, window, WebView, bundle and one round trip. Nothing is excluded to make the number look better.
 
-That budget started at 400 ms and was raised to 500 ms, which is the kind of change worth explaining rather than quietly making. The first measurements came in at 469 to 475 ms, and profiling put most of that in WebView2 initialising before any project code runs. Two honest options existed: treat 400 ms as a target to optimise towards, or accept that it was set without knowing what a WebView costs to start. The second is what happened. A budget nobody can meet and nobody intends to act on is not a budget, it is a permanently red number that teaches people to skip the row.
+That budget started at 400 ms and was raised to 500 ms, which is the kind of change worth explaining rather than quietly making. The measurements it was raised for came in at 469 to 475 ms, and profiling put most of that in WebView2 initialising before any project code runs. Two honest options existed: treat 400 ms as a target to optimise towards, or accept that it was set without knowing what a WebView costs to start. The second is what happened. A budget nobody can meet and nobody intends to act on is not a budget, it is a permanently red number that teaches people to skip the row.
 
-Raising it is not the same as ignoring it. 500 ms still fails if the application grows careless, the measurement still runs, and the two routes to getting under 400 ms are written down rather than forgotten: show the window before the bundle is ready, so WebView startup overlaps with something useful, and cut what happens between the interface mounting and its first question to the core. Neither is worth doing against an application that does almost nothing, because there is no way to tell whether a saving is real or noise. This gets measured again when there is enough application for the answer to mean something.
+Then the number moved, and not in the direction anybody was arguing about. Measured again after this phase, on a release build installed from the packaged installer rather than run from a development server, it came in at 143 ms. What changed is not the application, which does more now than it did then: it is how the measurement was taken. The 469 to 475 ms figures were recorded without writing down what they were recorded on, so the honest reading is that they measured a development build with a bundler in front of it and nobody noticed that this was a different thing from what somebody installs.
 
-The cold start figure in the table is the one taken before the database existed, and it is left there deliberately rather than removed or guessed at. Opening the file happens when somebody unlocks, not when the process starts, so there is no reason to expect the number to have moved; but "no reason to expect" is not a measurement, and this table only holds measurements. It is taken again on a real window, because the browser preview has no core to ask.
+That is the lesson worth keeping, and it is more useful than the number: a measurement without its conditions written beside it is a number that cannot be compared to anything later. Both figures in the table now say what they were taken on.
+
+The budget stays at 500 ms rather than dropping to match. One measurement on one machine is not a floor, and a budget that tracks the best result anybody has ever seen fails the first time somebody runs it on a laptop with a cold disk. It comes down when there are several measurements on several machines to come down to. The two routes to getting faster still are written down rather than forgotten: show the window before the bundle is ready, so WebView startup overlaps with something useful, and cut what happens between the interface mounting and its first question to the core.
 
 All three numbers will get worse as the application grows. Having the baseline is the point: it turns a future argument about whether things used to feel faster into a comparison between two numbers.
