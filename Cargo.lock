@@ -300,6 +300,7 @@ dependencies = [
  "tauri-build",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
  "zeroize",
 ]
 
@@ -328,6 +329,7 @@ name = "cairn-db"
 version = "0.0.1"
 dependencies = [
  "cairn-crypto",
+ "cairn-domain",
  "cairn-platform",
  "openssl-src",
  "rusqlite",

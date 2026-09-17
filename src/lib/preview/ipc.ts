@@ -38,6 +38,8 @@ import type {
   KdfReport,
   LockReason,
   PasswordStrength,
+  SampleError,
+  SampleHabit,
   VaultCondition,
   VaultError,
   VaultStatus,
@@ -69,9 +71,34 @@ const PREVIEW_DIAGNOSTICS: Diagnostics = {
   os: 'sistema de ejemplo',
   arch: 'arquitectura de ejemplo',
   webviewVersion: 'navegador de ejemplo',
-  database: 'notInitialized',
+  database: { state: 'open', schemaVersion: 2, tombstones: 1 },
   uptimeMs: 1234,
 };
+
+/**
+ * The sample habits this stand-in pretends are in a database.
+ *
+ * Fixed rather than generated, like everything else here, so that two screenshots of the
+ * diagnostics screen can be compared. One of them is a tombstone, because a list where nothing
+ * has been deleted is a list that never shows how a deleted row is drawn.
+ */
+const previewHabits: SampleHabit[] = [
+  {
+    id: '00000000-0000-4000-8000-000000000001',
+    name: 'HÃ¡bito de prueba',
+    deleted: false,
+    cursor: '0'.repeat(32),
+  },
+  {
+    id: '00000000-0000-4000-8000-000000000002',
+    name: 'HÃ¡bito de prueba',
+    deleted: true,
+    cursor: '1'.repeat(32),
+  },
+];
+
+/** How many sample habits this stand-in has invented, so each one gets its own identifier. */
+let previewHabitCount = previewHabits.length;
 
 /** The fewest characters the real policy accepts. Kept in step with `cairn-domain`. */
 const MIN_PASSWORD_CHARS = 12;
@@ -131,7 +158,7 @@ function announceLock(reason: LockReason): void {
  * which is this object, and a stand-in that rejected with something else would let a screen
  * be written against a shape the real boundary never produces.
  */
-function reject(error: VaultError): Promise<never> {
+function reject(error: VaultError | SampleError): Promise<never> {
   // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the real boundary rejects with exactly this plain tagged object, and a stand-in that wrapped it in an Error would let a screen be written against a shape the core never produces
   return Promise.reject(error);
 }
@@ -233,6 +260,34 @@ export const ipc: IpcSurface = {
   fetchAppInfo: () => Promise.resolve(PREVIEW_APP_INFO),
 
   fetchDiagnostics: () => Promise.resolve(PREVIEW_DIAGNOSTICS),
+
+  insertSampleHabit: () => {
+    previewHabitCount += 1;
+    const habit: SampleHabit = {
+      id: `00000000-0000-4000-8000-${String(previewHabitCount).padStart(12, '0')}`,
+      name: 'HÃ¡bito de prueba',
+      deleted: false,
+      cursor: String(previewHabitCount).padStart(32, '0'),
+    };
+    previewHabits.push(habit);
+    return Promise.resolve(habit);
+  },
+
+  listSampleHabits: (page) =>
+    Promise.resolve(previewHabits.filter((habit) => !habit.deleted).slice(0, page.limit)),
+
+  deleteSampleHabit: (id) => {
+    const found = previewHabits.find((habit) => habit.id === id && !habit.deleted);
+    if (found === undefined) {
+      return reject({ kind: 'notFound' });
+    }
+    const gone: SampleHabit = { ...found, deleted: true };
+    previewHabits.splice(previewHabits.indexOf(found), 1, gone);
+    return Promise.resolve(gone);
+  },
+
+  seedData: (rowsPerTable) =>
+    Promise.resolve({ tables: [{ table: 'habits', rows: rowsPerTable }], elapsedMs: 42 }),
 
   fetchVaultStatus: () => Promise.resolve(status()),
 

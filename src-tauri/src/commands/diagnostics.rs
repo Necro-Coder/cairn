@@ -15,17 +15,47 @@ use serde::Serialize;
 use super::app_info::AppInfo;
 use crate::state::AppState;
 
-/// Whether the encrypted database has been opened.
+/// What state the encrypted database is in.
 ///
-/// Only one value exists today. It is an enumeration rather than a boolean because the
-/// states that are coming, such as a database that exists but is still locked, are not
-/// the negation of anything.
+/// Four states, and none of them is the negation of another, which is why this is an
+/// enumeration rather than a pair of flags. The numbers it carries are counts and versions:
+/// nothing here is derived from a key or from the contents of a row, so the screen stays safe
+/// to screenshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "state", rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum DatabaseStatus {
-    /// No database file has been created or opened. This is the only possible value
-    /// until storage exists.
+    /// There is no database file yet, because this machine has no vault.
     NotInitialized,
+
+    /// The file exists and the vault is closed, so nothing is open.
+    ///
+    /// The ordinary state while the lock screen is showing on a machine that has a vault. Told
+    /// apart from the one above because "no vault" and "vault not open" lead to different
+    /// screens and different advice.
+    Locked,
+
+    /// The database is open.
+    #[serde(rename_all = "camelCase")]
+    Open {
+        /// The schema version the file is at, after any migrations that ran on opening.
+        schema_version: u32,
+        /// How many rows are marked as deleted across every table.
+        ///
+        /// On the screen because nothing is ever physically removed, so this number only grows
+        /// until it is compacted, and a person deserves to be able to see that rather than to
+        /// discover it as a file that keeps getting bigger.
+        tombstones: u64,
+    },
+
+    /// The file was written by a newer build than this one, and was not opened.
+    #[serde(rename_all = "camelCase")]
+    Unsupported {
+        /// The version the file says it is at.
+        found: u32,
+        /// The newest version this build knows.
+        expected: u32,
+    },
 }
 
 /// A snapshot of everything the application will admit to about itself.
@@ -53,10 +83,15 @@ pub struct Diagnostics {
 impl Diagnostics {
     /// Assembles a snapshot from values the caller has already collected.
     ///
-    /// Taking the uptime and the WebView version as arguments keeps this function pure,
-    /// which is what lets the privacy test call it directly without starting a window.
+    /// Taking the uptime, the WebView version and the database state as arguments keeps this
+    /// function pure, which is what lets the privacy test call it directly without starting a
+    /// window or opening a file.
     #[must_use]
-    pub fn assemble(uptime_ms: u64, webview_version: Option<String>) -> Self {
+    pub fn assemble(
+        uptime_ms: u64,
+        webview_version: Option<String>,
+        database: DatabaseStatus,
+    ) -> Self {
         Self {
             app: AppInfo::current(),
             // `std::env::consts` are baked in at compile time. They describe the build,
@@ -64,10 +99,42 @@ impl Diagnostics {
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
             webview_version,
-            database: DatabaseStatus::NotInitialized,
+            database,
             uptime_ms,
         }
     }
+}
+
+/// Reads what state the database is in, without opening anything.
+///
+/// Answers from what the session already holds. A vault that is open has a schema version and a
+/// count; a vault that is closed is reported as locked if this machine has a vault at all, and
+/// as not initialised if it does not. Nothing here creates a file or takes a password.
+///
+/// A count that fails to be read reports zero rather than an error. This is the screen somebody
+/// reaches when something is already wrong, and it refusing to draw because one of its numbers
+/// is unavailable would be the worst possible moment for it to be strict.
+fn database_status(state: &AppState) -> DatabaseStatus {
+    let open = state.session().with_storage(|storage| {
+        let tombstones = storage
+            .database()
+            .with(cairn_db::tombstones::census)
+            .map(|counted| counted.total)
+            .unwrap_or_default();
+
+        DatabaseStatus::Open {
+            schema_version: storage.schema_version(),
+            tombstones,
+        }
+    });
+
+    open.unwrap_or_else(|| {
+        if state.vault().exists() {
+            DatabaseStatus::Locked
+        } else {
+            DatabaseStatus::NotInitialized
+        }
+    })
 }
 
 /// Reads the version of the system WebView.
@@ -86,7 +153,11 @@ fn webview_version() -> Option<String> {
     reason = "the command macro generates the call and requires the state guard by value"
 )]
 pub fn diagnostics(state: tauri::State<'_, AppState>) -> Diagnostics {
-    Diagnostics::assemble(state.uptime_ms(), webview_version())
+    Diagnostics::assemble(
+        state.uptime_ms(),
+        webview_version(),
+        database_status(&state),
+    )
 }
 
 #[cfg(test)]
@@ -94,33 +165,69 @@ mod tests {
     use super::{DatabaseStatus, Diagnostics};
 
     #[test]
-    fn database_is_not_initialised_while_there_is_no_storage() {
-        let snapshot = Diagnostics::assemble(0, None);
+    fn the_database_state_is_reported_as_it_was_handed_in() {
+        let snapshot = Diagnostics::assemble(0, None, DatabaseStatus::NotInitialized);
         assert_eq!(snapshot.database, DatabaseStatus::NotInitialized);
+
+        let open = Diagnostics::assemble(
+            0,
+            None,
+            DatabaseStatus::Open {
+                schema_version: 2,
+                tombstones: 7,
+            },
+        );
+        assert_eq!(
+            open.database,
+            DatabaseStatus::Open {
+                schema_version: 2,
+                tombstones: 7
+            }
+        );
     }
 
     #[test]
     fn an_unknown_webview_version_is_absence_rather_than_failure() {
-        let snapshot = Diagnostics::assemble(1, None);
+        let snapshot = Diagnostics::assemble(1, None, DatabaseStatus::NotInitialized);
         assert_eq!(snapshot.webview_version, None);
     }
 
     #[test]
     fn os_and_arch_are_reported_and_never_empty() {
-        let snapshot = Diagnostics::assemble(1, None);
+        let snapshot = Diagnostics::assemble(1, None, DatabaseStatus::NotInitialized);
         assert!(!snapshot.os.is_empty(), "os must be reported");
         assert!(!snapshot.arch.is_empty(), "arch must be reported");
     }
 
     #[test]
     fn uptime_is_passed_through_unchanged() {
-        assert_eq!(Diagnostics::assemble(1_234, None).uptime_ms, 1_234);
+        assert_eq!(
+            Diagnostics::assemble(1_234, None, DatabaseStatus::NotInitialized).uptime_ms,
+            1_234
+        );
     }
 
     #[test]
     fn database_status_serialises_to_a_stable_name_the_frontend_can_match_on() {
         let encoded = serde_json::to_string(&DatabaseStatus::NotInitialized)
-            .expect("a fieldless enum always serialises");
-        assert_eq!(encoded, "\"notInitialized\"");
+            .expect("a fieldless variant always serialises");
+        assert_eq!(encoded, r#"{"state":"notInitialized"}"#);
+
+        let encoded = serde_json::to_string(&DatabaseStatus::Open {
+            schema_version: 2,
+            tombstones: 7,
+        })
+        .expect("a variant with fields always serialises");
+        assert_eq!(
+            encoded,
+            r#"{"state":"open","schemaVersion":2,"tombstones":7}"#
+        );
+
+        let encoded = serde_json::to_string(&DatabaseStatus::Unsupported {
+            found: 9,
+            expected: 2,
+        })
+        .expect("a variant with fields always serialises");
+        assert_eq!(encoded, r#"{"state":"unsupported","found":9,"expected":2}"#);
     }
 }

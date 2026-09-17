@@ -29,5 +29,6 @@
 mod runner;
 
 pub use runner::{
-    Applied, LATEST_VERSION, MIGRATIONS, Migration, applied_version, apply_all, revert_to,
+    Applied, DATA_TABLES, LATEST_VERSION, MIGRATIONS, Migration, applied_version, apply_all,
+    revert_to,
 };

@@ -154,6 +154,17 @@ pub struct CivilDay {
 }
 
 impl CivilDay {
+    /// The first of January 1970, which is the day the epoch falls on.
+    ///
+    /// A named value rather than a call that has to be checked. It exists so that code which
+    /// needs a day it can always have does not reach for a constructor that returns a `Result`
+    /// and then decide what to do when the answer it already knows is `Ok`.
+    pub const UNIX_EPOCH: Self = Self {
+        year: 1970,
+        month: 1,
+        day: 1,
+    };
+
     /// A day from its three parts.
     ///
     /// # Errors

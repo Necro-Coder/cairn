@@ -149,9 +149,15 @@ impl Clock {
     /// What a device does when it starts up: the highest reading in its own database is where it
     /// must continue from, or the first write after a restart would repeat a reading that has
     /// already been used for a different row.
+    ///
+    /// The device is passed separately and replaces the one in the reading. The highest reading
+    /// in a database is often one that arrived from another machine, and a clock that adopted it
+    /// whole would start signing this device's writes with somebody else's identifier.
     #[must_use]
-    pub const fn resuming(last: Hlc) -> Self {
-        Self { last }
+    pub const fn resuming(last: Hlc, device: [u8; DEVICE_LEN]) -> Self {
+        Self {
+            last: Hlc::new(last.wall_ms, last.counter, device),
+        }
     }
 
     /// The last reading this clock gave out.
@@ -307,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_counter_that_runs_out_borrows_the_next_millisecond() {
-        let mut clock = Clock::resuming(Hlc::new(1_000, u16::MAX, DEVICE));
+        let mut clock = Clock::resuming(Hlc::new(1_000, u16::MAX, DEVICE), DEVICE);
 
         let next = clock.tick(1_000);
 
@@ -317,13 +323,26 @@ mod tests {
 
     #[test]
     fn a_clock_that_resumes_does_not_repeat_what_was_already_written() {
-        let mut clock = Clock::resuming(Hlc::new(9_000, 3, DEVICE));
+        let mut clock = Clock::resuming(Hlc::new(9_000, 3, DEVICE), DEVICE);
 
         // The moment the operating system reports is older than the newest row in the database,
         // which is the ordinary case after a restart on a machine whose clock is a little slow.
         let next = clock.tick(8_000);
 
         assert_eq!((next.wall_ms(), next.counter()), (9_000, 4));
+    }
+
+    #[test]
+    fn resuming_from_a_reading_another_device_wrote_still_signs_as_this_one() {
+        // The highest reading in a database is often one that arrived in a synchronisation.
+        // A clock that adopted it whole would start signing this machine's writes with the
+        // other machine's identifier, and the tie-break would stop breaking ties.
+        let mut clock = Clock::resuming(Hlc::new(5_000, 2, OTHER_DEVICE), DEVICE);
+
+        let next = clock.tick(1_000);
+
+        assert_eq!((next.wall_ms(), next.counter()), (5_000, 3));
+        assert_eq!(next.device(), DEVICE);
     }
 
     #[test]
@@ -434,7 +453,7 @@ mod tests {
             seen_wall in 0_u64..u64::MAX,
             seen_counter in 0_u16..u16::MAX,
         ) {
-            let mut clock = Clock::resuming(Hlc::new(wall, counter, DEVICE));
+            let mut clock = Clock::resuming(Hlc::new(wall, counter, DEVICE), DEVICE);
             let before = clock.last();
 
             clock.observe(Hlc::new(seen_wall, seen_counter, OTHER_DEVICE));

@@ -15,6 +15,7 @@
 //! already been merged from being asked for again, and lowering it is how a synchronisation
 //! that never ends begins.
 
+use cairn_domain::Hlc;
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
 
@@ -39,8 +40,8 @@ pub struct PeerWatermark {
     pub id: Uuid,
     /// The peer this is about.
     pub peer: DeviceId,
-    /// The highest clock reading received from that peer, as sixteen ordered bytes.
-    pub watermark: [u8; 16],
+    /// The highest clock reading received from that peer.
+    pub watermark: Hlc,
     /// When the last exchange with it finished, in microseconds since the epoch, UTC.
     pub synced_at: i64,
 }
@@ -57,18 +58,18 @@ pub struct PeerWatermark {
 pub fn record(
     connection: &Connection,
     device: DeviceId,
-    hlc: [u8; 16],
+    hlc: Hlc,
     now_us: i64,
     peer: DeviceId,
-    watermark: [u8; 16],
+    watermark: Hlc,
 ) -> Result<PeerWatermark, DbError> {
     let existing = read(connection, peer)?;
 
     let (stamp, agreed) = match existing {
         Some((stamp, recorded)) => {
-            // Byte comparison, and that is the point of the layout: sixteen bytes of hybrid
-            // logical clock sort as bytes in the same order they sort as clocks, so this needs
-            // no decoding and SQLite can do it in an index too.
+            // Compared as readings, which a property test proves is the same order the stored
+            // bytes compare in. That equivalence is what lets the merge do the comparison in
+            // SQL, against an index, without decoding anything.
             if watermark <= recorded {
                 return Ok(PeerWatermark {
                     id: stamp.id,
@@ -103,10 +104,10 @@ pub fn record(
             stamp.created_at,
             stamp.updated_at,
             stamp.device.as_bytes().as_slice(),
-            stamp.hlc.as_slice(),
+            stamp.hlc_as_stored().as_slice(),
             stamp.rev_as_stored(),
             peer.as_bytes().as_slice(),
-            agreed.as_slice(),
+            agreed.to_bytes().as_slice(),
         ])?;
 
     Ok(PeerWatermark {
@@ -188,7 +189,7 @@ pub fn peers(connection: &Connection) -> Result<Vec<PeerWatermark>, DbError> {
             Ok(PeerWatermark {
                 id: Uuid::from_bytes(sixteen(&id)?),
                 peer: DeviceId::from_bytes(sixteen(&peer)?),
-                watermark: sixteen(&recorded)?,
+                watermark: Hlc::from_bytes(sixteen(&recorded)?),
                 // Equal in every row this program writes, and read separately anyway. A row
                 // written by something else does not get to make the two disagree silently.
                 synced_at: synced_at.min(updated_at),
@@ -198,7 +199,7 @@ pub fn peers(connection: &Connection) -> Result<Vec<PeerWatermark>, DbError> {
 }
 
 /// Reads the live row for a peer, with the watermark it holds.
-fn read(connection: &Connection, peer: DeviceId) -> Result<Option<(RowStamp, [u8; 16])>, DbError> {
+fn read(connection: &Connection, peer: DeviceId) -> Result<Option<(RowStamp, Hlc)>, DbError> {
     let found = connection
         .prepare_cached(
             "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev, watermark_hlc
@@ -215,12 +216,16 @@ fn read(connection: &Connection, peer: DeviceId) -> Result<Option<(RowStamp, [u8
         return Ok(None);
     };
 
-    Ok(Some((RowStamp::from_stored(stored)?, sixteen(&recorded)?)))
+    Ok(Some((
+        RowStamp::from_stored(stored)?,
+        Hlc::from_bytes(sixteen(&recorded)?),
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
+    use cairn_domain::Hlc;
 
     use super::{peers, record, watermark};
     use crate::device::DeviceId;
@@ -229,8 +234,8 @@ mod tests {
     use crate::test_support::Scratch;
 
     const NOW_US: i64 = 1_700_000_000_000_000;
-    const HLC: [u8; 16] = [1; 16];
-    const LATER: [u8; 16] = [2; 16];
+    const HLC: Hlc = Hlc::new(1_000, 0, [1; 6]);
+    const LATER: Hlc = Hlc::new(1_001, 0, [1; 6]);
 
     fn an_open_vault() -> UnlockedVault {
         let params = Argon2Params::new(MIN_MEMORY_KIB, MIN_PASSES, MAX_LANES)
@@ -247,11 +252,9 @@ mod tests {
         database
     }
 
-    /// A watermark that is byte-wise higher than the one before it.
-    fn reading(step: u8) -> [u8; 16] {
-        let mut bytes = [0_u8; 16];
-        bytes[0] = step;
-        bytes
+    /// A reading higher than every reading built from a smaller step.
+    fn reading(step: u8) -> Hlc {
+        Hlc::new(u64::from(step), 0, [0; 6])
     }
 
     #[test]
@@ -419,7 +422,7 @@ mod tests {
 
                 let above: i64 = connection.query_row(
                     "SELECT count(*) FROM sync_state WHERE watermark_hlc > ?1",
-                    [reading(3).as_slice()],
+                    [reading(3).to_bytes().as_slice()],
                     |row| row.get(0),
                 )?;
                 assert_eq!(above, 1, "the watermark is not comparable in SQL");

@@ -18,7 +18,17 @@ use cairn_lib::commands::diagnostics::{DatabaseStatus, Diagnostics};
 
 /// Serialises a snapshot exactly as the command hands it to the frontend.
 fn encoded_snapshot(webview_version: Option<String>) -> String {
-    let snapshot = Diagnostics::assemble(12_345, webview_version);
+    // The busiest state, so that every number this screen can carry is in the text the
+    // assertions below search. A snapshot of the emptiest one would pass them all by saying
+    // almost nothing.
+    let snapshot = Diagnostics::assemble(
+        12_345,
+        webview_version,
+        DatabaseStatus::Open {
+            schema_version: 2,
+            tombstones: 7,
+        },
+    );
     serde_json::to_string(&snapshot).expect("the snapshot is plain data and always serialises")
 }
 
@@ -108,13 +118,33 @@ fn nothing_but_the_agreed_fields_is_reported() {
 }
 
 #[test]
-fn the_database_is_reported_as_not_initialised_while_no_storage_exists() {
-    let snapshot = Diagnostics::assemble(0, None);
-    assert_eq!(
-        snapshot.database,
+fn the_database_state_says_nothing_about_the_person_or_the_machine() {
+    // Every state, serialised, checked for anything that is not a number or a fixed name. The
+    // open one is the one worth guarding: it is the only state that carries values read out of
+    // a file, and a count of rows is the most this screen may ever say about what is in one.
+    for state in [
         DatabaseStatus::NotInitialized,
-        "no database is opened in this phase, so anything else would be a false report"
-    );
+        DatabaseStatus::Locked,
+        DatabaseStatus::Open {
+            schema_version: 2,
+            tombstones: 7,
+        },
+        DatabaseStatus::Unsupported {
+            found: 9,
+            expected: 2,
+        },
+    ] {
+        let encoded = serde_json::to_string(&state).expect("plain data always serialises");
+
+        for forbidden in [
+            "name", "title", "note", "path", "user", "device", "key", "password",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "the database state carries {forbidden}: {encoded}"
+            );
+        }
+    }
 }
 
 #[test]

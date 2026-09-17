@@ -9,6 +9,7 @@
 //! everywhere else in this workspace, so that a row written in a test is a row whose every byte
 //! the test chose.
 
+use cairn_domain::{Hlc, Rev};
 use rusqlite::Row;
 use uuid::Uuid;
 
@@ -46,10 +47,10 @@ pub struct RowStamp {
     pub device: DeviceId,
     /// Whether it is a tombstone.
     pub deleted: bool,
-    /// The hybrid logical clock of the write, as sixteen ordered bytes.
-    pub hlc: [u8; 16],
+    /// The hybrid logical clock of the write.
+    pub hlc: Hlc,
     /// The revision of the row, which every encrypted value in it is authenticated against.
-    pub rev: u64,
+    pub rev: Rev,
 }
 
 impl RowStamp {
@@ -60,7 +61,7 @@ impl RowStamp {
     /// Returns [`DbError::Sealed`] if the operating system will not provide random bytes for the
     /// identifier. There is no fallback: an identifier somebody can predict is an identifier two
     /// devices can collide on.
-    pub fn new(device: DeviceId, hlc: [u8; 16], now_us: i64) -> Result<Self, DbError> {
+    pub fn new(device: DeviceId, hlc: Hlc, now_us: i64) -> Result<Self, DbError> {
         let mut bytes = [0_u8; 16];
         cairn_crypto::fill_random(&mut bytes)?;
 
@@ -71,29 +72,26 @@ impl RowStamp {
             device,
             deleted: false,
             hlc,
-            rev: 0,
+            rev: Rev::FIRST,
         })
     }
 
     /// The stamp the same row carries after being written again.
     ///
-    /// Raises the revision, replaces the clock, moves the moment and keeps everything else. The
-    /// revision saturates rather than wrapping: a row written eighteen quintillion times is not
-    /// a situation worth modelling, and wrapping back to a revision that has been used before
-    /// would let an old ciphertext start verifying again.
+    /// Raises the revision, replaces the clock, moves the moment and keeps everything else.
     #[must_use]
-    pub fn revised(&self, hlc: [u8; 16], now_us: i64) -> Self {
+    pub fn revised(&self, hlc: Hlc, now_us: i64) -> Self {
         Self {
             updated_at: now_us,
             hlc,
-            rev: self.rev.saturating_add(1),
+            rev: self.rev.next(),
             ..*self
         }
     }
 
     /// The stamp the same row carries once it has been marked as deleted.
     #[must_use]
-    pub fn tombstoned(&self, hlc: [u8; 16], now_us: i64) -> Self {
+    pub fn tombstoned(&self, hlc: Hlc, now_us: i64) -> Self {
         Self {
             deleted: true,
             ..self.revised(hlc, now_us)
@@ -139,19 +137,21 @@ impl RowStamp {
             updated_at,
             device: DeviceId::from_bytes(sixteen(&device)?),
             deleted: deleted != 0,
-            hlc: sixteen(&hlc)?,
-            rev: u64::try_from(rev).map_err(|_negative| damaged())?,
+            hlc: Hlc::from_bytes(sixteen(&hlc)?),
+            rev: Rev::from_number(u64::try_from(rev).map_err(|_negative| damaged())?),
         })
     }
 
     /// The revision as SQLite stores it.
-    ///
-    /// Signed, because SQLite has no unsigned integer. Saturating rather than wrapping for the
-    /// same reason as above: a revision that came back negative would be a revision the codec
-    /// cannot reproduce, and every encrypted value in the row would stop opening.
     #[must_use]
     pub fn rev_as_stored(&self) -> i64 {
-        i64::try_from(self.rev).unwrap_or(i64::MAX)
+        self.rev.as_stored()
+    }
+
+    /// The clock reading as SQLite stores it.
+    #[must_use]
+    pub fn hlc_as_stored(&self) -> [u8; 16] {
+        self.hlc.to_bytes()
     }
 }
 
@@ -180,12 +180,14 @@ fn damaged() -> DbError {
 
 #[cfg(test)]
 mod tests {
+    use cairn_domain::{Hlc, Rev};
+
     use super::{COMMON_COLUMNS, RowStamp};
     use crate::device::DeviceId;
 
     const NOW_US: i64 = 1_700_000_000_000_000;
-    const HLC: [u8; 16] = [7; 16];
-    const LATER_HLC: [u8; 16] = [8; 16];
+    const HLC: Hlc = Hlc::new(1_000, 0, [7; 6]);
+    const LATER_HLC: Hlc = Hlc::new(1_001, 0, [7; 6]);
 
     fn a_stamp() -> RowStamp {
         RowStamp::new(DeviceId::generate().unwrap(), HLC, NOW_US).unwrap()
@@ -200,7 +202,7 @@ mod tests {
     fn a_new_row_starts_at_revision_zero_and_is_not_a_tombstone() {
         let stamp = a_stamp();
 
-        assert_eq!(stamp.rev, 0);
+        assert_eq!(stamp.rev, Rev::FIRST);
         assert!(!stamp.deleted);
         assert_eq!(stamp.created_at, stamp.updated_at);
         assert_eq!(stamp.id.get_version_num(), 4);
@@ -218,7 +220,7 @@ mod tests {
 
         assert_eq!(second.id, first.id);
         assert_eq!(second.created_at, first.created_at);
-        assert_eq!(second.rev, 1);
+        assert_eq!(second.rev, Rev::FIRST.next());
         assert_eq!(second.updated_at, NOW_US + 1);
         assert_eq!(second.hlc, LATER_HLC);
         assert!(!second.deleted);
@@ -233,7 +235,7 @@ mod tests {
         let gone = first.tombstoned(LATER_HLC, NOW_US + 1);
 
         assert!(gone.deleted);
-        assert_eq!(gone.rev, 1);
+        assert_eq!(gone.rev, Rev::FIRST.next());
         assert_eq!(gone.id, first.id);
         assert_eq!(gone.hlc, LATER_HLC);
     }
@@ -241,9 +243,12 @@ mod tests {
     #[test]
     fn the_revision_never_goes_backwards_even_at_the_top_of_the_range() {
         let mut stamp = a_stamp();
-        stamp.rev = u64::MAX;
+        stamp.rev = Rev::from_number(u64::MAX);
 
-        assert_eq!(stamp.revised(LATER_HLC, NOW_US).rev, u64::MAX);
+        assert_eq!(
+            stamp.revised(LATER_HLC, NOW_US).rev,
+            Rev::from_number(u64::MAX)
+        );
         assert_eq!(stamp.rev_as_stored(), i64::MAX);
     }
 }

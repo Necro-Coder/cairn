@@ -32,14 +32,75 @@ export interface AppInfo {
 }
 
 /**
- * Whether the encrypted database has been opened.
+ * What state the encrypted database is in.
  *
- * Only one value exists until storage is implemented.
+ * A discriminated union on `state`, because the four cases are not shades of one another and
+ * three of them carry numbers. `open` is the only one that reports anything read out of a file,
+ * and what it reports is a schema version and a count of rows.
  *
  * @public part of the boundary vocabulary, exported whether or not anything imports it
  * by name today.
  */
-export type DatabaseStatus = 'notInitialized';
+export type DatabaseStatus =
+  | { readonly state: 'notInitialized' }
+  | { readonly state: 'locked' }
+  | { readonly state: 'open'; readonly schemaVersion: number; readonly tombstones: number }
+  | { readonly state: 'unsupported'; readonly found: number; readonly expected: number };
+
+/**
+ * One habit written by the diagnostics screen, as it comes back.
+ *
+ * Carries no note and no moment. The four sample commands exist to prove that the whole path
+ * from the window to the file works; they are not a way to read content out of the core.
+ */
+export interface SampleHabit {
+  readonly id: string;
+  readonly name: string;
+  readonly deleted: boolean;
+  /** Where the next page starts. Opaque: it is handed back, never built. */
+  readonly cursor: string;
+}
+
+/** Where a page of sample habits starts and how big it is. */
+export interface KeysetPage {
+  readonly after: string | null;
+  readonly limit: number;
+}
+
+/**
+ * What one table gained during a seeding run.
+ *
+ * Not exported. It exists to give the rows of {@link SeedReport} a name where they are read,
+ * and nothing outside this file names it; exporting it would put a type on the boundary's
+ * vocabulary that nothing on either side of the boundary ever asks for.
+ */
+interface SeededTable {
+  readonly table: string;
+  readonly rows: number;
+}
+
+/** What a seeding run wrote, and how long it took. */
+export interface SeedReport {
+  readonly tables: readonly SeededTable[];
+  readonly elapsedMs: number;
+}
+
+/**
+ * Why a sample operation did not happen.
+ *
+ * Tagged on `kind`, like every other error that crosses the boundary, so the interface matches
+ * on a name rather than reading a sentence that will one day be translated.
+ */
+export type SampleError =
+  | { readonly kind: 'locked' }
+  | { readonly kind: 'notFound' }
+  | {
+      readonly kind: 'tooMany';
+      readonly what: string;
+      readonly value: number;
+      readonly max: number;
+    }
+  | { readonly kind: 'storage' };
 
 /**
  * What the application will admit to about itself.
@@ -80,6 +141,18 @@ export interface IpcSurface {
 
   /** Reads a snapshot of the application state for the diagnostics screen. */
   readonly fetchDiagnostics: () => Promise<Diagnostics>;
+
+  /** Writes one sample habit, to prove the whole path from the window to the file works. */
+  readonly insertSampleHabit: () => Promise<SampleHabit>;
+
+  /** Reads a page of sample habits, in clock order. */
+  readonly listSampleHabits: (page: KeysetPage) => Promise<readonly SampleHabit[]>;
+
+  /** Marks a sample habit as deleted and empties its encrypted column. */
+  readonly deleteSampleHabit: (id: string) => Promise<SampleHabit>;
+
+  /** Writes a number of rows into every table that has a generator, for measuring. */
+  readonly seedData: (rowsPerTable: number) => Promise<SeedReport>;
 
   /** Reads everything the interface needs to decide what to draw about the vault. */
   readonly fetchVaultStatus: () => Promise<VaultStatus>;

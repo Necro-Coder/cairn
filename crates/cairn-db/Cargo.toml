@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 cairn-crypto.workspace = true
+cairn-domain.workspace = true
 cairn-platform.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true

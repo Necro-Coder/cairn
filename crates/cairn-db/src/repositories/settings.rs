@@ -7,6 +7,7 @@
 //! keeps their bank details in, or the last account they looked at, and deciding case by case
 //! which preference is sensitive is a decision somebody eventually gets wrong.
 
+use cairn_domain::{Hlc, Rev};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -57,7 +58,7 @@ pub fn put(
     connection: &Connection,
     codec: &FieldCodec<'_>,
     device: DeviceId,
-    hlc: [u8; 16],
+    hlc: Hlc,
     now_us: i64,
     key: &str,
     value: Option<&[u8]>,
@@ -96,7 +97,7 @@ pub fn put(
             stamp.created_at,
             stamp.updated_at,
             stamp.device.as_bytes().as_slice(),
-            stamp.hlc.as_slice(),
+            stamp.hlc_as_stored().as_slice(),
             stamp.rev_as_stored(),
             key,
             stored,
@@ -138,11 +139,11 @@ pub fn get(
     };
 
     let id = Uuid::from_bytes(sixteen(&id)?);
-    let rev = u64::try_from(rev).map_err(|_negative| {
+    let rev = Rev::from_number(u64::try_from(rev).map_err(|_negative| {
         // A revision the schema says cannot exist. Reported as a value that did not open,
         // because opening it at any revision this side can name would fail anyway.
         DbError::Sealed(cairn_crypto::CryptoError::Open)
-    })?;
+    })?);
     let value = stored
         .map(|bytes| {
             codec.open(
@@ -173,12 +174,7 @@ pub fn get(
 ///
 /// Returns [`DbError::NotFound`] if there is no live row with that key, and [`DbError::Sqlite`]
 /// if the statement fails.
-pub fn remove(
-    connection: &Connection,
-    hlc: [u8; 16],
-    now_us: i64,
-    key: &str,
-) -> Result<(), DbError> {
+pub fn remove(connection: &Connection, hlc: Hlc, now_us: i64, key: &str) -> Result<(), DbError> {
     let Some(stamp) = read_stamp(connection, key)? else {
         return Err(DbError::NotFound);
     };
@@ -193,7 +189,7 @@ pub fn remove(
         .execute(params![
             gone.id.as_bytes().as_slice(),
             gone.updated_at,
-            gone.hlc.as_slice(),
+            gone.hlc_as_stored().as_slice(),
             gone.rev_as_stored(),
         ])?;
 
@@ -231,6 +227,7 @@ fn check_key(key: &str) -> Result<(), DbError> {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
+    use cairn_domain::Hlc;
 
     use super::{MAX_KEY_LEN, get, put, remove};
     use crate::codec::FieldCodec;
@@ -241,8 +238,8 @@ mod tests {
     use crate::test_support::Scratch;
 
     const NOW_US: i64 = 1_700_000_000_000_000;
-    const HLC: [u8; 16] = [1; 16];
-    const LATER: [u8; 16] = [2; 16];
+    const HLC: Hlc = Hlc::new(1_000, 0, [1; 6]);
+    const LATER: Hlc = Hlc::new(1_001, 0, [1; 6]);
 
     fn an_open_vault() -> UnlockedVault {
         let params = Argon2Params::new(MIN_MEMORY_KIB, MIN_PASSES, MAX_LANES)

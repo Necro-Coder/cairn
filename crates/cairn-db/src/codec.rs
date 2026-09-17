@@ -21,6 +21,7 @@
 //! read of it fails with an error that says a value did not decrypt and nothing about why.
 
 use cairn_crypto::{Aad, DataKey, FreshNonce, ID_LEN, Sealed, open, seal};
+use cairn_domain::Rev;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -45,7 +46,7 @@ pub struct RowKey<'a> {
     /// The identifier of the row.
     pub row_id: Uuid,
     /// The revision the value is being written at, or was written at.
-    pub rev: u64,
+    pub rev: Rev,
 }
 
 /// The encrypted columns of one table, in the order the schema declares them.
@@ -233,7 +234,7 @@ impl<'a> FieldCodec<'a> {
             row.table,
             row.row_id.as_bytes(),
             column,
-            row.rev,
+            row.rev.as_number(),
             &self.key_id,
         )?)
     }
@@ -242,6 +243,7 @@ impl<'a> FieldCodec<'a> {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
+    use cairn_domain::Rev;
     use uuid::Uuid;
 
     use super::{FieldCodec, RowKey, SealedColumns};
@@ -258,6 +260,7 @@ mod tests {
     }
 
     fn a_row(id: Uuid, rev: u64) -> RowKey<'static> {
+        let rev = Rev::from_number(rev);
         RowKey {
             table: "habits",
             row_id: id,
@@ -332,7 +335,7 @@ mod tests {
         let elsewhere = RowKey {
             table: "vault_entries",
             row_id: id,
-            rev: 0,
+            rev: Rev::FIRST,
         };
 
         assert!(matches!(

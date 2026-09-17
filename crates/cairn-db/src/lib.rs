@@ -17,6 +17,7 @@
 //! machines can be reasoned about.
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod codec;
 pub mod device;
 pub mod error;
@@ -24,6 +25,7 @@ pub mod migrations;
 pub mod open;
 pub mod repositories;
 pub mod row;
+pub mod tombstones;
 
 #[cfg(test)]
 mod test_support;
