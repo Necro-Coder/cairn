@@ -76,6 +76,8 @@
         return 'La caja fuerte está cerrada. Ábrela y vuelve a intentarlo.';
       case 'wrongPassword':
         return 'Esa no es la contraseña maestra de este equipo. No se ha escrito nada.';
+      case 'lockedOut':
+        return `Demasiados intentos con la contraseña maestra. Espera ${String(error.remainingS ?? 0)} segundos. Es la misma cuenta atrás que en la pantalla de apertura, porque es la misma contraseña.`;
       case 'weakPassword':
         return `La contraseña del fichero necesita al menos ${String(error.min ?? 12)} caracteres.`;
       case 'notABackup':

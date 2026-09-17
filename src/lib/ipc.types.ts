@@ -187,6 +187,7 @@ export interface BackupVerifyReport {
 export type BackupError =
   | { readonly kind: 'locked' }
   | { readonly kind: 'wrongPassword' }
+  | { readonly kind: 'lockedOut'; readonly remainingS: number }
   | { readonly kind: 'weakPassword'; readonly chars: number; readonly min: number }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'notABackup' }

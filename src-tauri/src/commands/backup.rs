@@ -30,11 +30,13 @@ use cairn_db::DbError;
 use cairn_db::backup::export::write_backup;
 use cairn_db::backup::verify::verify_backup;
 use cairn_domain::password::{self, PasswordProblem};
+use cairn_domain::session::{backoff_remaining_s, locked_until_us};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter as _, Manager as _};
 use tauri_plugin_dialog::DialogExt as _;
 use zeroize::Zeroizing;
 
+use crate::clock::now_us;
 use crate::state::AppState;
 
 /// The event a running export or verification reports its progress on.
@@ -82,6 +84,18 @@ pub enum BackupError {
     /// one is about the file rather than about this machine.
     #[error("that is not the password")]
     WrongPassword,
+
+    /// Further attempts at the master password are refused for a while.
+    ///
+    /// The same tally and the same schedule as the unlock screen, because it is the same
+    /// secret. A command that could be asked the master password without limit would be a way
+    /// round the lockout, which is the whole reason that lockout exists.
+    #[serde(rename_all = "camelCase")]
+    #[error("further attempts are refused for {remaining_s} more seconds")]
+    LockedOut {
+        /// How many seconds are left before another attempt is allowed.
+        remaining_s: u32,
+    },
 
     /// A password chosen for the file alone was refused by the password policy.
     #[error("the password is not strong enough")]
@@ -268,11 +282,18 @@ fn export(
 ) -> Result<BackupExportReport, BackupError> {
     let state = app.try_state::<AppState>().ok_or(BackupError::Locked)?;
 
-    // Before the dialog opens rather than after. Asking somebody to choose a folder and name
-    // a file and only then telling them the password was wrong is a worse apology than not
-    // opening the dialog at all.
+    // Before anything is derived, and before the dialog opens. A closed vault is refused here
+    // rather than sixty seconds later, and refusing it first is what stops this command being
+    // a way to test master passwords against a locked vault: an export needs the vault open
+    // anyway, so there is nothing lost by insisting on it before a password is looked at.
+    if !state.session().is_unlocked() {
+        return Err(BackupError::Locked);
+    }
+
+    // Asking somebody to choose a folder and name a file and only then telling them the
+    // password was wrong is a worse apology than not opening the dialog at all.
     match source {
-        PasswordSource::Master => check_master(&state, password)?,
+        PasswordSource::Master => check_master(&state, password, now_us())?,
         PasswordSource::Separate => password::validate(password)?,
     }
 
@@ -328,15 +349,44 @@ fn verify(app: &tauri::AppHandle, password: &str) -> Result<BackupVerifyReport, 
 ///
 /// A full Argon2id derivation, thrown away. There is no cheaper way that is also honest: the
 /// keys in memory were derived from the password that was typed at unlock, and comparing
-/// against them would be comparing the password to itself. What this actually costs is a
-/// second of the export, and what it buys is that nobody writes a backup under a typo and
-/// finds out a year later.
-fn check_master(state: &tauri::State<'_, AppState>, password: &str) -> Result<(), BackupError> {
+/// against them would be comparing the password to itself. What this costs is a second of
+/// the export, and what it buys is that nobody writes a year of their life into a file sealed
+/// with a typo and finds out on the day they need it.
+///
+/// It is also, unavoidably, a place where a password can be tried, so it is charged the same
+/// way an unlock is: a lockout already in force refuses it before anything is derived, and a
+/// wrong answer counts against the same tally. The consequence is worth stating plainly —
+/// getting this wrong several times locks the vault for a while, exactly as getting the
+/// unlock screen wrong several times does. It is the same secret, and a door that is only
+/// bolted on one side is not bolted.
+fn check_master(
+    state: &tauri::State<'_, AppState>,
+    password: &str,
+    now: i64,
+) -> Result<(), BackupError> {
     let header = state.vault().header().cloned().ok_or(BackupError::Locked)?;
 
+    // Decided before anything is derived, so the refusal says nothing about the password.
+    let remaining_s = backoff_remaining_s(state.vault().locked_until_us(), now);
+    if remaining_s > 0 {
+        return Err(BackupError::LockedOut { remaining_s });
+    }
+
     match cairn_crypto::unlock(&header, password) {
-        Ok(_discarded) => Ok(()),
-        Err(CryptoError::Open) => Err(BackupError::WrongPassword),
+        Ok(_discarded) => {
+            let _recorded = state.vault().record_attempt(0, 0);
+            Ok(())
+        }
+        Err(CryptoError::Open) => {
+            let failed = state.vault().failed_attempts().saturating_add(1);
+            // Recorded before the failure is reported, so that closing the window between the
+            // two does not hand back an attempt.
+            let _recorded = state
+                .vault()
+                .record_attempt(failed, locked_until_us(failed, now));
+
+            Err(BackupError::WrongPassword)
+        }
         Err(_other) => Err(BackupError::Crypto),
     }
 }
@@ -479,6 +529,16 @@ mod tests {
 
         assert_eq!(master, PasswordSource::Master);
         assert_eq!(separate, PasswordSource::Separate);
+    }
+
+    #[test]
+    fn the_lockout_carries_the_number_the_countdown_needs() {
+        // The same shape the unlock screen already gets, because it is the same tally. A
+        // refusal without the seconds is a refusal somebody retries immediately.
+        let encoded = serde_json::to_string(&BackupError::LockedOut { remaining_s: 8 })
+            .expect("it serialises");
+
+        assert_eq!(encoded, "{\"kind\":\"lockedOut\",\"remainingS\":8}");
     }
 
     #[test]
