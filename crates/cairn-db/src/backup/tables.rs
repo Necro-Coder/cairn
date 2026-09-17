@@ -63,7 +63,14 @@ pub fn read_table(
         table.name
     );
 
-    let mut cursor = vec![0_u8; 16];
+    // The empty blob, not sixteen zero bytes. SQLite orders blobs by content and then by
+    // length, so the empty one sorts below every sixteen byte identifier including the one
+    // that is all zeros — and sixteen zero bytes as a starting cursor would skip exactly that
+    // row, silently, on every export. A version four UUID cannot be all zeros, so no row this
+    // application generates has that identifier; a row that arrived in a backup can have any
+    // sixteen bytes at all, and a row that is quietly not exported is the worst kind of bug
+    // this file could have.
+    let mut cursor: Vec<u8> = Vec::new();
     let mut written = 0_u64;
 
     loop {
@@ -535,6 +542,55 @@ mod tests {
 
         let arrived = rows_of(&target, "settings").remove(0);
         assert_eq!(arrived.get("value"), travelling.get("value"));
+    }
+
+    #[test]
+    fn a_row_whose_identifier_is_all_zeros_is_still_read() {
+        // A regression, and the worst kind: it lost data and said nothing. Paging walks the
+        // table with `id > ?1`, and the first cursor used to be sixteen zero bytes, so a row
+        // with that identifier never satisfied the comparison and was simply never read. No
+        // error, no warning — the export just came out one row short. A version four UUID
+        // cannot be all zeros, so nothing this application generates has that identifier, but
+        // a row that arrived in a backup can carry any sixteen bytes at all.
+        let source = Sandbox::new("tables-zero-id-source");
+        let device = DeviceId::generate().unwrap();
+
+        source
+            .database()
+            .with(|connection| {
+                settings::put(
+                    connection,
+                    &source.codec(),
+                    device,
+                    HLC,
+                    NOW_US,
+                    "theme",
+                    Some(b"ink"),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mut values = rows_of(&source, "settings").remove(0);
+        values.insert(
+            "id".to_owned(),
+            serde_json::Value::from(crate::backup::base64::encode(&[0_u8; 16])),
+        );
+
+        let target = Sandbox::new("tables-zero-id-target");
+        let spec = table_named("settings").unwrap();
+        target
+            .database()
+            .with(|connection| write_row(connection, &target.codec(), spec, &values))
+            .expect("the row is written");
+
+        let read = rows_of(&target, "settings");
+        assert_eq!(
+            read.len(),
+            1,
+            "the row with the all zero identifier vanished"
+        );
+        assert_eq!(read[0].get("id"), values.get("id"));
     }
 
     #[test]
