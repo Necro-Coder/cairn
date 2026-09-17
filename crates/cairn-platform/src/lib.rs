@@ -15,6 +15,7 @@
 pub mod memory;
 pub mod paths;
 pub mod secure_storage;
+pub mod single_instance;
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

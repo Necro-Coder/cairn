@@ -4,13 +4,14 @@
   import CreateVaultScreen from './routes/CreateVaultScreen.svelte';
   import DamagedScreen from './routes/DamagedScreen.svelte';
   import DiagnosticsScreen from './routes/DiagnosticsScreen.svelte';
+  import SecondCopyScreen from './routes/SecondCopyScreen.svelte';
   import UnlockScreen from './routes/UnlockScreen.svelte';
   import Shell from './lib/shell/Shell.svelte';
   import TitleBar from './lib/shell/TitleBar.svelte';
   import { measureStartup, type StartupResult } from './lib/startup';
   import { session } from './lib/session.svelte';
   import { workspace } from './lib/shell/workspace.svelte';
-  import type { VaultStatus } from './lib/ipc.types';
+  import type { InstanceState, VaultStatus } from './lib/ipc.types';
 
   // Null in every real build, so the banner below is not hidden by a condition: its text
   // does not exist in the bundle at all. The module that invents the data is the one that
@@ -20,6 +21,33 @@
   let startup = $state<StartupResult | null>(null);
   let diagnosticsOpen = $state(false);
   let ready = $state(false);
+
+  /**
+   * Whether this copy owns the data directory, and what to say if it does not.
+   *
+   * Asked before anything else, because everything else assumes the vault is reachable and in
+   * a second copy it is not: the core never read the header, so `session.refresh()` would be
+   * asking a state that was deliberately never managed.
+   *
+   * It starts as `held` so that the first frame is the ordinary one. A refusal is rare and a
+   * flash of the refusal screen on every start would be worse than a frame of the usual one.
+   */
+  let instance = $state<InstanceState>('held');
+
+  void ipc
+    .fetchInstanceStatus()
+    .then((status) => {
+      instance = status.state;
+    })
+    .catch(() => {
+      // The command boundary is broken, which the screens below already report where somebody
+      // is looking. Assuming the worst here would replace a legible failure with a wrong
+      // explanation of it.
+      instance = 'held';
+    });
+
+  /** Whether the vault is reachable at all, which is what decides between two whole screens. */
+  const owned = $derived(instance === 'held' || instance === 'guaranteedByThePlatform');
 
   // Measured as soon as the interface exists, so that the cold start figure is the time
   // the person waited rather than however long they took to press something.
@@ -126,7 +154,18 @@
   state left over to strand, because the branch it lives in is unreachable while the vault is
   open. That is the patch from PR #31 retired rather than moved.
 -->
-{#if !ready}
+{#if !owned}
+  <!--
+    Before everything, because a second copy never opened the vault and every branch below
+    asks about one. The title bar comes with it: a window with no system decoration that
+    could not be moved or closed would be a trap, and this is the branch a person most wants
+    to close.
+  -->
+  <TitleBar tone="plain" />
+  <main class="plain">
+    <SecondCopyScreen state={instance} onclose={() => void ipc.closeWindow()} />
+  </main>
+{:else if !ready}
   <TitleBar />
   <main class="plain">
     <p class="muted">Leyendo el estado de la caja fuerte…</p>

@@ -230,3 +230,24 @@ test('the command palette with something typed', async ({ page }) => {
   await expect(page.getByRole('option', { name: /Hábitos/ })).toBeVisible();
   await expectNoViolations(page, 'the command palette with a query');
 });
+
+/**
+ * The screen a second copy of the application draws.
+ *
+ * Reached by a query parameter rather than by driving the interface, because there is no
+ * sequence of actions inside one browser tab that produces a second process. It is the only
+ * screen in this file reached that way, and the reason is written here so that nobody takes it
+ * as a pattern for the rest.
+ */
+for (const [state, heading] of [
+  ['alreadyRunning', 'Ya hay una copia abierta'],
+  ['unavailable', 'No se ha podido reservar la carpeta de datos'],
+] as const) {
+  test(`the ${state} refusal`, async ({ page }) => {
+    await page.goto(`/?instance=${state}`);
+
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Cerrar esta ventana' })).toBeVisible();
+    await expectNoViolations(page, `the ${state} refusal`);
+  });
+}

@@ -139,7 +139,15 @@ pub fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEven
     let outcome = outcome_of(event, window.is_minimized().unwrap_or(false));
     let app = window.app_handle();
 
-    if let Some(reason) = apply(app.state::<AppState>().session(), outcome, now_us()) {
+    // Asked for rather than assumed. A second copy of the application refused the instance
+    // lock never opens the vault, so there is no session for its window to affect, and a
+    // handler that took the state unconditionally would panic while drawing the screen whose
+    // whole job is to explain the refusal calmly.
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+
+    if let Some(reason) = apply(state.session(), outcome, now_us()) {
         announce(app, reason);
     }
 }

@@ -12,6 +12,7 @@
 
 pub mod app_info;
 pub mod diagnostics;
+pub mod instance;
 pub mod sample;
 pub mod vault;
 
