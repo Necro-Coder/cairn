@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+  --> tests/ui/store_a_day_where_a_moment_goes.rs:10:20
+   |
+10 |     takes_a_moment(day);
+   |     -------------- ^^^ expected `Timestamp`, found `CivilDay`
+   |     |
+   |     arguments to this function are incorrect
+   |
+note: function defined here
+  --> tests/ui/store_a_day_where_a_moment_goes.rs:6:4
+   |
+ 6 | fn takes_a_moment(_moment: Timestamp) {}
+   |    ^^^^^^^^^^^^^^ ------------------

@@ -1,0 +1,7 @@
+error[E0308]: mismatched types
+  --> tests/ui/compare_a_moment_with_a_day.rs:11:27
+   |
+11 |     let _same = moment == day;
+   |                 ------    ^^^ expected `Timestamp`, found `CivilDay`
+   |                 |
+   |                 expected because this is `Timestamp`

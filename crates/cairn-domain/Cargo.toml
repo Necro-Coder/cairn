@@ -13,5 +13,13 @@ publish.workspace = true
 cairn-crypto.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# Already in the tree for `cairn-crypto`, at the same version. The types in this crate are the
+# ones whose invariants are worth stating rather than sampling: a clock that must never go
+# backwards and a calendar that must never name a day that does not exist are properties, and a
+# handful of examples would agree with a version of either that is wrong in between them.
+proptest = "1.11.0"
+trybuild = "1.0.121"
+
 [lints]
 workspace = true
