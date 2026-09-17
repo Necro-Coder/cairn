@@ -34,10 +34,21 @@ import { initial, type TabState } from './tabs.ts';
  */
 export const MAX_HISTORY = 8;
 
+/**
+ * The five parts of the settings screen.
+ *
+ * Here rather than beside the components that draw them, because which one is open is part
+ * of the workspace and the workspace is not allowed to depend on a screen. The titles are in
+ * `src/routes/settings/`, where they are read.
+ */
+export type SettingsSectionId = 'security' | 'appearance' | 'data' | 'diagnostics' | 'shortcuts';
+
 /** Everything that came from an open vault. */
 export interface Workspace {
   /** The tab strip. */
   readonly tabs: TabState;
+  /** Which part of the settings screen is open, for when it is. */
+  readonly settings: SettingsSectionId;
   /** What is on the panel, in the order it was put there. */
   readonly cards: readonly CardId[];
   /** What was last run from the palette, most recent first. */
@@ -46,7 +57,12 @@ export interface Workspace {
 
 /** A workspace as it is the moment the vault opens: one tab, no cards, no history. */
 export function emptyWorkspace(): Workspace {
-  return { tabs: initial(), cards: [], history: [] };
+  return { tabs: initial(), settings: 'security', cards: [], history: [] };
+}
+
+/** Opens one part of the settings screen, which is what its chooser and `Ctrl` `⇧` `D` do. */
+export function withSettingsSection(workspace: Workspace, settings: SettingsSectionId): Workspace {
+  return { ...workspace, settings };
 }
 
 /**

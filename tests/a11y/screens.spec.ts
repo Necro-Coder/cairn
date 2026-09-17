@@ -96,14 +96,37 @@ test('the unlock screen', async ({ page }) => {
   await expectNoViolations(page, 'the unlock screen');
 });
 
-test('the diagnostics screen', async ({ page }) => {
+test('the diagnostics, inside settings', async ({ page }) => {
   await open(page);
   await createVault(page);
   await page.keyboard.press('Control+Shift+KeyD');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Diagnóstico' })).toBeVisible();
-  await expectNoViolations(page, 'the diagnostics screen');
+  // The shortcut opens the settings tab at the right part rather than a panel of its own.
+  await expect(page.getByRole('heading', { level: 1, name: 'Ajustes' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Este equipo' })).toBeVisible();
+  await expectNoViolations(page, 'the diagnostics inside settings');
 });
+
+test('the diagnostics on their own, with the vault closed', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await page.getByRole('button', { name: 'Cerrar la caja fuerte' }).click();
+  await page.keyboard.press('Control+Shift+KeyD');
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Qué es esta copia' })).toBeVisible();
+  await expectNoViolations(page, 'the diagnostics on their own');
+});
+
+for (const part of ['Seguridad', 'Apariencia', 'Datos', 'Atajos'] as const) {
+  test(`the ${part.toLowerCase()} part of settings`, async ({ page }) => {
+    await open(page);
+    await createVault(page);
+    await openSection(page, 'Ajustes');
+    await page.getByRole('button', { name: part, exact: true }).click();
+
+    await expectNoViolations(page, `settings: ${part}`);
+  });
+}
 
 /** Opens the palette the way it is meant to be opened. */
 async function openPalette(page: Page): Promise<void> {

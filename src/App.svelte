@@ -2,12 +2,14 @@
   import { ipc } from '$ipc';
 
   import CreateVaultScreen from './routes/CreateVaultScreen.svelte';
+  import DamagedScreen from './routes/DamagedScreen.svelte';
   import DiagnosticsScreen from './routes/DiagnosticsScreen.svelte';
   import UnlockScreen from './routes/UnlockScreen.svelte';
   import Shell from './lib/shell/Shell.svelte';
   import TitleBar from './lib/shell/TitleBar.svelte';
   import { measureStartup, type StartupResult } from './lib/startup';
   import { session } from './lib/session.svelte';
+  import { workspace } from './lib/shell/workspace.svelte';
   import type { VaultStatus } from './lib/ipc.types';
 
   // Null in every real build, so the banner below is not hidden by a condition: its text
@@ -55,37 +57,6 @@
     };
   });
 
-  /**
-   * Whether the vault was open the last time this was looked at.
-   *
-   * A plain variable rather than state, because the effect below writes it and nothing
-   * draws it. Making it reactive would make that effect depend on its own result.
-   */
-  let wasUnlocked = false;
-
-  // Closing the vault takes the diagnostics panel with it. The panel is drawn above the
-  // shell, so without this a lock that happens while it is open leaves it on screen, with
-  // whatever was half typed into the change forms still sitting in their fields, and the
-  // lock screen never appears. That is the one thing the automatic lock exists to prevent:
-  // somebody sitting down at a machine whose owner walked away.
-  //
-  // The tabs, the panel and the palette history go the same way, but not from here: they
-  // are in the workspace and the session discards them. This is the last thing left outside
-  // it, and it moves inside in the step that makes the diagnostics a screen in Ajustes.
-  //
-  // Watched as a transition rather than as a condition. A condition would make the panel
-  // impossible to open at all while the vault is closed, and reading the version is how
-  // anybody works out what is wrong with a machine that will not open.
-  $effect(() => {
-    const unlocked = session.status.unlocked;
-
-    if (wasUnlocked && !unlocked) {
-      diagnosticsOpen = false;
-    }
-
-    wasUnlocked = unlocked;
-  });
-
   function adopt(status: VaultStatus): void {
     session.adopt(status);
   }
@@ -110,9 +81,19 @@
     // Control and Shift together, so that nothing typed by accident opens a screen nobody
     // asked for. The shortcut works in release builds too: the machine where something
     // goes wrong is rarely the one with a debugger attached.
+    //
+    // It leads to two different places on purpose. With the vault open the diagnostics are
+    // the fourth part of the settings screen, which is where they belong and where nothing
+    // has to remember to close them. With it closed they are a screen of their own, because
+    // the machine somebody needs them on is usually the one that will not open.
     if (event.shiftKey && event.key.toLowerCase() === 'd') {
       event.preventDefault();
-      diagnosticsOpen = !diagnosticsOpen;
+      if (session.status.unlocked) {
+        workspace.open('settings', { temporary: true });
+        workspace.openSettings('diagnostics');
+      } else {
+        diagnosticsOpen = !diagnosticsOpen;
+      }
       return;
     }
 
@@ -139,48 +120,39 @@
   <p class="preview-banner" role="alert">{previewNotice}</p>
 {/if}
 
-{#if diagnosticsOpen}
-  <TitleBar />
-  <main class="plain">
-    <DiagnosticsScreen {startup} onclose={() => (diagnosticsOpen = false)} />
-  </main>
-{:else if !ready}
+<!--
+  The order of these matters. An open vault wins over everything, so the diagnostics screen
+  below cannot survive an unlock the way the panel it replaces survived a lock: there is no
+  state left over to strand, because the branch it lives in is unreachable while the vault is
+  open. That is the patch from PR #31 retired rather than moved.
+-->
+{#if !ready}
   <TitleBar />
   <main class="plain">
     <p class="muted">Leyendo el estado de la caja fuerte…</p>
   </main>
-{:else if session.status.condition === 'unreadable'}
-  <!--
-    A header that is there and cannot be read. The one thing this screen must never offer
-    is creating a new vault, because that would write over the damaged one and make
-    everything encrypted under it unreadable for good.
-  -->
+{:else if session.status.unlocked}
+  <Shell {startup} />
+{:else if diagnosticsOpen}
   <TitleBar tone="plain" />
   <main class="plain">
-    <section class="damaged">
-      <h1>La cabecera no se puede leer</h1>
-      <p>
-        Hay una caja fuerte en este equipo y su cabecera está dañada. No se va a crear otra encima:
-        eso dejaría ilegible todo lo que haya guardado.
-      </p>
-      <p>
-        Recupera el fichero <code>vault.header</code> desde tu propia copia de seguridad y vuelve a abrir
-        la aplicación.
-      </p>
-    </section>
+    <DiagnosticsScreen {startup} onclose={() => (diagnosticsOpen = false)} />
+  </main>
+{:else if session.status.condition === 'unreadable'}
+  <TitleBar tone="plain" />
+  <main class="plain">
+    <DamagedScreen />
   </main>
 {:else if !session.status.exists}
   <TitleBar tone="plain" />
   <main class="plain">
     <CreateVaultScreen oncreated={adopt} />
   </main>
-{:else if !session.status.unlocked}
+{:else}
   <TitleBar tone="plain" />
   <main class="plain">
     <UnlockScreen status={session.status} lockReason={session.lockReason} onunlocked={adopt} />
   </main>
-{:else}
-  <Shell />
 {/if}
 
 <style>
@@ -219,20 +191,5 @@
 
   .muted {
     color: var(--colour-text-muted);
-  }
-
-  .damaged {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    max-width: var(--form-max-width);
-    padding: var(--space-5);
-    border: var(--border-width) solid var(--colour-negative);
-    border-radius: var(--radius-md);
-    background-color: var(--colour-surface-raised);
-  }
-
-  .damaged h1 {
-    color: var(--colour-negative);
   }
 </style>

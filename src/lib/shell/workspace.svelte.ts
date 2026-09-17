@@ -15,7 +15,16 @@
 import type { SectionId } from './sections';
 import type { CardId } from './panel/cards';
 import { activate, capacityAt, close, cycle, move, open, pin, reopen, type TabState } from './tabs';
-import { forVault, remembered, withCard, withTabs, withoutCard, type Workspace } from './workspace';
+import {
+  forVault,
+  remembered,
+  withCard,
+  withSettingsSection,
+  withTabs,
+  withoutCard,
+  type SettingsSectionId,
+  type Workspace,
+} from './workspace';
 
 /**
  * The width assumed before anybody has measured the window.
@@ -95,6 +104,11 @@ class WorkspaceStore {
   /** Takes a card off the panel. */
   removeCard(id: CardId): void {
     this.#edit((workspace) => withoutCard(workspace, id));
+  }
+
+  /** Opens one part of the settings screen. */
+  openSettings(id: SettingsSectionId): void {
+    this.#edit((workspace) => withSettingsSection(workspace, id));
   }
 
   /** Records that something was run from the palette. */

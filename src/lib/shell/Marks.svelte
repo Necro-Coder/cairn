@@ -16,15 +16,26 @@
   interface Props {
     /** How wide the whole composition is drawn, as a length token. */
     size?: string;
+    /**
+     * How many shapes are drawn.
+     *
+     * Three for an empty state and the panel header, two for creating the vault and the
+     * damaged-header screen. Those are the budgets in the design system's table, and they
+     * are a number here rather than a note in a review comment because the difference
+     * between a face and a decorated page is one shape too many.
+     */
+    shapes?: 2 | 3;
   }
 
-  const { size = 'var(--empty-mark-max)' }: Props = $props();
+  const { size = 'var(--empty-mark-max)', shapes = 3 }: Props = $props();
 </script>
 
 <div class="marks" aria-hidden="true" style="--marks-size: {size}">
   <span class="circle mark"></span>
   <span class="half mark"></span>
-  <span class="dot mark"></span>
+  {#if shapes > 2}
+    <span class="dot mark"></span>
+  {/if}
 </div>
 
 <style>

@@ -18,6 +18,7 @@ import {
   forVault,
   remembered,
   withCard,
+  withSettingsSection,
   withTabs,
   withoutCard,
   type Workspace,
@@ -35,6 +36,7 @@ function busy(): Workspace {
   workspace = withCard(workspace, 'finances-month');
   workspace = withCard(workspace, 'passwords-recent');
   workspace = remembered(workspace, 'open:passwords');
+  workspace = withSettingsSection(workspace, 'diagnostics');
 
   return workspace;
 }
@@ -45,6 +47,7 @@ test('a workspace opens with one tab, no cards and no history', () => {
   assert.equal(workspace.tabs.tabs.length, 1);
   assert.deepEqual(workspace.cards, []);
   assert.deepEqual(workspace.history, []);
+  assert.equal(workspace.settings, 'security');
 });
 
 test('an open vault keeps the workspace it already had', () => {
@@ -96,6 +99,7 @@ test('closing the vault discards the tabs, the cards and the history, all of the
   assert.equal(workspace.tabs.tabs.length, 4);
   assert.equal(workspace.cards.length, 2);
   assert.equal(workspace.history.length, 1);
+  assert.equal(workspace.settings, 'diagnostics');
 
   assert.equal(forVault(workspace, false), null);
 

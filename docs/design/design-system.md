@@ -106,6 +106,8 @@ This contradicts the rule that vermilion means action, so the exception is named
 1. **The glyph never appears next to a primary button.** Two vermilion shapes in one field of view and the rule is gone.
 2. **The glyph is never clickable**, and never inside anything clickable. It teaches nothing if it cannot be pressed.
 
+The lock screen is where those two statements meet, because it carries the seal and it also has a button. It is resolved in favour of the rule rather than around it: **on the lock screen the button that opens the vault is not accented.** An accent exists to pick one action out of several, and that screen has exactly one — the button is the only thing on it that can be pressed, so nothing is being distinguished from anything. The seal keeps the vermilion, and the rule that vermilion means action survives intact on the one screen where it would otherwise have had to be excused.
+
 It is `aria-hidden` wherever the product name is written beside it, which is everywhere it appears.
 
 ### Values
