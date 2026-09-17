@@ -203,13 +203,15 @@ function applyInactivity(): void {
  * screen that explains a refusal is otherwise unreachable here, and a screen nobody can reach is
  * a screen nobody checks for contrast, focus order or a reader.
  *
- * Anything that is not one of the two refusals is `held`, so a value typed into the address bar
- * cannot put the preview into a state the real application has no name for.
+ * Anything that is not one of the three refusals is `held`, so a value typed into the address
+ * bar cannot put the preview into a state the real application has no name for.
  */
 function previewInstanceState(): InstanceState {
   const asked = new URLSearchParams(globalThis.location.search).get('instance');
 
-  return asked === 'alreadyRunning' || asked === 'unavailable' ? asked : 'held';
+  return asked === 'alreadyRunning' || asked === 'unavailable' || asked === 'noDirectory'
+    ? asked
+    : 'held';
 }
 
 /** What the interface is told, assembled the way the core assembles it. */

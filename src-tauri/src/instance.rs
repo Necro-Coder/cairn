@@ -14,9 +14,10 @@ use crate::storage::DataDirectory;
 
 /// What this process is allowed to do with the data directory.
 ///
-/// Serialised for the interface. Four states rather than a boolean, because they lead to four
+/// Serialised for the interface. Five states rather than a boolean, because they lead to five
 /// different screens: carry on, explain that another copy has it, explain that something is
-/// wrong with the machine, and carry on because there was nothing to take.
+/// wrong with the machine, explain that there is nowhere to keep a vault, and carry on because
+/// there was nothing to take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 #[non_exhaustive]
@@ -27,6 +28,15 @@ pub enum InstanceStatus {
     AlreadyRunning,
     /// The lock could not be taken for a reason that is not another copy.
     Unavailable,
+    /// There is no directory to take a lock in.
+    ///
+    /// The vault lives in one place decided by this build, and something stopped that place
+    /// from being settled on: a `CAIRN_PROFILE` that is not a name this accepts, a system that
+    /// did not say where per-user data belongs, or a directory that could not be created. All
+    /// three end the same way — there is nowhere to put a vault — and all three have to say so
+    /// rather than closing the window, because a window that vanishes looks like a broken
+    /// application and the person tries again.
+    NoDirectory,
     /// The platform runs one copy of an application by itself.
     GuaranteedByThePlatform,
 }
@@ -83,6 +93,20 @@ impl Instance {
         }
     }
 
+    /// The answer when this build could not settle on a directory at all.
+    ///
+    /// There is no lock to hold, because there is no place to hold one. It is a constructor
+    /// rather than a value the caller builds so that the one way to get an [`Instance`] that
+    /// may use the directory stays [`Self::take`], which is the call that actually takes the
+    /// lock.
+    #[must_use]
+    pub const fn without_a_directory() -> Self {
+        Self {
+            status: InstanceStatus::NoDirectory,
+            _lock: None,
+        }
+    }
+
     /// What this process is allowed to do.
     #[must_use]
     pub const fn status(&self) -> InstanceStatus {
@@ -96,9 +120,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::Instance;
-    #[cfg(windows)]
-    use super::InstanceStatus;
+    use super::{Instance, InstanceStatus};
     use crate::storage::DataDirectory;
 
     struct Scratch(PathBuf);
@@ -161,6 +183,21 @@ mod tests {
         assert_eq!(
             Instance::take(&missing).status(),
             InstanceStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn a_process_with_nowhere_to_put_a_vault_is_refused_rather_than_closed() {
+        // The defect this keeps fixed: a `CAIRN_PROFILE` that is not a name this accepts used
+        // to end the startup with an error, which closes the window before anything can be
+        // said in it. Refusing is right; vanishing is not. What matters here is that the
+        // refusal is a state with a screen behind it and that it never reads as permission.
+        let instance = Instance::without_a_directory();
+
+        assert_eq!(instance.status(), InstanceStatus::NoDirectory);
+        assert!(
+            !instance.status().may_use_the_directory(),
+            "a process with no directory was about to open a vault in it"
         );
     }
 

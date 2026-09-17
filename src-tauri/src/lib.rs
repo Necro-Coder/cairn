@@ -55,24 +55,34 @@ pub fn run() {
             // file. And the name it builds the directory from is the bundle identifier, so
             // changing the identifier would move the vault and leave the old one behind,
             // looking exactly like a machine that never had one.
-            let directory = DataDirectory::new(cairn_platform::paths::data_directory()?);
+            //
+            // A refusal here is not propagated. Returning the error would close the window
+            // before anything could be said in it, and a window that vanishes is what somebody
+            // who typed a profile name wrong actually sees: an application that does not
+            // start. The cause is dropped rather than carried, because it names the path and
+            // the path names the account.
+            let directory = cairn_platform::paths::data_directory()
+                .ok()
+                .map(DataDirectory::new);
 
             // Before the vault is read, and before anything is managed. Two copies of this
             // application with the same database file open is two connections, two logical
             // clocks issuing readings from the same device identifier, and two sets of keys in
             // memory; the clock is the part that does real damage, because both would hand out
             // readings a row already carries.
-            let instance = Instance::take(&directory);
+            let instance = directory
+                .as_ref()
+                .map_or_else(Instance::without_a_directory, Instance::take);
             let may_continue = instance.status().may_use_the_directory();
             app.manage(instance);
 
             // A refused copy stops here, and stopping here is the point: it does not read the
             // header, it does not create a file, and it does not start the watchdog. What it
-            // does is draw the screen that says why, which is the one thing a second copy can
+            // does is draw the screen that says why, which is the one thing a refused copy can
             // usefully do. The interface asks `instance_status` before anything else.
-            if !may_continue {
+            let Some(directory) = directory.filter(|_at| may_continue) else {
                 return Ok(());
-            }
+            };
 
             let vault = Vault::open_at(directory.path())?;
             app.manage(AppState::new(vault, directory));
