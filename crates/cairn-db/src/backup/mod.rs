@@ -33,6 +33,7 @@ pub mod compress;
 pub mod export;
 pub mod format;
 pub mod import;
+pub mod plaintext;
 pub mod schema;
 pub mod swap;
 pub mod tables;
