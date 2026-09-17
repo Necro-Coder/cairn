@@ -171,6 +171,34 @@
    */
   const RETENTION_DAYS = 180;
 
+  /** What the last seeding run wrote, in one sentence, or `null` before there has been one. */
+  let seeding = $state<string | null>(null);
+
+  /**
+   * How many rows one press of the generator writes per table.
+   *
+   * A thousand rather than the ceiling the core allows, because the point of the button is to be
+   * pressed again: somebody looking for where the budgets on this screen stop being met presses
+   * it until they stop being met, and a single press that wrote the ceiling would jump straight
+   * past the number they came to find.
+   */
+  const SEED_ROWS = 1000;
+
+  /**
+   * Writes a batch of rows into every table that has a generator.
+   *
+   * The only way to reach a file large enough for the budgets below to mean anything: measuring
+   * the cost of an index on an empty table measures nothing. It reports how long the batch took,
+   * which is the number the measurement is about.
+   */
+  async function seed(): Promise<void> {
+    await runSample(async () => {
+      const report = await ipc.seedData(SEED_ROWS);
+      const written = report.tables.reduce((total, table) => total + table.rows, 0);
+      seeding = `Se han escrito ${String(written)} filas en ${String(report.elapsedMs)} ms.`;
+    });
+  }
+
   /** Whether the list has been read once since the panel was drawn. */
   let sampleListRead = false;
 
@@ -235,7 +263,9 @@
     <h2>Prueba de almacenamiento</h2>
     <p class="muted">
       Escribe hábitos de prueba en la base real. Al borrar uno queda la fila marcada y su nota se
-      vacía, así que el número de lápidas de arriba sube y el contenido no se queda dentro.
+      vacía, así que el número de lápidas de arriba sube y el contenido no se queda dentro. El
+      generador escribe un lote entero de golpe, que es la única manera de llegar a un fichero donde
+      los presupuestos de abajo signifiquen algo.
     </p>
 
     <div class="actions">
@@ -257,11 +287,20 @@
       <button type="button" disabled={sampleBusy} onclick={() => void compact()}>
         Compactar lápidas
       </button>
+      <button type="button" disabled={sampleBusy} onclick={() => void seed()}>
+        Sembrar {SEED_ROWS} filas
+      </button>
     </div>
 
     {#if compaction !== null}
       <p class="muted" role="status">
         {compaction}
+      </p>
+    {/if}
+
+    {#if seeding !== null}
+      <p class="muted" role="status">
+        {seeding}
       </p>
     {/if}
 
