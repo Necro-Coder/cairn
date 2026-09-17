@@ -6,7 +6,6 @@
   import UnlockScreen from './routes/UnlockScreen.svelte';
   import Shell from './lib/shell/Shell.svelte';
   import TitleBar from './lib/shell/TitleBar.svelte';
-  import { router } from './lib/shell/router.svelte';
   import { measureStartup, type StartupResult } from './lib/startup';
   import { session } from './lib/session.svelte';
   import type { VaultStatus } from './lib/ipc.types';
@@ -64,12 +63,15 @@
    */
   let wasUnlocked = false;
 
-  // Closing the vault takes the diagnostics panel and the current section with it. The
-  // panel is drawn above the shell, so without this a lock that happens while it is open
-  // leaves it on screen, with whatever was half typed into the change forms still sitting
-  // in their fields, and the lock screen never appears. That is the one thing the
-  // automatic lock exists to prevent: somebody sitting down at a machine whose owner
-  // walked away.
+  // Closing the vault takes the diagnostics panel with it. The panel is drawn above the
+  // shell, so without this a lock that happens while it is open leaves it on screen, with
+  // whatever was half typed into the change forms still sitting in their fields, and the
+  // lock screen never appears. That is the one thing the automatic lock exists to prevent:
+  // somebody sitting down at a machine whose owner walked away.
+  //
+  // The tabs, the panel and the palette history go the same way, but not from here: they
+  // are in the workspace and the session discards them. This is the last thing left outside
+  // it, and it moves inside in the step that makes the diagnostics a screen in Ajustes.
   //
   // Watched as a transition rather than as a condition. A condition would make the panel
   // impossible to open at all while the vault is closed, and reading the version is how
@@ -79,7 +81,6 @@
 
     if (wasUnlocked && !unlocked) {
       diagnosticsOpen = false;
-      router.reset();
     }
 
     wasUnlocked = unlocked;

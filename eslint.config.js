@@ -144,6 +144,29 @@ export default tseslint.config(
     },
   },
 
+  {
+    // The modules `node --test` runs. They are deliberately outside the application's
+    // TypeScript project — see `tsconfig.test.json` — so the project service would not find
+    // them, and they are pointed at their own configuration instead. Every type-aware rule
+    // still applies to them; they are tests of the rules the application is built on.
+    files: ['src/**/*.test.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+      parserOptions: {
+        projectService: false,
+        project: ['./tsconfig.test.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // `node:test` registers a test when it is called and returns a promise that the
+      // runner, not the caller, is responsible for. Awaiting each one would serialise the
+      // file and is not how the runner is meant to be used, so every test in every file
+      // would need a `void` that says nothing.
+      '@typescript-eslint/no-floating-promises': 'off',
+    },
+  },
+
   // The two blocks below switch off the rules that need type information, so they have to
   // come last: in a flat configuration the final entry that matches a file wins.
 

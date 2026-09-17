@@ -41,7 +41,11 @@ docs/                this documentation
 
 `lib/icons/` holds eighteen icons and one brand glyph, all hand-written inline SVG. The box, the stroke weight and the decision about assistive technology live once in `IconFrame.svelte`; each icon file contributes its geometry and nothing else. The set is enumerated in the design system, and growing it means adding a line there saying what the new one is for.
 
-`lib/shell/` is the application frame: the header, the tab strip, the panel and the command palette. The state machine behind the tabs is a separate, pure module from the reactive wrapper around it, so the rules — born temporary, replace the temporary slot, pin on double click, cap at six — are tested as ordinary functions over ordinary values rather than through a rendered page.
+`lib/shell/` is the application frame: the header, the tab strip, the panel and the command palette. Every rule in it is a pure module beside the component that draws it, so it is tested as ordinary functions over ordinary values rather than through a rendered page. `tabs.ts` holds the rules of the strip — born temporary, replace the temporary slot, pin on double click, cap at six and at four — and `palette/commands.ts` holds the matching, including the fold that makes `habitos` find `Hábitos`. `workspace.ts` holds the three things an open vault leaves behind: the tabs, the cards on the panel and what has been run from the palette.
+
+That third one is the reason the workspace is one object. `workspace.svelte.ts` is the only reactive state the shell reads, and closing the vault sets it to null in a single assignment, which takes all three with it. Anything derived from an open vault that a later phase adds goes in there and is discarded by the line that already exists, rather than by a line somebody has to remember to write — which is exactly what was forgotten once, in PR #31, where a panel drawn above everything else survived a lock.
+
+`lib/search/` is the contract every module will register a search provider against, written before there is anything to search. A hit carries a module, an identity, a title and a date, and there is no field for content, a value, an amount or a snippet: the palette opens on two keys, so the type is what makes showing a secret impossible rather than the care of whoever writes the provider. `contract.test-d.ts` fails to compile if a fifth field appears, whatever it is called.
 
 `routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active.
 

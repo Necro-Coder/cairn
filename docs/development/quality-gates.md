@@ -26,7 +26,7 @@ Suppressing one of these is allowed and is meant to be uncomfortable. It takes a
 | `npm run format:check` | Formatting drift. |
 | `npm run lint` | Lints, including the rules that defend the WebView. |
 | `npm run tokens` | Colours, lengths and durations written by hand instead of taken from a token. |
-| `npm run check` | Types, using the Svelte compiler. |
+| `npm run check` | Types, using the Svelte compiler, and then the modules `node --test` runs. |
 | `npm run test:unit` | The frontend unit tests. |
 | `npm run test:a11y` | Accessibility violations, with `axe`, on every preview screen in both themes. |
 | `npm run knip` | Files, exports and dependencies nothing uses. |
@@ -78,7 +78,11 @@ It was verified by adding an `<input>` with no `<label>` to a screen and confirm
 
 `npm run test:unit` is `node --test` over `scripts/**/*.test.mjs` and `src/**/*.test.ts`. There is no test framework, because Node 24 runs TypeScript directly and carries a runner, and a framework would be several packages in the graph for something already installed.
 
-What it covers is the logic that can be tested without a browser: the token gate itself, and the state machine behind the tab strip. Anything that needs a rendered page belongs in the accessibility gate or in a manual test, and anything in the core belongs in `cargo test`.
+What it covers is the logic that can be tested without a browser: the token gate itself, the state machine behind the tab strip, what a lock throws away, and how the command palette matches what is typed. Anything that needs a rendered page belongs in the accessibility gate or in a manual test, and anything in the core belongs in `cargo test`.
+
+Those modules import each other with the file extension written out — `from './tabs.ts'` — because Node strips the types and then resolves the imports itself, and an ESM resolver needs it. They are also the one part of the frontend checked against `tsconfig.test.json` rather than the main configuration, which is why `npm run check` runs `tsc` after `svelte-check`. The split exists so that Node's type definitions stay out of the application: with `node` among the ambient types everywhere, `process` and the rest of the standard library would typecheck inside a component that runs in a WebView with nothing behind it, and the mistake would build cleanly and fail in a window.
+
+The type test beside the search contract, `src/lib/search/contract.test-d.ts`, has nothing to run: it asserts that a search result has exactly four fields, and `npm run check` is what executes it. Adding a fifth — a snippet, a value, an amount, whatever it is called — stops the project compiling.
 
 ## Secrets and personal data
 
