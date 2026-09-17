@@ -94,6 +94,8 @@ Four tables: `accounts`, `categories`, `transactions` and `budgets`.
 
 Money is an integer in the smallest unit of its currency, with an ISO 4217 code beside it. Never a floating point number: a column of them adds up to a different total depending on the order it was added in, and a total that changes when nothing changed is not an accounting application.
 
+An amount is also bounded above, at a trillion minor units. The bound is not about what anybody would type; it is about addition. A monthly total is a `sum` inside SQLite, and SQLite answers a sum that leaves the range of a signed 64-bit integer with an error rather than a wrong number, so one row carrying a number near the limit of the type would turn every report that covers its month into a refusal, with nothing in the refusal to say which row caused it. The bound is a `CHECK` in the table as well as a check in the repository, because a file that arrives by synchronisation is not a file this application wrote.
+
 Three rules are particular to this module.
 
 **A movement is never edited.** An edit writes a new row that points back with `supersedes_id`, and the old row is marked deleted and gains `superseded_by_id`. A merge that overwrote money would lose a movement, and a lost movement is not noticed until somebody balances the month — by which point there is nothing left to compare against.

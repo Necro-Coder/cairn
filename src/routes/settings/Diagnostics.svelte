@@ -142,6 +142,35 @@
     }
   }
 
+  /** What the last compaction did, in one sentence, or `null` before there has been one. */
+  let compaction = $state<string | null>(null);
+
+  /**
+   * Removes the tombstones older than the retention window the core keeps.
+   *
+   * The one operation in the application that runs a real deletion, and the only way a person
+   * can move the number above downwards. It says what it did afterwards rather than before,
+   * because how many rows are old enough is not something the interface can know without
+   * asking, and a confirmation that could not name a number would be a confirmation of nothing.
+   */
+  async function compact(): Promise<void> {
+    await runSample(async () => {
+      const report = await ipc.compactTombstones();
+      compaction =
+        report.removed === 0
+          ? `No había ninguna lápida de más de ${String(RETENTION_DAYS)} días. Quedan ${String(report.remaining)}.`
+          : `Se han quitado ${String(report.removed)} lápidas de más de ${String(RETENTION_DAYS)} días. Quedan ${String(report.remaining)}.`;
+    });
+  }
+
+  /**
+   * How old a tombstone has to be before the core will remove it.
+   *
+   * Repeated here so the sentence above can name it. It is a constant of the core and this is a
+   * copy of it for display; if the two ever disagree, the core is right and this is a typo.
+   */
+  const RETENTION_DAYS = 180;
+
   /** Whether the list has been read once since the panel was drawn. */
   let sampleListRead = false;
 
@@ -225,7 +254,16 @@
       >
         Volver a leer
       </button>
+      <button type="button" disabled={sampleBusy} onclick={() => void compact()}>
+        Compactar lápidas
+      </button>
     </div>
+
+    {#if compaction !== null}
+      <p class="muted" role="status">
+        {compaction}
+      </p>
+    {/if}
 
     <div role="status" aria-live="polite">
       {#if sampleProblem !== null}

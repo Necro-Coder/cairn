@@ -17,6 +17,7 @@
 use cairn_crypto::UnlockedVault;
 use cairn_db::DbError;
 use cairn_db::repositories::habits::{self, Habit, MAX_PAGE, NewHabit};
+use cairn_db::tombstones;
 use cairn_domain::{CivilDay, Hlc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -145,6 +146,74 @@ pub struct SeededTable {
     pub table: &'static str,
     /// How many rows were written into it.
     pub rows: u32,
+}
+
+/// What a compaction removed, for the diagnostics screen.
+///
+/// Counts and table names, and nothing else. The tables are named by the schema, so this is safe
+/// to put in a screenshot for the same reason the rest of that screen is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionReport {
+    /// What went, per table, skipping the ones nothing went from.
+    pub tables: Vec<SeededTable>,
+    /// The total across every table.
+    pub removed: u64,
+    /// How many tombstones are left.
+    pub remaining: u64,
+    /// How long it took.
+    pub elapsed_ms: u64,
+}
+
+/// Removes the tombstones that are older than the retention window.
+///
+/// The one operation in the application that runs a `DELETE`, offered here because it is the one
+/// number on the diagnostics screen a person cannot otherwise move. What it removes is a
+/// skeleton: every encrypted column of those rows was emptied when they were marked, so there is
+/// nothing left in them to lose, and a row marked yesterday is not a candidate.
+///
+/// Takes no argument. The window is a constant of the core, and a retention period arriving from
+/// a WebView would be a way to ask this process to empty the file.
+///
+/// # Errors
+///
+/// Returns [`SampleError::Locked`] if the vault is closed and [`SampleError::Storage`] if the
+/// database refuses.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn diagnostics_compact_tombstones(
+    state: tauri::State<'_, AppState>,
+) -> Result<CompactionReport, SampleError> {
+    let micros = now_us();
+    let started = std::time::Instant::now();
+
+    let (removed, remaining) = state
+        .session()
+        .with_open(|_vault, storage| {
+            storage.database().with(|connection| {
+                let removed = tombstones::compact(connection, micros)?;
+                let remaining = tombstones::census(connection)?;
+                Ok((removed, remaining))
+            })
+        })
+        .ok_or(SampleError::Locked)??;
+
+    Ok(CompactionReport {
+        tables: removed
+            .by_table
+            .into_iter()
+            .map(|(table, rows)| SeededTable {
+                table,
+                rows: u32::try_from(rows).unwrap_or(u32::MAX),
+            })
+            .collect(),
+        removed: removed.total,
+        remaining: remaining.total,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
 }
 
 /// Writes one sample habit and answers what it wrote.

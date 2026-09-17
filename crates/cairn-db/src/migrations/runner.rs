@@ -60,6 +60,12 @@ pub const MIGRATIONS: &[Migration] = &[
         up: include_str!("sql/0003_vault.sql"),
         down: include_str!("sql/0003_vault.down.sql"),
     },
+    Migration {
+        version: 4,
+        name: "finances",
+        up: include_str!("sql/0004_finances.sql"),
+        down: include_str!("sql/0004_finances.down.sql"),
+    },
 ];
 
 /// Every table of user data a fully migrated database has, in the order they were created in.
@@ -85,6 +91,10 @@ pub const DATA_TABLES: &[&str] = &[
     "vault_password_history",
     "vault_tags",
     "vault_entry_tags",
+    "accounts",
+    "categories",
+    "transactions",
+    "budgets",
 ];
 
 /// The newest schema version this build knows.
