@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The permissions the main window has. Two, and both exist for one feature: the interface subscribes to the event the core emits when it closes the vault by itself, so that the screen changes the moment it happens instead of at the next poll. A custom command needs no entry here, so nothing else in this application does. Every permission listed is a core API that script injected into the WebView could call, and these two can only listen to and stop listening to events this application emits.",
+  "description": "The permissions the main window has. Two, and both exist for one feature: the interface subscribes to the event the core emits when it closes the vault by itself, so that the screen changes the moment it happens instead of at the next poll. A custom command needs no entry here, so nothing else in this application does; the four window controls in `src/window.rs` are commands of our own for exactly that reason, and what they cost instead is written above `start_window_drag`. Every permission listed is a core API that script injected into the WebView could call, and these two can only listen to and stop listening to events this application emits.",
   "windows": ["main"],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }
