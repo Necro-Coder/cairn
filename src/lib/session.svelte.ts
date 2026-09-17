@@ -119,10 +119,11 @@ class Session {
    * communicate a fact that changes on the scale of minutes.
    */
   async start(): Promise<() => void> {
-    const unlisten = await ipc.onVaultLocked((reason) => {
-      this.#discard(reason);
-    });
-
+    // The timer first, and deliberately. Subscribing crosses to the core and the core is
+    // entitled to refuse: if that rejection took this function with it, the timer below
+    // would never be installed and a vault that closed itself would go on looking open
+    // until something else asked. The event is how the screen changes at once; the timer is
+    // what guarantees it changes at all.
     const beat = setInterval(() => {
       if (!this.status.unlocked) {
         return;
@@ -144,6 +145,24 @@ class Session {
         .then((next) => this.#apply(next))
         .catch(() => this.refresh().catch(() => undefined));
     }, HEARTBEAT_INTERVAL_MS);
+
+    // Recorded before the subscription is attempted, so that a refusal leaves something
+    // that can still stop the timer instead of leaking it.
+    this.#stop = () => {
+      clearInterval(beat);
+    };
+
+    let unlisten: () => void;
+    try {
+      unlisten = await ipc.onVaultLocked((reason) => {
+        this.#discard(reason);
+      });
+    } catch (cause) {
+      // Not swallowed. The timer above keeps the interface honest within one beat, which is
+      // a degradation rather than a failure, but something refused a subscription this
+      // application needs and that is not a thing to carry on quietly from.
+      throw new Error('the interface could not subscribe to the lock event', { cause });
+    }
 
     this.#stop = () => {
       clearInterval(beat);

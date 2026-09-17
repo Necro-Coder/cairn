@@ -215,15 +215,25 @@ fn the_configuration_does_not_pin_a_version_of_its_own() {
     );
 }
 
+/// The only core permissions this application is allowed to grant, and why.
+///
+/// Listening is how the interface finds out that the core closed the vault on its own,
+/// which has to reach the screen the moment it happens rather than at the next poll.
+/// Stopping listening is the other half of the same call: the function `listen` hands back
+/// is what the interface calls when it goes away, and it invokes the core the same way.
+///
+/// Nothing else belongs here. A custom command is reachable without a capability entry, so
+/// every command this application exposes needs nothing from this list.
+const ALLOWED_PERMISSIONS: [&str; 2] = ["core:event:allow-listen", "core:event:allow-unlisten"];
+
 #[test]
-fn no_capability_grants_any_core_permission() {
+fn no_capability_grants_a_core_permission_outside_the_allowed_list() {
     // Every permission granted here is a core API that script injected into the WebView can
     // ask for. `core:default` is a convenience bundle rather than a minimal list, and it
     // includes path resolution, which is how an attacker turns a scripting bug into the
-    // name of the account running the application. Nothing here needs it: a custom command
-    // is reachable without a capability entry, which was confirmed by emptying the list and
-    // watching the application still work. Adding one back is a deliberate act that has to
-    // come through this test.
+    // name of the account running the application. The two that are allowed can do one
+    // thing: subscribe to events this application emits, and stop. Adding a third is a
+    // deliberate act that has to come through this test.
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
     let entries = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()));
@@ -245,18 +255,58 @@ fn no_capability_grants_any_core_permission() {
             .and_then(Value::as_array)
             .unwrap_or_else(|| panic!("{} declares no permissions array", path.display()));
 
-        assert!(
-            permissions.is_empty(),
-            "{} grants {permissions:?}. The commands this application exposes are its own, \
-             and a custom command does not need a capability entry, so the list should be \
-             empty. Every entry here is a core API that script injected into the WebView \
-             could call: `core:default` alone would hand it path resolution, which is how \
-             an attacker learns the account name. Adding one is a deliberate decision that \
-             belongs in the description next to it, and in this assertion.",
-            path.display()
-        );
+        for permission in permissions {
+            let name = permission.as_str().unwrap_or_else(|| {
+                panic!(
+                    "{} grants a permission that is not a string",
+                    path.display()
+                )
+            });
+
+            assert!(
+                ALLOWED_PERMISSIONS.contains(&name),
+                "{} grants `{name}`, which is not one of {ALLOWED_PERMISSIONS:?}. Every entry \
+                 here is a core API that script injected into the WebView could call: \
+                 `core:default` alone would hand it path resolution, which is how an attacker \
+                 learns the account name. Adding one is a deliberate decision that belongs in \
+                 the description next to it, and in this assertion.",
+                path.display()
+            );
+        }
         checked += 1;
     }
 
     assert!(checked > 0, "no capability files were found to check");
+}
+
+#[test]
+fn the_window_may_listen_for_the_event_that_says_the_vault_closed() {
+    // The other direction of the test above, and the one that would have caught a real
+    // defect. With an empty list the subscription is refused at runtime: the call that sets
+    // it up rejects, the interface never hears that the core closed the vault, and the
+    // timer that would have noticed anyway is never started because it was installed after
+    // the subscription. None of that shows in a browser preview, which has no core to
+    // refuse anything, so the only thing standing between that and a release is this.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities/default.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let capability: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("{} is not valid JSON: {error}", path.display()));
+
+    let permissions = capability
+        .get("permissions")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{} declares no permissions array", path.display()));
+
+    for required in ALLOWED_PERMISSIONS {
+        assert!(
+            permissions
+                .iter()
+                .any(|granted| granted.as_str() == Some(required)),
+            "{} does not grant `{required}`. Without it the interface cannot subscribe to \
+             the event the core emits when it closes the vault, and a vault that closed \
+             itself would go on looking open until something else asked.",
+            path.display()
+        );
+    }
 }
