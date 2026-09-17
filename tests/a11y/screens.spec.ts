@@ -75,16 +75,60 @@ for (const [section, title] of [
   });
 }
 
-test('a module explaining that it is in development', async ({ page }) => {
+for (const [section, action, said] of [
+  ['Hábitos', 'Añadir hábito', /Crear y marcar hábitos llega/],
+  // Named one by one rather than matched loosely: the passwords screen says the same thing
+  // twice, once about the search field and once about the list, and a pattern that caught
+  // both would be a test that passed while the button did nothing.
+  ['Contraseñas', 'Añadir contraseña', /Guardar y leer contraseñas llega/],
+  ['Finanzas', 'Añadir movimiento', /Registrar movimientos llega/],
+] as const) {
+  test(`${section.toLowerCase()} explaining that the part is in development`, async ({ page }) => {
+    await open(page);
+    await createVault(page);
+    await openSection(page, section);
+    // A button that is not wired up is still shown and still reacts. What it says when it is
+    // pressed is part of the screen, so it is part of what gets checked.
+    await page.getByRole('button', { name: action }).click();
+
+    await expect(page.getByText(said)).toBeVisible();
+    await expectNoViolations(page, `${section.toLowerCase()} in development`);
+  });
+}
+
+test('the habits year, drawn with nothing in it', async ({ page }) => {
   await open(page);
   await createVault(page);
   await openSection(page, 'Hábitos');
-  // A button that is not wired up is still shown and still reacts. What it says when it is
-  // pressed is part of the screen, so it is part of what gets checked.
-  await page.getByRole('button', { name: 'Añadir hábito' }).click();
 
-  await expect(page.getByText('En desarrollo', { exact: false })).toBeVisible();
-  await expectNoViolations(page, 'a module in development');
+  // The grid itself is hidden from assistive technology, so what has to be reachable is
+  // the sentence that says what it is. A grid nobody can have described to them, with no
+  // caption, would be three hundred squares of nothing.
+  await expect(page.getByRole('heading', { level: 2, name: 'Tu año' })).toBeVisible();
+  await expect(page.getByText(/Un cuadro por día/)).toBeVisible();
+  await expectNoViolations(page, 'the habits year');
+});
+
+test('the passwords search, switched off with its reason', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Contraseñas');
+
+  // A disabled control with no explanation is a bug report waiting to be filed, so the
+  // reason is on screen and not only in the title attribute.
+  await expect(page.getByLabel('Buscar')).toBeDisabled();
+  await expect(page.getByText(/Buscar entre las contraseñas llega/)).toBeVisible();
+  await expectNoViolations(page, 'the passwords search');
+});
+
+test('the finances summary, at zero', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Finanzas');
+
+  await expect(page.getByRole('heading', { level: 2, name: 'Este mes' })).toBeVisible();
+  await expect(page.getByText(/no hay ningún movimiento/)).toBeVisible();
+  await expectNoViolations(page, 'the finances summary');
 });
 
 test('the unlock screen', async ({ page }) => {

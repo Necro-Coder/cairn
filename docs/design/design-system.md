@@ -385,6 +385,8 @@ Rules, not a catalogue. The catalogue is the code.
 
 **Empty states.** Every list has one, and it is the real thing the person sees on their first day rather than a placeholder: a geometric mark, one sentence saying what will be here, and the action that puts something there. Never the word "empty" on its own.
 
+**A chart with nothing in it.** Drawn rather than left out, in `--colour-surface-sunken`, flat, with no colour scale and no invented values, and with one sentence under it saying what each part of it is: the habits year is three hundred and seventy-one squares and one line of Spanish explaining that each one is a day. A scale invented against no data is a scale designed twice, and the second time would be the one with real densities in front of it. The squares are hidden from assistive technology and the sentence carries the meaning, because a grid announced cell by cell says less than the line under it.
+
 **"In development".** Anything drawn before it works says so, in a small uppercase badge in its own module's colour, in the place the value will go. A button that is not wired up is still shown and still reacts: pressing it says the part is in development. A control that does nothing looks like a broken application; one that explains looks like an unfinished one, which is what it is.
 
 **Warnings that matter.** The ones about losing data are the exception to every rule about restraint on this page: they go before the fields rather than after, they carry `--colour-warning` on the border and the title, and they say the whole thing in plain Spanish. A warning under a form is a warning read after the decision.
