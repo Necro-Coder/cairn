@@ -86,13 +86,13 @@ const PREVIEW_DIAGNOSTICS: Diagnostics = {
 const previewHabits: SampleHabit[] = [
   {
     id: '00000000-0000-4000-8000-000000000001',
-    name: 'HÃ¡bito de prueba',
+    name: 'Hábito de prueba',
     deleted: false,
     cursor: '0'.repeat(32),
   },
   {
     id: '00000000-0000-4000-8000-000000000002',
-    name: 'HÃ¡bito de prueba',
+    name: 'Hábito de prueba',
     deleted: true,
     cursor: '1'.repeat(32),
   },
@@ -285,7 +285,7 @@ export const ipc: IpcSurface = {
     previewHabitCount += 1;
     const habit: SampleHabit = {
       id: `00000000-0000-4000-8000-${String(previewHabitCount).padStart(12, '0')}`,
-      name: 'HÃ¡bito de prueba',
+      name: 'Hábito de prueba',
       deleted: false,
       cursor: String(previewHabitCount).padStart(32, '0'),
     };
@@ -308,6 +308,10 @@ export const ipc: IpcSurface = {
 
   seedData: (rowsPerTable) =>
     Promise.resolve({ tables: [{ table: 'habits', rows: rowsPerTable }], elapsedMs: 42 }),
+
+  // Fixed, like every other answer here. A stand-in that removed rows would be pretending to
+  // have a retention window, and there is no file to have one about.
+  compactTombstones: () => Promise.resolve({ tables: [], removed: 0, remaining: 0, elapsedMs: 7 }),
 
   fetchVaultStatus: () => Promise.resolve(status()),
 

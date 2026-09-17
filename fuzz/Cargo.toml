@@ -15,10 +15,20 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 cairn-crypto = { path = "../crates/cairn-crypto" }
+cairn-db = { path = "../crates/cairn-db" }
+cairn-domain = { path = "../crates/cairn-domain" }
+uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "vault_header"
 path = "fuzz_targets/vault_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqlite_row_decode"
+path = "fuzz_targets/sqlite_row_decode.rs"
 test = false
 doc = false
 bench = false

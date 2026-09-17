@@ -439,3 +439,16 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: nightly
         run: cargo fuzz run vault_header --target x86_64-unknown-linux-gnu -- -max_total_time=120 -print_final_stats=1
+
+      - name: Fuzz the decoder that opens a sealed column
+        # The second parser whose input somebody with the file gets to write, and the one
+        # with more to find than the header: the header is a fixed layout with no length
+        # fields, and this walks a blob whose length came from the same untrusted place as
+        # its contents. A column of thirty-nine bytes, a column of nothing, a nonce that
+        # runs off the end — every one of those is a slice somebody has to have got right.
+        #
+        # Almost nothing here will decrypt, and that is the expected answer. What is under
+        # test is that every input returns at all.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: cargo fuzz run sqlite_row_decode --target x86_64-unknown-linux-gnu -- -max_total_time=120 -print_final_stats=1

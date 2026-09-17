@@ -97,6 +97,14 @@ interface SeededTable {
   readonly rows: number;
 }
 
+/** What a compaction removed, and what it left. */
+export interface CompactionReport {
+  readonly tables: readonly SeededTable[];
+  readonly removed: number;
+  readonly remaining: number;
+  readonly elapsedMs: number;
+}
+
 /** What a seeding run wrote, and how long it took. */
 export interface SeedReport {
   readonly tables: readonly SeededTable[];
@@ -179,6 +187,14 @@ export interface IpcSurface {
 
   /** Writes a number of rows into every table that has a generator, for measuring. */
   readonly seedData: (rowsPerTable: number) => Promise<SeedReport>;
+
+  /**
+   * Removes the tombstones older than the retention window the core keeps.
+   *
+   * Takes no argument on purpose. The window is a constant of the core, and a retention period
+   * arriving from a WebView would be a way to ask the core to empty the file.
+   */
+  readonly compactTombstones: () => Promise<CompactionReport>;
 
   /** Reads everything the interface needs to decide what to draw about the vault. */
   readonly fetchVaultStatus: () => Promise<VaultStatus>;

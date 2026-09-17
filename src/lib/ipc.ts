@@ -40,6 +40,7 @@ import type {
   LockReason,
   PasswordStrength,
   SampleHabit,
+  CompactionReport,
   SeedReport,
   VaultStatus,
 } from './ipc.types';
@@ -80,6 +81,11 @@ async function deleteSampleHabit(id: string): Promise<SampleHabit> {
 /** Writes a number of rows into every table that has a generator, for measuring. */
 async function seedData(rowsPerTable: number): Promise<SeedReport> {
   return invoke<SeedReport>('diagnostics_seed_data', { rowsPerTable });
+}
+
+/** Removes the tombstones older than the retention window the core keeps. */
+async function compactTombstones(): Promise<CompactionReport> {
+  return invoke<CompactionReport>('diagnostics_compact_tombstones');
 }
 
 /** Reads everything the interface needs to decide what to draw about the vault. */
@@ -181,6 +187,7 @@ export const ipc: IpcSurface = {
   listSampleHabits,
   deleteSampleHabit,
   seedData,
+  compactTombstones,
   fetchVaultStatus,
   createVault,
   unlockVault,
