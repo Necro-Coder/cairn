@@ -152,9 +152,11 @@ These are measured, not estimated, and a budget without a measured number behind
 
 | Measure                    | Budget | Measured                                 |
 | -------------------------- | ------ | ---------------------------------------- |
-| Release executable size    | 15 MB  | 3.96 MB                                  |
+| Release executable size    | 15 MB  | 10.2 MB                                  |
 | Command round trip         | 5 ms   | 1.5 to 1.9 ms, median of nine warm calls |
 | Cold start to first answer | 500 ms | 469 to 475 ms                            |
+
+The executable grew from 3.96 MB to 10.2 MB when the database arrived, and the growth is one thing: SQLCipher is built from source and links OpenSSL statically, because a cipher that arrives from whatever copy of OpenSSL happens to be on the machine is a cipher nobody can reason about. Six megabytes is what that costs. It is worth saying out loud rather than discovering later that the number moved: a jump of this size in one phase would be alarming if it had no explanation, and the explanation is the reason the dependency was chosen.
 
 Cold start is measured from the uptime the core reports at the moment the interface receives its first answer, so it covers the whole wait: process, window, WebView, bundle and one round trip. Nothing is excluded to make the number look better.
 
@@ -162,4 +164,6 @@ That budget started at 400 ms and was raised to 500 ms, which is the kind of cha
 
 Raising it is not the same as ignoring it. 500 ms still fails if the application grows careless, the measurement still runs, and the two routes to getting under 400 ms are written down rather than forgotten: show the window before the bundle is ready, so WebView startup overlaps with something useful, and cut what happens between the interface mounting and its first question to the core. Neither is worth doing against an application that does almost nothing, because there is no way to tell whether a saving is real or noise. This gets measured again when there is enough application for the answer to mean something.
 
-The size and latency figures are comfortable, and both will get worse as the application grows. Having the baseline now is the point: it turns a future argument about whether things used to feel faster into a comparison between two numbers.
+The cold start figure in the table is the one taken before the database existed, and it is left there deliberately rather than removed or guessed at. Opening the file happens when somebody unlocks, not when the process starts, so there is no reason to expect the number to have moved; but "no reason to expect" is not a measurement, and this table only holds measurements. It is taken again on a real window, because the browser preview has no core to ask.
+
+All three numbers will get worse as the application grows. Having the baseline is the point: it turns a future argument about whether things used to feel faster into a comparison between two numbers.
