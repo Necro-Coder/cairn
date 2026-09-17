@@ -19,6 +19,7 @@ use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 
 use crate::clock::now_us;
 use crate::session::Session;
+use crate::storage::DataDirectory;
 use crate::vault::Vault;
 
 /// Application-wide state, managed by Tauri and handed to commands by reference.
@@ -30,6 +31,8 @@ pub struct AppState {
     session: Session,
     /// The header, and where it lives.
     vault: Mutex<Vault>,
+    /// Where the four files of the vault live, resolved once at startup.
+    directory: DataDirectory,
     /// Taken for the whole of any command that can change the vault.
     operation: AsyncMutex<()>,
 }
@@ -40,13 +43,24 @@ impl AppState {
     /// The vault starts locked. There is no path by which a process begins with keys in it:
     /// opening one always goes through a password.
     #[must_use]
-    pub fn new(vault: Vault) -> Self {
+    pub fn new(vault: Vault, directory: DataDirectory) -> Self {
         Self {
             started_at: Instant::now(),
             session: Session::new(InactivityTimeout::default(), now_us()),
             vault: Mutex::new(vault),
+            directory,
             operation: AsyncMutex::new(()),
         }
+    }
+
+    /// Where the four files of the vault live.
+    ///
+    /// Resolved once at startup and kept. Asking the environment again on each unlock would mean
+    /// a profile variable changed halfway through a run could move the database out from under
+    /// an open vault.
+    #[must_use]
+    pub fn directory(&self) -> &DataDirectory {
+        &self.directory
     }
 
     /// The keys, for as long as the vault is open.
@@ -102,6 +116,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::AppState;
+    use crate::storage::DataDirectory;
     use crate::vault::Vault;
 
     struct Scratch {
@@ -122,7 +137,10 @@ mod tests {
         }
 
         fn state(&self) -> AppState {
-            AppState::new(Vault::open_at(&self.directory).expect("the directory can be read"))
+            AppState::new(
+                Vault::open_at(&self.directory).expect("the directory can be read"),
+                DataDirectory::new(self.directory.clone()),
+            )
         }
     }
 

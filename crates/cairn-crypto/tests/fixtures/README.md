@@ -11,7 +11,7 @@ The header is a file format, and a file format is a promise. Every other test in
 | `default-parameters/` | m = 64 MiB, t = 3, p = 1 | What a vault created today is given. |
 | `lowered-parameters/` | m = 32 MiB, t = 4, p = 1 | A second, different set, so that a build which only ever handled the defaults correctly would still be caught. |
 
-Each directory holds a `vault.header` of exactly 168 bytes and a `record.sealed` of 77 bytes: a 24 byte nonce, the ciphertext, and a 16 byte tag.
+Each directory holds a `cairn.header` of exactly 168 bytes and a `record.sealed` of 77 bytes: a 24 byte nonce, the ciphertext, and a 16 byte tag.
 
 ## The password
 

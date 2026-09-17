@@ -59,7 +59,7 @@ fn fixture_directory(name: &str) -> PathBuf {
 fn open_fixture(name: &str) -> (VaultHeader, Argon2Params, String) {
     let directory = fixture_directory(name);
 
-    let header_bytes = fs::read(directory.join("vault.header"))
+    let header_bytes = fs::read(directory.join("cairn.header"))
         .unwrap_or_else(|cause| panic!("the fixture {name} has no header file: {cause}"));
     let header = VaultHeader::parse(&header_bytes)
         .unwrap_or_else(|cause| panic!("the header of fixture {name} no longer parses: {cause}"));
@@ -119,8 +119,8 @@ fn the_fixture_at_lowered_parameters_still_opens() {
 fn the_two_fixtures_are_different_vaults() {
     // Not the same file with the parameters edited: different salts, different keys,
     // different ciphertext. Otherwise the second one would prove nothing the first did not.
-    let default = fs::read(fixture_directory("default-parameters").join("vault.header")).unwrap();
-    let lowered = fs::read(fixture_directory("lowered-parameters").join("vault.header")).unwrap();
+    let default = fs::read(fixture_directory("default-parameters").join("cairn.header")).unwrap();
+    let lowered = fs::read(fixture_directory("lowered-parameters").join("cairn.header")).unwrap();
 
     assert_ne!(default, lowered);
     assert_ne!(
@@ -131,7 +131,7 @@ fn the_two_fixtures_are_different_vaults() {
 
 #[test]
 fn the_wrong_password_does_not_open_a_fixture() {
-    let bytes = fs::read(fixture_directory("default-parameters").join("vault.header")).unwrap();
+    let bytes = fs::read(fixture_directory("default-parameters").join("cairn.header")).unwrap();
     let header = VaultHeader::parse(&bytes).unwrap();
     assert!(unlock(&header, "la de al lado").is_err());
 }
@@ -180,7 +180,7 @@ fn regenerate_the_fixtures() {
         )
         .unwrap();
 
-        fs::write(directory.join("vault.header"), header.to_bytes()).unwrap();
+        fs::write(directory.join("cairn.header"), header.to_bytes()).unwrap();
         fs::write(directory.join("record.sealed"), sealed.to_bytes()).unwrap();
     }
 }

@@ -35,6 +35,7 @@ use zeroize::Zeroizing;
 use crate::clock::now_us;
 use crate::session::{LockReason, UnlockFailure, UnlockOutcome};
 use crate::state::AppState;
+use crate::storage::Storage;
 use crate::vault::VaultCondition;
 use crate::vault_file::VaultFileError;
 
@@ -126,6 +127,16 @@ impl From<PasswordProblem> for VaultError {
             PasswordProblem::TooLong { bytes, max } => Self::PasswordTooLong { bytes, max },
             _ => Self::PasswordRejected,
         }
+    }
+}
+
+impl From<cairn_db::DbError> for VaultError {
+    fn from(_error: cairn_db::DbError) -> Self {
+        // Collapsed for the same reason as the file errors below. Whether the file could not be
+        // created, the schema is newer than this build, or a stored value failed its tag, the
+        // answer to the interface is that storage did not work; the difference is in the log,
+        // where somebody repairing a machine can reach it.
+        Self::Storage
     }
 }
 
@@ -376,6 +387,36 @@ impl From<Strength> for StrengthReport {
     }
 }
 
+/// Opens the database for a vault that has just been opened, and puts it beside the keys.
+///
+/// Called at the one moment it can be: after a derivation succeeded, because the key the file is
+/// encrypted with hangs off the data key and does not exist before then.
+///
+/// A failure here closes the vault again rather than leaving it open without storage. Half an
+/// open vault is a state every screen would have to ask about, and the honest answer to somebody
+/// whose database will not open is that the application did not open.
+fn attach_storage(state: &AppState) -> Result<(), VaultError> {
+    // The path is copied out first so that the directory is not borrowed across the closure that
+    // holds the session lock.
+    let directory = state.directory().path().to_path_buf();
+
+    let opened = state
+        .session()
+        .with_vault(|vault| Storage::open(&directory, vault))
+        .ok_or(VaultError::Locked)?;
+
+    match opened {
+        Ok(storage) => {
+            state.session().attach_storage(storage);
+            Ok(())
+        }
+        Err(error) => {
+            state.session().lock();
+            Err(error.into())
+        }
+    }
+}
+
 /// Reads the whole status in one pass over the state.
 ///
 /// One pass rather than six, so that every field of the answer describes the same moment.
@@ -443,6 +484,8 @@ pub async fn create(
         return Err(error.into());
     }
 
+    attach_storage(state)?;
+
     Ok(status_of(state, now))
 }
 
@@ -481,6 +524,7 @@ pub async fn unlock(
     match outcome {
         Ok(UnlockOutcome::Opened) => {
             state.vault().record_attempt(0, 0)?;
+            attach_storage(state)?;
             Ok(status_of(state, now))
         }
         // The vault is open, and it is open for everything in this process: there is no

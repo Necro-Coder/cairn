@@ -28,6 +28,7 @@ use cairn_lib::commands::vault::{
     create, heartbeat, set_inactivity, unlock,
 };
 use cairn_lib::state::AppState;
+use cairn_lib::storage::DataDirectory;
 use cairn_lib::vault::Vault;
 use zeroize::Zeroizing;
 
@@ -66,7 +67,10 @@ impl Scratch {
     /// Calling this twice is what a restart looks like from in here: nothing is carried over
     /// except what was written to the disk.
     fn state(&self) -> AppState {
-        AppState::new(Vault::open_at(&self.directory).expect("the directory can be read"))
+        AppState::new(
+            Vault::open_at(&self.directory).expect("the directory can be read"),
+            DataDirectory::new(self.directory.clone()),
+        )
     }
 }
 
@@ -157,7 +161,7 @@ fn a_password_that_is_too_short_creates_nothing_at_all() {
     assert!(!state.vault().exists());
     assert!(!state.session().is_unlocked());
     assert!(
-        !scratch.directory.join("vault.header").exists(),
+        !scratch.directory.join("cairn.header").exists(),
         "a refused creation left a header behind"
     );
 }

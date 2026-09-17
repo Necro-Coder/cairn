@@ -22,7 +22,7 @@ That shapes everything below. The asset is confidentiality of a single vault, an
   │   └─────────────────────┘               └──────────────────┘  │
   │                                                  │            │
   │                                          ┌───────▼─────────┐  │
-  │                                          │ vault.header    │  │
+  │                                          │ cairn.header    │  │
   │                                          │ (168 bytes)     │  │
   │                                          │ database (later)│  │
   │                                          └─────────────────┘  │

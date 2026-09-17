@@ -283,7 +283,7 @@ mod tests {
         // their own copy of the file back.
         let scratch = Scratch::new("unreadable");
         fs::create_dir_all(&scratch.directory).expect("the directory can be created");
-        fs::write(scratch.directory.join("vault.header"), [0_u8; 168])
+        fs::write(scratch.directory.join("cairn.header"), [0_u8; 168])
             .expect("the damaged file can be written");
 
         let vault = scratch.open();
@@ -337,7 +337,7 @@ mod tests {
             .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(leftovers, vec!["vault.header".to_owned()]);
+        assert_eq!(leftovers, vec!["cairn.header".to_owned()]);
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
             .install(header.clone())
             .expect("the header is written");
 
-        fs::create_dir_all(scratch.directory.join("vault.header.backup"))
+        fs::create_dir_all(scratch.directory.join("cairn.header.backup"))
             .expect("the obstruction can be created");
 
         let failure = vault

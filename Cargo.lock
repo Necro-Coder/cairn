@@ -291,7 +291,9 @@ name = "cairn"
 version = "0.0.1"
 dependencies = [
  "cairn-crypto",
+ "cairn-db",
  "cairn-domain",
+ "cairn-platform",
  "serde",
  "serde_json",
  "tauri",
@@ -325,8 +327,13 @@ dependencies = [
 name = "cairn-db"
 version = "0.0.1"
 dependencies = [
+ "cairn-crypto",
+ "cairn-platform",
  "openssl-src",
  "rusqlite",
+ "thiserror 2.0.20",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

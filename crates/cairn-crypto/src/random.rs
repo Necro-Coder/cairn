@@ -21,10 +21,16 @@ use crate::error::CryptoError;
 /// error, and there should never be one, is left with zeroes rather than with whatever the
 /// half finished read put there.
 ///
+/// Public, and exported as `fill_random`, because the storage layer needs unpredictable bytes
+/// too: the identifier of a row and the identifier of this installation are both things that
+/// must not be guessable. It is still the only door, which is the property worth keeping: a
+/// second crate reaching for the system generator directly is a second place for the fallback
+/// nobody wants to appear.
+///
 /// # Errors
 ///
 /// Returns [`CryptoError::Entropy`] if the operating system refuses.
-pub(crate) fn fill(destination: &mut [u8]) -> Result<(), CryptoError> {
+pub fn fill(destination: &mut [u8]) -> Result<(), CryptoError> {
     if was_refused(destination) {
         destination.zeroize();
         return Err(CryptoError::Entropy);

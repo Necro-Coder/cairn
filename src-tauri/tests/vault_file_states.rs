@@ -265,7 +265,7 @@ fn writing_the_header_twice_leaves_no_temporary_file_behind() {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
 
-    assert_eq!(leftovers, vec!["vault.header".to_owned()]);
+    assert_eq!(leftovers, vec!["cairn.header".to_owned()]);
 }
 
 #[test]

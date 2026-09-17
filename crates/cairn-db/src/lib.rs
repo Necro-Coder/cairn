@@ -1,20 +1,43 @@
-//! Storage for Cairn: the schema, its migrations, the repositories built on top of it
-//! and the code that opens the encrypted database file.
+//! Storage for Cairn: opening the encrypted database, the schema, its migrations and the
+//! repositories built on top of them.
 //!
-//! No database is opened yet. The schema is defined in one place, versioned, and every
-//! migration is reversible, so this crate is where that contract will live.
+//! Two layers of encryption, and they defend against different things. SQLCipher encrypts the
+//! whole file, which is the only thing that can hide table names, index contents, the write
+//! ahead log and the space a deleted row used to occupy. On top of it, every sensitive value is
+//! sealed on its own with associated data that names the table, the row, the column and the
+//! revision, which is the only thing that stops somebody who has the file from rearranging it.
+//! Neither layer is sufficient and neither is decoration.
 //!
-//! What it does already have is the dependency that will open it: SQLite built from
-//! source as SQLCipher, with its own copy of OpenSSL linked in. It is here this early on
-//! purpose. Cross compiling that C to the phone is the one assumption the storage design
-//! rests on that could turn out to be false, and a pipeline that compiles an empty crate
-//! for iOS proves nothing while looking exactly like one that proves everything.
+//! What lives where. [`codec`] is the second layer. [`open`] is the first, and the only place
+//! that knows the order the settings have to be applied in. [`device`] is the identifier this
+//! installation writes into every row. Everything else is built on those three.
 //!
-//! The crate exposes no API for it yet, and deliberately so. What it has instead is
-//! `tests/sqlcipher.rs`, which checks that the library linked in is SQLCipher rather than
-//! plain SQLite, that it was compiled with the options the design requires, and that a
-//! keyed file is genuinely unreadable without its key.
+//! Nothing here reads a clock or invents a moment. The caller supplies the instant, as it does
+//! everywhere else in this workspace, so that a test can pin it and a row written on two
+//! machines can be reasoned about.
 #![forbid(unsafe_code)]
+
+pub mod codec;
+pub mod device;
+pub mod error;
+pub mod open;
+
+#[cfg(test)]
+mod test_support;
+
+pub use codec::{FieldCodec, RECORD_FORMAT_VERSION, RowKey, SealedColumns};
+pub use device::DeviceId;
+pub use error::DbError;
+pub use open::Database;
+
+/// The name of the encrypted database file.
+///
+/// The four files of a vault share a prefix so that a listing of the data directory shows them
+/// together and a backup script that matches on it cannot pick up three of the four.
+pub const DATABASE_FILE: &str = "cairn.db";
+
+/// The name of the file holding the sealed identifier of this installation.
+pub const DEVICE_FILE: &str = "cairn.device";
 
 /// The version of this crate, taken from its manifest at compile time.
 ///
