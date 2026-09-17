@@ -17,14 +17,16 @@ That language was made for posters, and Cairn is a tool for reading private data
 | A saturated accent used with discipline | One vermilion accent, one action per screen. Blue and yellow carry meaning, not decoration |
 | Paper and ink | The light theme is warm paper, not grey. The dark theme is near-black, not blue-grey |
 | Enormous type against tiny type | A display scale for titles and a tracked-out uppercase label style. The gap between them is the composition |
-| Geometric marks | Circles, half circles and thick rules, used as punctuation on empty states and on the lock screen. Never behind data |
+| Geometric marks | Circles, half circles and thick rules, composed like a poster on the screens that hold no data, and absent from every screen that does |
 | The grid, and deliberate asymmetry | Content sits on a real grid, and the title block is allowed to break it |
 
 What does not come across, because a poster is looked at once and an application is looked at a thousand times: full-bleed blocks of saturated colour, colour as the background of anything containing data, decorative shapes anywhere near a number, and compositions that need to be studied.
 
 ## What the style is
 
-**Expressive minimalism.** The base is quiet to the point of being boring: paper or ink, one-pixel borders, no shadows, no gradients, no decoration that carries no information. Against that base, exactly two things are allowed to be loud, and only one of them at a time on any given screen: **type** and **one vermilion accent**.
+**Expressive minimalism.** The base is quiet to the point of being boring: paper or ink, one-pixel borders, no shadows, no gradients, no decoration that carries no information. Against that base, three things are allowed to be loud: **type**, **one vermilion accent**, and **flat geometry** — and the third one is allowed only on the screens that have no data on them.
+
+That last division is the whole discipline of this system. A screen where somebody reads their own passwords or their own money gets type and one accent and nothing else. A screen where there is nothing to read yet — the lock screen, the first run, an empty list — is where the poster is allowed to happen.
 
 That restraint is not only taste. Cairn has no network, no runtime dependencies and a strict content security policy, so the fashionable ways to add character — a 3D canvas, an animation library, a downloaded icon set, a web font from a CDN — are either impossible or new attack surface in an application that holds a password vault. Type and flat colour cost one bundled file and nothing else.
 
@@ -151,7 +153,7 @@ Type is where most of the character lives, so this is the section with the most 
 
 | Token | Used for | Source |
 | --- | --- | --- |
-| `--font-display` | Screen titles, the lock screen, numbers that are the point of the screen | **Archivo**, variable, bundled, Latin subset |
+| `--font-display` | Screen titles, section names, and numbers that are the point of the screen | **Archivo**, variable, bundled, Latin subset. Decided |
 | `--font-sans` | Everything else | The system stack: Segoe UI Variable on Windows, San Francisco on iOS |
 | `--font-mono` | Amounts, identifiers, key fingerprints, diagnostics | The system mono stack |
 
@@ -195,13 +197,30 @@ A modular scale at a ratio of 1.25 anchored on a 15px body. The display sizes ju
 
 ## Geometric marks
 
-The circles and half circles from the references are allowed, in exactly three places, and nowhere else.
+Circles, half circles, thick rules and the occasional square, flat and from the mark palette. They are the part of the references that gives the application a face, and they are also the part that can ruin it, so the rule is not "use them tastefully": it is a list of places, a budget, and four prohibitions that hold everywhere.
 
-1. **Empty states.** One flat geometric composition, at most three shapes, from the mark palette, no more than 160px across.
-2. **The lock screen.** One large mark, which is also where the application's identity lives.
-3. **Section headers of a module**, as a single small filled circle before the label, in the module's own mark colour.
+### Where they are allowed
 
-Rules: flat fill only, no stroke unless the shape is a rule, never overlapping text, never animated, never behind anything containing data, and always `aria-hidden`. A mark is punctuation. If a screen would lose meaning without it, it is not a mark and it does not belong in this section.
+| Place | Budget | What it looks like |
+| --- | --- | --- |
+| The lock screen | Up to four shapes | The full composition. A large vermilion circle breaking the top right corner, a blue half circle sitting on its lower edge, an ink rule crossing the width, one small yellow dot low on the opposite side. Fixed: the same arrangement every time, because this screen is seen twice a day and a composition that moves is a composition that irritates |
+| Creating a vault, and the damaged-header screen | Up to two shapes | A reduced version of the same idea. They are the other two screens with no data on them |
+| An empty state | Up to three shapes | Its own small composition, no more than 160px across, above the sentence |
+| A module section header | Exactly one | A small filled circle before the label, in that module's colour: blue for habits, yellow for finances, ink for passwords |
+| The bottom of the sidebar | Exactly one | A small ink mark, the application's own sign |
+
+### Where they are never allowed
+
+Anywhere with data on it. A list, a table, a card showing a value, a form, a dialog, a chart, a row, a total. No exceptions, and not "faintly in the background either": a number is read, and anything behind it competes for the same attention.
+
+### The four prohibitions
+
+1. **Nothing is ever placed on top of a mark, and a mark is never placed on top of anything.** Geometry lives in its own region of the layout. Where the window is too narrow for that region, the mark is removed, not shrunk into the content: below 880px the composition drops to one shape, below 420px to none.
+2. **A mark is never animated**, never on load, never on hover, never on the way in.
+3. **A mark never responds to the pointer.** `pointer-events: none`, always.
+4. **A mark never means anything.** It is `aria-hidden`, it is hidden in forced-colors mode, and a screen that reads worse without it was never decorated — it was under-labelled, and the fix is a word.
+
+Flat fill only, no stroke unless the shape is itself a rule, no gradient, no transparency, no overlap that produces a third colour. If somebody has to look twice to work out whether a shape means something, the shape is wrong.
 
 ## Motion
 
