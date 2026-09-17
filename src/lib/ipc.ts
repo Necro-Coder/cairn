@@ -31,6 +31,10 @@ import { listen } from '@tauri-apps/api/event';
 
 import type {
   AppInfo,
+  BackupExportReport,
+  BackupPasswordSource,
+  BackupProgress,
+  BackupVerifyReport,
   Diagnostics,
   InactivityChoice,
   InstanceStatus,
@@ -45,8 +49,11 @@ import type {
   VaultStatus,
 } from './ipc.types';
 
-/** The name the core sends the one event under. It must match `window.rs`. */
+/** The name the core sends the lock event under. It must match `window.rs`. */
 const LOCKED_EVENT = 'session://locked';
+
+/** The name the core sends progress under. It must match `commands/backup.rs`. */
+const BACKUP_PROGRESS_EVENT = 'backup://progress';
 
 /** Reads what this copy of the application is allowed to do with the data directory. */
 async function fetchInstanceStatus(): Promise<InstanceStatus> {
@@ -143,6 +150,26 @@ async function estimatePasswordStrength(password: string): Promise<PasswordStren
   return invoke<PasswordStrength>('password_strength', { password });
 }
 
+/** Writes everything in the vault to one encrypted file, and reads it back before saying so. */
+async function exportBackup(
+  password: string,
+  source: BackupPasswordSource,
+): Promise<BackupExportReport> {
+  return invoke<BackupExportReport>('backup_export', { password, source });
+}
+
+/** Reads a backup end to end and reports what is in it, writing nothing. */
+async function verifyBackup(password: string): Promise<BackupVerifyReport> {
+  return invoke<BackupVerifyReport>('backup_verify', { password });
+}
+
+/** Listens for how far along a running export or verification is. */
+async function onBackupProgress(handler: (progress: BackupProgress) => void): Promise<() => void> {
+  return listen<BackupProgress>(BACKUP_PROGRESS_EVENT, (event) => {
+    handler(event.payload);
+  });
+}
+
 /** Listens for the vault closing, and hands back the way to stop listening. */
 async function onVaultLocked(handler: (reason: LockReason) => void): Promise<() => void> {
   return listen<{ reason: LockReason }>(LOCKED_EVENT, (event) => {
@@ -197,6 +224,9 @@ export const ipc: IpcSurface = {
   sendHeartbeat,
   setInactivity,
   estimatePasswordStrength,
+  exportBackup,
+  verifyBackup,
+  onBackupProgress,
   onVaultLocked,
   startWindowDrag,
   minimizeWindow,

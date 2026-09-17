@@ -47,6 +47,11 @@ pub fn run() {
         cairn_platform::memory::allow_resident(cairn_platform::memory::RECOMMENDED_RESIDENT_BYTES);
 
     tauri::Builder::default()
+        // The native file dialog, and nothing else from this plugin. It is registered here so
+        // that Rust can open one; the WebView cannot, because `capabilities/default.json`
+        // grants it none of the plugin's permissions. That is the whole reason a path is never
+        // a parameter of a backup command.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Our own directory rather than the one the framework offers. Two reasons, and
             // both of them are about what happens to somebody's data years from now. The
@@ -97,6 +102,8 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::app_info::app_info,
+            commands::backup::backup_export,
+            commands::backup::backup_verify,
             commands::instance::instance_status,
             commands::diagnostics::diagnostics,
             commands::sample::diagnostics_insert_sample_habit,

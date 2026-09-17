@@ -33,6 +33,12 @@ zeroize = { version = "1.9", features = ["alloc"] }
 # is better than reaching for a re-export whose shape is not part of Tauri's contract.
 tokio = { version = "1", default-features = false, features = ["sync", "time"] }
 thiserror.workspace = true
+# The native file dialog, used from Rust and only from Rust. Its commands are never granted
+# to the WebView in `capabilities/default.json`, so a path arriving from the other side of
+# the bridge cannot exist: the person picks the file in a window the operating system drew.
+# The npm half of this plugin is deliberately not installed, because the `runtime-deps` gate
+# requires zero JavaScript dependencies at runtime and this feature does not need it.
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
 serde_json = "1.0"
