@@ -24,6 +24,8 @@ use std::sync::{Mutex, MutexGuard};
 use cairn_crypto::{CryptoError, UnlockedVault};
 use cairn_domain::session::{IdleDecision, InactivityTimeout, focus_grace_elapsed, idle_decision};
 
+use crate::storage::Storage;
+
 /// What an unlock did.
 ///
 /// Two outcomes rather than one, because a caller that asked for an unlock and got one
@@ -78,6 +80,12 @@ pub enum LockReason {
 struct SessionState {
     /// The keys, present exactly while the vault is open. Dropping this clears them.
     vault: Option<UnlockedVault>,
+    /// The open database and the device identifier, present while the vault is.
+    ///
+    /// Beside the keys rather than beside the window, because the two have the same lifetime.
+    /// A connection that outlived the keys would be a handle to the file with the key inside it
+    /// after the vault was supposed to be shut, which is the one thing locking exists to stop.
+    storage: Option<Storage>,
     /// The last moment there was keyboard or mouse activity inside the window.
     last_activity_us: i64,
     /// How long the vault may sit idle before it closes itself.
@@ -110,6 +118,7 @@ impl Session {
         Self {
             state: Mutex::new(SessionState {
                 vault: None,
+                storage: None,
                 last_activity_us: now_us,
                 timeout,
                 focus_lost_at_us: None,
@@ -225,7 +234,36 @@ impl Session {
         let mut state = self.state();
         state.focus_lost_at_us = None;
 
+        // The database goes first. It is the thing that holds a file handle, and a failure to
+        // let that handle go must not stop the keys being dropped: a vault that stayed open
+        // because a statement was still alive would be the worst possible answer to a lock.
+        if let Some(storage) = state.storage.take() {
+            let _released = storage.close();
+        }
+
         state.vault.take().is_some()
+    }
+
+    /// Puts the open database and the device identifier where the keys are.
+    ///
+    /// Replaces whatever was there, closing it. Reaching this with something already attached
+    /// means a second unlock opened a second connection, and keeping the first would leave a
+    /// handle nothing can ever close.
+    pub fn attach_storage(&self, storage: Storage) {
+        let mut state = self.state();
+        if let Some(previous) = state.storage.replace(storage) {
+            let _released = previous.close();
+        }
+    }
+
+    /// Reads something out of the open database without the database leaving the lock.
+    ///
+    /// Answers `None` while the vault is closed, which is the same shape as
+    /// [`Session::with_vault`] and for the same reason: a borrow that ends with the closure
+    /// cannot be kept somewhere that outlives the lock.
+    #[must_use]
+    pub fn with_storage<T>(&self, read: impl FnOnce(&Storage) -> T) -> Option<T> {
+        self.state().storage.as_ref().map(read)
     }
 
     /// Runs the derivation and opens the vault with what it produced.
@@ -330,6 +368,9 @@ impl Session {
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
                 guard.vault = None;
+                if let Some(storage) = guard.storage.take() {
+                    let _released = storage.close();
+                }
                 self.state.clear_poison();
                 guard
             }

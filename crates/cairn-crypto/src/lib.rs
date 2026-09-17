@@ -44,6 +44,7 @@ pub use kdf::{
 };
 pub use keys::{DataKey, DatabaseKey, KEY_LEN, Kek, SyncKey};
 pub use nonce::{FreshNonce, NONCE_LEN};
+pub use random::fill as fill_random;
 pub use vault::{UnlockedVault, change_kdf_params, change_password, create, unlock};
 
 /// The version of this crate, taken from its manifest at compile time.

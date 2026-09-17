@@ -223,7 +223,7 @@
         <p class="warning" role="note">
           Antes de reescribir la cabecera se guarda una copia al lado y se vuelve a leer para
           comprobar que se puede abrir. Si algo falla, no se cambia nada y la contraseña actual
-          sigue valiendo. Aun así, haz tu propia copia del fichero <code>vault.header</code>
+          sigue valiendo. Aun así, haz tu propia copia del fichero <code>cairn.header</code>
           antes de seguir.
         </p>
 

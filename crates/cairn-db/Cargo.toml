@@ -10,7 +10,12 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+cairn-crypto.workspace = true
+cairn-platform.workspace = true
 rusqlite.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zeroize = { version = "1.9", features = ["alloc"] }
 
 # Not named by a single line of Rust in this crate, and that is deliberate: declaring it
 # is the only way to pin the exact version of the OpenSSL sources that rusqlite pulls in

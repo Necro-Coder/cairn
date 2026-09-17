@@ -54,6 +54,11 @@
     "publisher": "Cairn",
     "copyright": "Copyright 2026 Cairn contributors",
     "shortDescription": "Habits, passwords and finances, stored only on your own devices.",
-    "longDescription": "Cairn is a local-first personal application with three modules built on a shared Rust core: habits, an encrypted password vault, and finances. It has no servers, no accounts and no telemetry."
+    "longDescription": "Cairn is a local-first personal application with three modules built on a shared Rust core: habits, an encrypted password vault, and finances. It has no servers, no accounts and no telemetry.",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

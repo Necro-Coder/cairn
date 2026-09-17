@@ -27,6 +27,14 @@ cairn-platform = { path = "crates/cairn-platform" }
 
 thiserror = "2.0"
 
+# Row identifiers and the identifier of this installation. Raised to the workspace because two
+# crates now need it and they must agree on the version: sixteen bytes read by one and written
+# by the other would otherwise depend on two independent resolutions.
+#
+# `v4` is the only generator enabled. Every other version encodes a clock or a network address,
+# and a row identifier that carries when and where it was made is a row identifier that leaks.
+uuid = { version = "1.26", default-features = false, features = ["v4"] }
+
 # SQLite, built from source as SQLCipher with its own copy of OpenSSL linked in.
 #
 # The feature is what makes the encrypted database possible on every platform this

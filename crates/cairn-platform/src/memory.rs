@@ -66,6 +66,146 @@ pub enum MemoryError {
 /// The ordinary page size, used when the system will not say.
 const FALLBACK_PAGE_SIZE: usize = 4096;
 
+/// How much this application asks to be allowed to keep resident, in bytes.
+///
+/// Named here rather than at each call site so that the application and the storage layer
+/// cannot ask for two different amounts and leave whichever runs second believing it raised
+/// something.
+///
+/// Sixty-four mebibytes is measured rather than chosen: thirty-two is enough for sixteen open
+/// encrypted connections on an ordinary machine, which is far more than this application ever
+/// has, and sixty-four is that with room. It is a floor on the working set, so the system keeps
+/// that much of this process resident; that is the cost, and it is well inside what this
+/// application is budgeted.
+pub const RECOMMENDED_RESIDENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Raises how much this process is allowed to keep resident.
+///
+/// Without this, every lock in this module and every lock SQLCipher takes for its own buffers
+/// is refused, quietly, on an ordinary Windows machine. The default maximum working set of a
+/// process is about one and a half megabytes, which is smaller than a single page cache, so
+/// `VirtualLock` starts returning `ERROR_WORKING_SET_QUOTA` almost immediately and the
+/// protection this module exists for is a warning in a log nobody reads.
+///
+/// Worse than useless, in fact: with the quota exhausted, a process that keeps asking for
+/// resident pages eventually cannot commit the guard page of a thread stack, and Windows
+/// reports that as a stack overflow. That is how this was found — a second encrypted
+/// connection in one process crashed with `STATUS_STACK_OVERFLOW` and no recursion anywhere.
+///
+/// Raising the maximum reserves nothing. It is a ceiling, not an allocation: the process uses
+/// what it uses, and this only decides how much of that the system is willing to pin.
+///
+/// Best effort by design. A machine that refuses still runs the application, with keys that
+/// may reach the page file, which is the same honest position the rest of this module takes.
+///
+/// # Errors
+///
+/// Returns [`MemoryError::LockRefused`] with the system error number if the request is denied.
+#[allow(
+    unsafe_code,
+    reason = "adjusts this process's own resource limits; each call carries its own SAFETY comment and none of them touches memory this program owns"
+)]
+pub fn allow_resident(bytes: usize) -> Result<(), MemoryError> {
+    #[cfg(miri)]
+    {
+        // No process quotas in the interpreter, and nothing for it to check.
+        let _ = bytes;
+        return Ok(());
+    }
+
+    #[cfg(all(not(miri), windows))]
+    {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetProcessWorkingSetSize, SetProcessWorkingSetSize,
+        };
+
+        let mut minimum: usize = 0;
+        let mut maximum: usize = 0;
+
+        // SAFETY: `GetCurrentProcess` returns a pseudo handle to this process and allocates
+        // nothing. `GetProcessWorkingSetSize` writes one `usize` through each pointer, and both
+        // point at live locals of exactly that type for the whole call.
+        let read = unsafe {
+            GetProcessWorkingSetSize(GetCurrentProcess(), &raw mut minimum, &raw mut maximum)
+        };
+        if read == 0 {
+            // SAFETY: reads the calling thread's last error code. Takes no arguments and
+            // touches none of our memory.
+            let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(MemoryError::LockRefused {
+                len: bytes,
+                code: i32::try_from(code).unwrap_or(-1),
+            });
+        }
+
+        // The **minimum** is what governs how much may be locked. This is the part that is easy
+        // to get wrong and impossible to notice: raising only the maximum returns success and
+        // changes nothing, because Windows caps the number of lockable pages at the size of the
+        // process's *minimum* working set less a small overhead. A version of this function that
+        // raised the maximum was written first, reported `Ok`, and left every lock failing
+        // exactly as before.
+        //
+        // Only ever raised. Lowering a limit somebody else set is not this function's business.
+        if minimum >= bytes {
+            return Ok(());
+        }
+        // The maximum comes with it. Windows refuses a minimum above the maximum, and the
+        // maximum is a ceiling that costs nothing, so it is given room rather than being set to
+        // exactly the floor.
+        let maximum = maximum.max(bytes.saturating_mul(2));
+
+        // SAFETY: both sizes are plain integers and the handle is the pseudo handle to this
+        // process. The call changes a quota and reads no memory of ours.
+        let set = unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), bytes, maximum) };
+        if set == 0 {
+            // SAFETY: as above.
+            let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(MemoryError::LockRefused {
+                len: bytes,
+                code: i32::try_from(code).unwrap_or(-1),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(not(miri), not(windows)))]
+    {
+        // The equivalent limit, which on Linux is small by default and on macOS is unlimited
+        // for the pages this program locks. Raised only up to the hard limit: asking for more
+        // than that needs a privilege this application must never ask for.
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `getrlimit` writes one `rlimit` through the pointer, which points at a live
+        // local of exactly that type for the whole call.
+        if unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &raw mut limit) } != 0 {
+            return Err(MemoryError::LockRefused {
+                len: bytes,
+                code: std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+            });
+        }
+
+        let wanted = bytes as libc::rlim_t;
+        if limit.rlim_cur >= wanted {
+            return Ok(());
+        }
+        limit.rlim_cur = wanted.min(limit.rlim_max);
+
+        // SAFETY: `setrlimit` reads one `rlimit` through the pointer, which points at a live
+        // local of exactly that type for the whole call.
+        if unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &raw const limit) } != 0 {
+            return Err(MemoryError::LockRefused {
+                len: bytes,
+                code: std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+            });
+        }
+
+        Ok(())
+    }
+}
+
 /// Turns what the system reported into something every layout below can be built from.
 ///
 /// A system answering zero would make every allocation in this module invalid: a layout
@@ -425,7 +565,52 @@ unsafe impl Sync for LockedBytes {}
 
 #[cfg(test)]
 mod tests {
-    use super::{LockedBytes, MemoryError, page_size};
+    use super::{LockedBytes, MemoryError, allow_resident, page_size};
+
+    /// How much the residency tests below ask to be allowed to keep resident.
+    ///
+    /// Eight mebibytes: far more than the default allowance on Windows, far less than anything
+    /// that would inconvenience the machine running the suite.
+    const TEST_ALLOWANCE: usize = 8 * 1024 * 1024;
+
+    /// A region well inside [`TEST_ALLOWANCE`] and far outside the default allowance.
+    const TEST_REGION: usize = 4 * 1024 * 1024;
+
+    #[test]
+    fn raising_the_allowance_is_what_makes_a_large_region_lockable() {
+        // The test that would have caught the original mistake. Raising only the maximum
+        // working set returns success on Windows and changes nothing, because what caps the
+        // lockable pages is the *minimum*. So this asserts the effect rather than the call:
+        // after asking, a region far larger than the default allowance actually locks.
+        //
+        // A machine that refuses is not a failure of this project. Some systems cap this and
+        // the design says so out loud, so the assertion is on the honest report rather than on
+        // the protection being available everywhere.
+        let raised = allow_resident(TEST_ALLOWANCE);
+
+        let large = LockedBytes::new(TEST_REGION).expect("the allocation itself succeeds");
+        if raised.is_ok() {
+            assert!(
+                large.is_locked(),
+                "the allowance was raised and a region inside it still would not lock"
+            );
+        }
+    }
+
+    #[test]
+    fn asking_for_less_than_is_already_allowed_is_not_a_failure() {
+        // Called on every database open, so the second call and every one after it has to be
+        // cheap and quiet rather than an error somebody learns to ignore.
+        assert!(allow_resident(TEST_ALLOWANCE).is_ok());
+        assert!(
+            allow_resident(1).is_ok(),
+            "lowering was reported as a failure"
+        );
+        assert!(
+            allow_resident(0).is_ok(),
+            "asking for nothing was a failure"
+        );
+    }
 
     #[test]
     fn a_page_is_a_plausible_size() {

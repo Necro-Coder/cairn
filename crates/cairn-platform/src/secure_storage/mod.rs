@@ -314,8 +314,8 @@ mod tests {
         // The reason the set is closed rather than escaped. Each of these becomes a path on
         // at least one platform, and each of them leaves the directory it was meant for.
         for label in [
-            "../vault.header",
-            "..\\vault.header",
+            "../cairn.header",
+            "..\\cairn.header",
             "a/b",
             "a\\b",
             "..",

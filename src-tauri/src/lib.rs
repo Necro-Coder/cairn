@@ -7,6 +7,7 @@ pub mod clock;
 pub mod commands;
 pub mod session;
 pub mod state;
+pub mod storage;
 pub mod vault;
 pub mod vault_file;
 pub mod window;
@@ -14,6 +15,7 @@ pub mod window;
 use tauri::Manager as _;
 
 use state::AppState;
+use storage::DataDirectory;
 use vault::Vault;
 
 /// Starts the application and blocks until the last window closes.
@@ -34,10 +36,26 @@ use vault::Vault;
     reason = "the context is generated at build time, so a failure here means the bundled configuration is broken; there is no window left in which to report it and no safe state to continue from"
 )]
 pub fn run() {
+    // Before anything allocates a key. Without it, the allowance a process gets on Windows is
+    // about a megabyte and a half, which is smaller than the buffers the cipher works in, so
+    // every request to keep a page out of the page file is refused and the protection the
+    // design describes does not happen. A refusal here is not fatal and is not hidden: the
+    // diagnostics screen reports whether the keys are actually resident.
+    let _raised =
+        cairn_platform::memory::allow_resident(cairn_platform::memory::RECOMMENDED_RESIDENT_BYTES);
+
     tauri::Builder::default()
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
-            app.manage(AppState::new(Vault::open_at(&directory)?));
+            // Our own directory rather than the one the framework offers. Two reasons, and
+            // both of them are about what happens to somebody's data years from now. The
+            // framework's answer is the roaming profile on Windows, which a domain copies
+            // between machines, and a SQLite file copied while it is open is a corrupt SQLite
+            // file. And the name it builds the directory from is the bundle identifier, so
+            // changing the identifier would move the vault and leave the old one behind,
+            // looking exactly like a machine that never had one.
+            let directory = cairn_platform::paths::data_directory()?;
+            let vault = Vault::open_at(&directory)?;
+            app.manage(AppState::new(vault, DataDirectory::new(directory)));
 
             // Started after the state is managed, because the first thing it does is ask for
             // it. In the core rather than in the interface: a WebView that was made to stop

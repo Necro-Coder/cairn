@@ -13,6 +13,7 @@
 // Deliberately no `#![forbid(unsafe_code)]` here. See the module documentation above.
 
 pub mod memory;
+pub mod paths;
 pub mod secure_storage;
 
 /// The version of this crate, taken from its manifest at compile time.

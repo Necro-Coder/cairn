@@ -25,7 +25,7 @@
     </p>
 
     <p class="what-to-do" role="note">
-      Recupera el fichero <code>vault.header</code> desde tu propia copia de seguridad y vuelve a abrir
+      Recupera el fichero <code>cairn.header</code> desde tu propia copia de seguridad y vuelve a abrir
       la aplicación. Si la aplicación guardó una copia al lado, la usará sola la próxima vez que arranque.
     </p>
   </div>
