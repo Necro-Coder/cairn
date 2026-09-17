@@ -398,6 +398,7 @@ The application is a header, a tab strip and content, in that order down the win
 - **Content** is capped at `--content-max` and centred in what is left. A screen title sits in a block of its own above it, with the rule under it, and the geometric region — where a screen is allowed one — sits to its right.
 - Below 880px the geometry goes and the tab cap drops to four. Below 420px no mark is drawn. The header keeps the menu, the vault state and the palette reminder at every width.
 - **The lock screen has no shell.** It is the boundary between being in and being out, it fills the window, and it is the one screen built like a poster: the form on one side, the full composition on the other.
+- **Every screen that fills the window still gets the title bar**, drawn with no background and holding only the three window controls. The window has no system decoration, so a screen without it would be a screen the window could not be moved or closed from — on the lock screen, a trap.
 - Safe area insets are respected on every edge, because the same markup runs inside a phone.
 
 ## Writing
@@ -422,6 +423,8 @@ WCAG 2.2 AA is the floor and is not negotiable, because the alternative is an ap
 - Every screen is walked with `Tab` alone before the work is called done, and `axe` runs over every preview screen in both themes as a blocking gate.
 
 **What this deliberately does not do.** There is no `aria-live` region announcing a form error or the lock countdown, because the person this is built for does not use a screen reader and the honest choice was to do the AA floor well rather than half of AAA badly. It is written here rather than left to be discovered: adding announcements later means walking every screen again.
+
+**And one thing it costs.** The window has no system decoration, so moving it is a pointer gesture on the header with no keyboard equivalent. The window can still be resized from its edges, which the platform handles, and closed from the keyboard through the control at the end of the bar — but somebody who cannot use a pointer cannot move it. That is a real regression against a system title bar, and it is recorded rather than hidden in [decision 0007](../architecture/decisions/0007-undecorated-window.md).
 
 ## How this is kept true
 

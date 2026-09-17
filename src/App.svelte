@@ -1,10 +1,12 @@
 <script lang="ts">
   import { ipc } from '$ipc';
 
-  import CheckScreen from './routes/CheckScreen.svelte';
   import CreateVaultScreen from './routes/CreateVaultScreen.svelte';
   import DiagnosticsScreen from './routes/DiagnosticsScreen.svelte';
   import UnlockScreen from './routes/UnlockScreen.svelte';
+  import Shell from './lib/shell/Shell.svelte';
+  import TitleBar from './lib/shell/TitleBar.svelte';
+  import { router } from './lib/shell/router.svelte';
   import { measureStartup, type StartupResult } from './lib/startup';
   import { session } from './lib/session.svelte';
   import type { VaultStatus } from './lib/ipc.types';
@@ -55,15 +57,6 @@
   });
 
   /**
-   * How long before the automatic lock the interface warns, in seconds.
-   *
-   * Kept in step with `WARNING_BEFORE_LOCK_S` in `cairn-domain`, which is what documents the
-   * choice. Nothing enforces the agreement, and nothing needs to: a warning that appeared
-   * slightly early or late would be a cosmetic mistake rather than a security one.
-   */
-  const WARNING_BEFORE_LOCK_S = 30;
-
-  /**
    * Whether the vault was open the last time this was looked at.
    *
    * A plain variable rather than state, because the effect below writes it and nothing
@@ -71,11 +64,12 @@
    */
   let wasUnlocked = false;
 
-  // Closing the vault has to take the diagnostics panel with it. The panel is drawn above
-  // the router, so without this a lock that happens while it is open leaves it on screen,
-  // with whatever was half typed into the change forms still sitting in their fields, and
-  // the lock screen never appears. That is the one thing the automatic lock exists to
-  // prevent: somebody sitting down at a machine whose owner walked away.
+  // Closing the vault takes the diagnostics panel and the current section with it. The
+  // panel is drawn above the shell, so without this a lock that happens while it is open
+  // leaves it on screen, with whatever was half typed into the change forms still sitting
+  // in their fields, and the lock screen never appears. That is the one thing the
+  // automatic lock exists to prevent: somebody sitting down at a machine whose owner
+  // walked away.
   //
   // Watched as a transition rather than as a condition. A condition would make the panel
   // impossible to open at all while the vault is closed, and reading the version is how
@@ -85,36 +79,45 @@
 
     if (wasUnlocked && !unlocked) {
       diagnosticsOpen = false;
+      router.reset();
     }
 
     wasUnlocked = unlocked;
   });
 
-  const closingSoon = $derived(
-    session.status.idleRemainingS !== null && session.status.idleRemainingS <= WARNING_BEFORE_LOCK_S
-      ? session.status.idleRemainingS
-      : null,
-  );
-
   function adopt(status: VaultStatus): void {
     session.adopt(status);
   }
 
+  /**
+   * The shortcuts that work wherever the vault is, and the activity report.
+   *
+   * Everything that moves between sections lives in the shell instead, because a section
+   * is not something to open when there is nothing to open it onto.
+   */
   function handleKeydown(event: KeyboardEvent): void {
     session.noteActivity();
+
+    if (!event.ctrlKey || event.altKey || event.metaKey) {
+      if (event.key === 'Escape' && diagnosticsOpen) {
+        event.preventDefault();
+        diagnosticsOpen = false;
+      }
+      return;
+    }
 
     // Control and Shift together, so that nothing typed by accident opens a screen nobody
     // asked for. The shortcut works in release builds too: the machine where something
     // goes wrong is rarely the one with a debugger attached.
-    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'd') {
+    if (event.shiftKey && event.key.toLowerCase() === 'd') {
       event.preventDefault();
       diagnosticsOpen = !diagnosticsOpen;
       return;
     }
 
-    if (event.key === 'Escape' && diagnosticsOpen) {
+    if (!event.shiftKey && event.key.toLowerCase() === 'l' && session.status.unlocked) {
       event.preventDefault();
-      diagnosticsOpen = false;
+      void session.lock();
     }
   }
 </script>
@@ -135,17 +138,24 @@
   <p class="preview-banner" role="alert">{previewNotice}</p>
 {/if}
 
-<main>
-  {#if diagnosticsOpen}
+{#if diagnosticsOpen}
+  <TitleBar />
+  <main class="plain">
     <DiagnosticsScreen {startup} onclose={() => (diagnosticsOpen = false)} />
-  {:else if !ready}
+  </main>
+{:else if !ready}
+  <TitleBar />
+  <main class="plain">
     <p class="muted">Leyendo el estado de la caja fuerte…</p>
-  {:else if session.status.condition === 'unreadable'}
-    <!--
-      A header that is there and cannot be read. The one thing this screen must never offer
-      is creating a new vault, because that would write over the damaged one and make
-      everything encrypted under it unreadable for good.
-    -->
+  </main>
+{:else if session.status.condition === 'unreadable'}
+  <!--
+    A header that is there and cannot be read. The one thing this screen must never offer
+    is creating a new vault, because that would write over the damaged one and make
+    everything encrypted under it unreadable for good.
+  -->
+  <TitleBar tone="plain" />
+  <main class="plain">
     <section class="damaged">
       <h1>La cabecera no se puede leer</h1>
       <p>
@@ -157,38 +167,20 @@
         la aplicación.
       </p>
     </section>
-  {:else if !session.status.exists}
+  </main>
+{:else if !session.status.exists}
+  <TitleBar tone="plain" />
+  <main class="plain">
     <CreateVaultScreen oncreated={adopt} />
-  {:else if !session.status.unlocked}
+  </main>
+{:else if !session.status.unlocked}
+  <TitleBar tone="plain" />
+  <main class="plain">
     <UnlockScreen status={session.status} lockReason={session.lockReason} onunlocked={adopt} />
-  {:else}
-    <CheckScreen />
-  {/if}
-
-  {#if session.status.unlocked}
-    <!--
-      Computed from the countdown the core reports rather than announced by an event of its
-      own. The interface already has to count down to draw the number, so an extra crossing
-      would buy nothing.
-    -->
-    {#if closingSoon !== null}
-      <p class="closing" role="alert">
-        La caja fuerte se cerrará sola en {closingSoon}
-        {closingSoon === 1 ? 'segundo' : 'segundos'}. Mueve el ratón o escribe algo para seguir.
-      </p>
-    {/if}
-
-    <button type="button" class="lock" onclick={() => void session.lock()}>
-      Cerrar la caja fuerte
-    </button>
-  {/if}
-
-  <footer>
-    <p>
-      <kbd>Ctrl</kbd> + <kbd>Mayús</kbd> + <kbd>D</kbd> abre el diagnóstico.
-    </p>
-  </footer>
-</main>
+  </main>
+{:else}
+  <Shell />
+{/if}
 
 <style>
   .preview-banner {
@@ -204,17 +196,24 @@
     background-color: var(--colour-warning);
     color: var(--colour-surface);
     font-size: var(--text-sm);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     text-align: center;
     user-select: text;
   }
 
-  main {
+  /*
+   * The screens that have no shell: creating the vault, a header that cannot be read, the
+   * lock screen, the diagnostics. They fill what is left under the title bar, and they get
+   * the title bar because a window with no system decoration that could not be moved or
+   * closed until somebody typed a password would be a trap.
+   */
+  .plain {
     display: flex;
     flex: 1;
     flex-direction: column;
     gap: var(--space-6);
-    padding: var(--space-7) var(--space-6) var(--space-5);
+    overflow: auto;
+    padding: var(--space-6) var(--space-6) var(--space-8);
   }
 
   .muted {
@@ -228,43 +227,11 @@
     max-width: var(--form-max-width);
     padding: var(--space-5);
     border: var(--border-width) solid var(--colour-negative);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     background-color: var(--colour-surface-raised);
   }
 
   .damaged h1 {
-    margin: 0;
     color: var(--colour-negative);
-  }
-
-  .damaged p {
-    margin: 0;
-  }
-
-  .closing {
-    margin: 0;
-    padding: var(--space-3) var(--space-4);
-    border: var(--border-width) solid var(--colour-warning);
-    border-radius: var(--radius-md);
-    background-color: var(--colour-surface-raised);
-    font-size: var(--text-sm);
-  }
-
-  .lock {
-    align-self: flex-start;
-    padding: var(--space-2) var(--space-4);
-    border: var(--border-width) solid var(--colour-border-strong);
-    border-radius: var(--radius-md);
-    background-color: var(--colour-surface-raised);
-    color: var(--colour-text);
-    font-size: var(--text-sm);
-  }
-
-  footer {
-    margin-top: auto;
-    padding-top: var(--space-4);
-    border-top: var(--border-width) solid var(--colour-border);
-    color: var(--colour-text-faint);
-    font-size: var(--text-sm);
   }
 </style>

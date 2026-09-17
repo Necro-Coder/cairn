@@ -184,6 +184,67 @@ fn drag_and_drop_into_the_window_is_off() {
 }
 
 #[test]
+fn the_window_has_no_system_decoration_and_the_label_the_controls_use() {
+    // The header and the tab strip are drawn as one piece, which they cannot be with the
+    // Windows title bar stacked on top of them. The cost is that dragging, minimising,
+    // maximising and closing have to be implemented, and they are: four commands in
+    // `window.rs` that act on the window with this label.
+    //
+    // The label is asserted here rather than only in `window.rs` because the two files are
+    // the two halves of the same agreement. A rename on either side would leave every
+    // window control silently refusing, with nothing on screen to say why.
+    let configuration = config();
+    let windows = at(&configuration, "app.windows")
+        .as_array()
+        .expect("at least one window must be configured");
+
+    assert_eq!(windows.len(), 1, "this application has exactly one window");
+
+    for window in windows {
+        assert_eq!(
+            window.get("label"),
+            Some(&Value::String("main".to_owned())),
+            "the window commands look the window up by this label"
+        );
+        assert_eq!(
+            window.get("decorations"),
+            Some(&Value::Bool(false)),
+            "the title bar is drawn by the application, not by the system"
+        );
+    }
+}
+
+#[test]
+fn the_window_cannot_be_made_smaller_than_the_layout_survives() {
+    // 880 by 600 is where the design system stops drawing the geometric compositions and
+    // the tab cap drops from six to four. Below it the layout is not merely cramped, it is
+    // a layout nobody designed, and with no system decoration there is no snapping
+    // behaviour left to rescue it.
+    let configuration = config();
+    let windows = at(&configuration, "app.windows")
+        .as_array()
+        .expect("at least one window must be configured");
+
+    for window in windows {
+        assert_eq!(
+            window.get("minWidth").and_then(Value::as_u64),
+            Some(880),
+            "880 is the width the interface is designed down to"
+        );
+        assert_eq!(
+            window.get("minHeight").and_then(Value::as_u64),
+            Some(600),
+            "600 is the height the interface is designed down to"
+        );
+        assert_eq!(
+            window.get("resizable"),
+            Some(&Value::Bool(true)),
+            "an undecorated window that cannot be resized is a window with no way out"
+        );
+    }
+}
+
+#[test]
 fn the_display_name_matches_the_one_the_core_reports() {
     // The name on the window title bar and the name the core returns come from different
     // files. This is what keeps them the same.

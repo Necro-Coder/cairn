@@ -97,7 +97,8 @@
     <h2>Presupuestos</h2>
     {#if startup === null}
       <p class="muted">
-        Sin medir todavía. Vuelve a la pantalla anterior y pulsa el botón para tomar la medida.
+        Sin medir todavía. La medida se toma sola al arrancar; si no hay número, el arranque no
+        llegó a terminar de medirse.
       </p>
     {:else}
       <dl>

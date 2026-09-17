@@ -115,6 +115,26 @@ async function onVaultLocked(handler: (reason: LockReason) => void): Promise<() 
   });
 }
 
+/** Hands the window to the window manager for a drag. */
+async function startWindowDrag(): Promise<void> {
+  return invoke<void>('start_window_drag');
+}
+
+/** Minimises the window. */
+async function minimizeWindow(): Promise<void> {
+  return invoke<void>('minimize_window');
+}
+
+/** Maximises the window or restores it, answering which it now is. */
+async function toggleMaximizeWindow(): Promise<boolean> {
+  return invoke<boolean>('toggle_maximize_window');
+}
+
+/** Closes the vault and then the window, in that order. */
+async function closeWindow(): Promise<void> {
+  return invoke<void>('close_window');
+}
+
 /**
  * The real boundary.
  *
@@ -137,4 +157,8 @@ export const ipc: IpcSurface = {
   setInactivity,
   estimatePasswordStrength,
   onVaultLocked,
+  startWindowDrag,
+  minimizeWindow,
+  toggleMaximizeWindow,
+  closeWindow,
 };
