@@ -78,12 +78,16 @@ fn migrate(directory: &Path, password: &str, arguments: &[&str]) -> Output {
         .spawn()
         .expect("the tool can be started");
 
-    child
+    // A failure to write is not a failure of the test. Several of these cases are about the
+    // tool refusing before it ever asks for a password, and a tool that has already exited is a
+    // pipe with nobody at the other end: the write comes back as a broken pipe on Linux and
+    // succeeds into a buffer on Windows. What the test is about is what the tool printed and
+    // what exit code it gave, both of which are read below.
+    let _typed = child
         .stdin
         .as_mut()
         .expect("the tool takes standard input")
-        .write_all(format!("{password}\n").as_bytes())
-        .expect("the password can be typed");
+        .write_all(format!("{password}\n").as_bytes());
 
     child.wait_with_output().expect("the tool finishes")
 }
