@@ -14,8 +14,6 @@
    */
 
   interface Props {
-    /** How wide the whole composition is drawn, as a length token. */
-    size?: string;
     /**
      * How many shapes are drawn.
      *
@@ -27,10 +25,10 @@
     shapes?: 2 | 3;
   }
 
-  const { size = 'var(--empty-mark-max)', shapes = 3 }: Props = $props();
+  const { shapes = 3 }: Props = $props();
 </script>
 
-<div class="marks" aria-hidden="true" style="--marks-size: {size}">
+<div class="marks" aria-hidden="true">
   <span class="circle mark"></span>
   <span class="half mark"></span>
   {#if shapes > 2}
@@ -50,14 +48,14 @@
    * own, so one token decides how large a composition is and the arrangement never
    * changes shape between the places it is allowed. */
   .circle {
-    width: calc(var(--marks-size) * 0.5);
+    width: calc(var(--empty-mark-max) * 0.5);
     aspect-ratio: 1;
     border-radius: 50%;
     background-color: var(--mark-vermilion);
   }
 
   .half {
-    width: calc(var(--marks-size) * 0.36);
+    width: calc(var(--empty-mark-max) * 0.36);
     aspect-ratio: 2;
     /* A half circle: rounded along the top edge only, flat along the bottom. */
     border-radius: 100% 100% 0 0;
@@ -65,7 +63,7 @@
   }
 
   .dot {
-    width: calc(var(--marks-size) * 0.11);
+    width: calc(var(--empty-mark-max) * 0.11);
     aspect-ratio: 1;
     border-radius: 50%;
     background-color: var(--mark-yellow);

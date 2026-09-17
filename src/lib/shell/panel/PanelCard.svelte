@@ -27,7 +27,7 @@
   const section = $derived(sectionOf(card.module));
 </script>
 
-<article class="card" style="--card-colour: {section.colour}">
+<article class="card {section.tone}">
   <header>
     <div>
       <span class="label">{section.title}</span>
@@ -43,7 +43,7 @@
 
   <!-- Where the value will go, which is why the badge is at the bottom and not beside the
        title: it is standing in for something, not labelling the card. -->
-  <Badge colour={section.colour} tint={section.tint} text="En desarrollo" />
+  <Badge tone={section.tone} text="En desarrollo" />
 </article>
 
 <style>
@@ -56,7 +56,7 @@
     padding: var(--space-5);
     border: var(--border-width) solid var(--colour-border);
     /* Square at the top, where the module's edge is, and eased at the bottom. */
-    border-top: var(--card-edge-width) solid var(--card-colour);
+    border-top: var(--card-edge-width) solid var(--tone-colour);
     border-radius: 0 0 var(--radius-md) var(--radius-md);
     background-color: var(--colour-surface-raised);
   }

@@ -50,7 +50,7 @@
           <button type="button" disabled title="Todavía no: {operation.detail}">
             {operation.title}
           </button>
-          <Badge colour={section.colour} tint={section.tint} text="En desarrollo" />
+          <Badge tone={section.tone} text="En desarrollo" />
         </div>
         <p>{operation.detail}</p>
       </li>

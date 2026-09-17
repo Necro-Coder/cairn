@@ -214,3 +214,43 @@ button {
   height: 0;
   border: 0;
 }
+
+/*
+ * The module tones, as classes.
+ *
+ * A component that needs to be drawn in its module's colour says which module it belongs to
+ * and takes the three values from here. It does **not** write them into a `style` attribute,
+ * and that is not a preference: the content security policy in `tauri.conf.json` sets
+ * `style-src 'self'` with no `unsafe-inline`, which blocks inline style attributes as well as
+ * inline `<style>` elements. In a browser with no policy applied the attribute works, so the
+ * preview cannot show the fault; in the real window the declaration is dropped and the colour
+ * silently disappears. `npm run tokens` fails on a `style` attribute for exactly this reason.
+ *
+ * Settings borrows the passwords tone rather than having one of its own. It is not a module
+ * and has no data behind it, and a fifth hue would carry a meaning that is only "this is not
+ * one of the three".
+ */
+.tone-panel {
+  --tone-colour: var(--module-panel);
+  --tone-tint: var(--module-panel-tint);
+  --tone-mark: var(--module-panel-mark);
+}
+
+.tone-habits {
+  --tone-colour: var(--module-habits);
+  --tone-tint: var(--module-habits-tint);
+  --tone-mark: var(--module-habits-mark);
+}
+
+.tone-passwords,
+.tone-settings {
+  --tone-colour: var(--module-passwords);
+  --tone-tint: var(--module-passwords-tint);
+  --tone-mark: var(--module-passwords-mark);
+}
+
+.tone-finances {
+  --tone-colour: var(--module-finances);
+  --tone-tint: var(--module-finances-tint);
+  --tone-mark: var(--module-finances-mark);
+}

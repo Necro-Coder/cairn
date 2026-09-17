@@ -76,10 +76,9 @@
       {@const Icon = section.icon}
       {@const active = tab.id === activeId}
       <li
-        class="tab"
+        class="tab {section.tone}"
         class:active
         class:temporary={tab.temporary}
-        style="--tab-colour: {section.colour}; --tab-tint: {section.tint}"
         draggable={tab.section !== 'panel'}
         ondragstart={() => (dragging = tab.id)}
         ondragend={() => (dragging = null)}
@@ -149,8 +148,8 @@
   }
 
   .tab.active {
-    border-top-color: var(--tab-colour);
-    background-color: var(--tab-tint);
+    border-top-color: var(--tone-colour);
+    background-color: var(--tone-tint);
   }
 
   .title {

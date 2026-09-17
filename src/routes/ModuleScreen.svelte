@@ -43,11 +43,7 @@
     <button type="button" class="primary" onclick={() => (explained = true)}>{action}</button>
 
     {#if explained}
-      <Badge
-        colour={section.colour}
-        tint={section.tint}
-        text="En desarrollo · llega en la fase de este módulo"
-      />
+      <Badge tone={section.tone} text="En desarrollo · llega en la fase de este módulo" />
     {/if}
   </div>
 </div>

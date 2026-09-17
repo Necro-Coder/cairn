@@ -154,8 +154,7 @@
         <button
           type="button"
           role="menuitem"
-          class="item"
-          style="--item-mark: {section.mark}"
+          class="item {section.tone}"
           onclick={() => choose(section.id)}
         >
           <span class="chip mark" aria-hidden="true"></span>
@@ -233,7 +232,7 @@
     width: var(--chip-size);
     height: var(--chip-size);
     flex: none;
-    background-color: var(--item-mark);
+    background-color: var(--tone-mark);
   }
 
   .shortcut {

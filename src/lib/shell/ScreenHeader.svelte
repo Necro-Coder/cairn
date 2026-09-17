@@ -32,7 +32,7 @@
   const { section, title, lede, marks = false }: Props = $props();
 </script>
 
-<div class="screen-header" style="--screen-mark: {section.mark}">
+<div class="screen-header {section.tone}">
   <div class="block">
     <span class="named">
       <span class="chip mark" aria-hidden="true"></span>
@@ -75,7 +75,7 @@
   .chip {
     width: var(--chip-size);
     height: var(--chip-size);
-    background-color: var(--screen-mark);
+    background-color: var(--tone-mark);
   }
 
   h1 {

@@ -119,7 +119,7 @@
   <div class="column">
     <header>
       <span class="brand">
-        <BrandMark size="var(--text-2xl)" />
+        <BrandMark seal />
         <h1>Cairn</h1>
       </span>
       <p class="lede">

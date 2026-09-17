@@ -25,7 +25,7 @@ Suppressing one of these is allowed and is meant to be uncomfortable. It takes a
 | --- | --- |
 | `npm run format:check` | Formatting drift. |
 | `npm run lint` | Lints, including the rules that defend the WebView. |
-| `npm run tokens` | Colours, lengths and durations written by hand instead of taken from a token. |
+| `npm run tokens` | Colours, lengths and durations written by hand instead of taken from a token, and inline styles, which the policy drops. |
 | `npm run check` | Types, using the Svelte compiler, and then the modules `node --test` runs. |
 | `npm run test:unit` | The frontend unit tests. |
 | `npm run test:a11y` | Accessibility violations, with `axe`, on every preview screen in both themes. |
@@ -58,9 +58,11 @@ It rejects a length even when the number happens to be on the scale. `padding: 1
 
 Two things are exempt. `tokens.css` itself, which is the whole point of there being one file. And a media query prelude, because a media query cannot read a custom property — there are exactly two breakpoints in this application, 880px and 420px, and both are named in the design system.
 
+It also fails on a `style` attribute in markup, which is not about values at all and is here because this is the file that already reads every component. The content security policy sets `style-src 'self'` with no `unsafe-inline`, and that blocks inline style attributes as well as inline `<style>` elements. A browser with no policy applied honours them, so the browser preview cannot show the fault — the declaration is simply dropped in the real window and whatever it carried disappears. It is the one class of defect in the interface that every gate except this one is blind to, and it was found by testing the policy rather than by looking at a screen. Module colours reach a component through a class declared in `base.css`.
+
 Anything else needs a comment on the line above saying `tokens-exempt:` followed by a reason. That list started empty and is meant to stay short: erosion happens one reasonable exception at a time, and a gate is what makes each one argue for itself in the diff. A `tokens-exempt:` with no reason after it is not an exemption, and there is a test for that.
 
-It has no dependencies. The alternative was stylelint with `postcss-html` and the Svelte plugin, which is three packages and their transitive graph to run three regular expressions over a directory. Its own behaviour is covered by `scripts/check-tokens.test.mjs`, and it was verified end to end by adding a colour, a length and a duration to a real file and watching the build go red.
+It has no dependencies. The alternative was stylelint with `postcss-html` and the Svelte plugin, which is three packages and their transitive graph to run four regular expressions over a directory. Its own behaviour is covered by `scripts/check-tokens.test.mjs`, and it was verified end to end by adding a colour, a length and a duration to a real file and watching the build go red.
 
 ### The accessibility gate
 
