@@ -34,5 +34,6 @@ pub mod export;
 pub mod format;
 pub mod import;
 pub mod schema;
+pub mod swap;
 pub mod tables;
 pub mod verify;
