@@ -35,8 +35,11 @@ import type {
   InactivityChoice,
   IpcSurface,
   KdfParams,
+  KeysetPage,
   LockReason,
   PasswordStrength,
+  SampleHabit,
+  SeedReport,
   VaultStatus,
 } from './ipc.types';
 
@@ -51,6 +54,26 @@ async function fetchAppInfo(): Promise<AppInfo> {
 /** Reads a snapshot of the application state for the diagnostics screen. */
 async function fetchDiagnostics(): Promise<Diagnostics> {
   return invoke<Diagnostics>('diagnostics');
+}
+
+/** Writes one sample habit, to prove the whole path from the window to the file works. */
+async function insertSampleHabit(): Promise<SampleHabit> {
+  return invoke<SampleHabit>('diagnostics_insert_sample_habit');
+}
+
+/** Reads a page of sample habits, in clock order. */
+async function listSampleHabits(page: KeysetPage): Promise<readonly SampleHabit[]> {
+  return invoke<SampleHabit[]>('diagnostics_list_sample_habits', { page });
+}
+
+/** Marks a sample habit as deleted and empties its encrypted column. */
+async function deleteSampleHabit(id: string): Promise<SampleHabit> {
+  return invoke<SampleHabit>('diagnostics_delete_sample_habit', { id });
+}
+
+/** Writes a number of rows into every table that has a generator, for measuring. */
+async function seedData(rowsPerTable: number): Promise<SeedReport> {
+  return invoke<SeedReport>('diagnostics_seed_data', { rowsPerTable });
 }
 
 /** Reads everything the interface needs to decide what to draw about the vault. */
@@ -147,6 +170,10 @@ export const ipc: IpcSurface = {
   previewNotice: null,
   fetchAppInfo,
   fetchDiagnostics,
+  insertSampleHabit,
+  listSampleHabits,
+  deleteSampleHabit,
+  seedData,
   fetchVaultStatus,
   createVault,
   unlockVault,

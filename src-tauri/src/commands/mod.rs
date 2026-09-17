@@ -12,6 +12,7 @@
 
 pub mod app_info;
 pub mod diagnostics;
+pub mod sample;
 pub mod vault;
 
 // Only the types are re-exported. The command functions are referenced through their full
@@ -19,6 +20,7 @@ pub mod vault;
 // items next to each function that a `pub use` does not carry along.
 pub use app_info::AppInfo;
 pub use diagnostics::{DatabaseStatus, Diagnostics};
+pub use sample::{KeysetPage, SampleError, SampleHabit, SeedReport, SeededTable};
 pub use vault::{
     ConditionReport, InactivityChoice, KdfReport, StatusInputs, StrengthReport, VaultError,
     VaultStatus,

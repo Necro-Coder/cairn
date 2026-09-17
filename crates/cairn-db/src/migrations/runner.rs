@@ -41,12 +41,38 @@ impl Migration {
 }
 
 /// Every migration this build carries, in ascending order.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "common",
-    up: include_str!("sql/0001_common.sql"),
-    down: include_str!("sql/0001_common.down.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "common",
+        up: include_str!("sql/0001_common.sql"),
+        down: include_str!("sql/0001_common.down.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "habits",
+        up: include_str!("sql/0002_habits.sql"),
+        down: include_str!("sql/0002_habits.down.sql"),
+    },
+];
+
+/// Every table of user data a fully migrated database has, in the order they were created in.
+///
+/// A closed list rather than a query against `sqlite_master`, because it is used to build
+/// statements. Reading the table names back out of the file and interpolating them would mean
+/// the shape of a statement this process runs depends on the contents of a file, which is the
+/// pattern that has to be refused even when the file is one we encrypted ourselves.
+///
+/// `schema_migrations` is not here. It is not user data, it is never synchronised, and it is the
+/// one table exempt from the seven common columns.
+pub const DATA_TABLES: &[&str] = &[
+    "settings",
+    "sync_state",
+    "habit_areas",
+    "habits",
+    "habit_entries",
+    "habit_pauses",
+];
 
 /// The newest schema version this build knows.
 ///
@@ -357,7 +383,8 @@ mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
 
     use super::{
-        Applied, LATEST_VERSION, MIGRATIONS, applied_version, apply_all, backup_path, revert_to,
+        Applied, DATA_TABLES, LATEST_VERSION, MIGRATIONS, applied_version, apply_all, backup_path,
+        revert_to,
     };
     use crate::error::DbError;
     use crate::open::Database;
@@ -424,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_database_ends_up_with_the_tables_of_the_first_migration_and_nothing_else() {
+    fn a_new_database_ends_up_with_the_tables_the_migrations_declare_and_nothing_else() {
         let scratch = Scratch::new("migrate-new");
         let vault = an_open_vault();
         let database =
@@ -434,15 +461,19 @@ mod tests {
 
         assert_eq!(applied.from, 0);
         assert_eq!(applied.to, LATEST_VERSION);
-        assert_eq!(applied.versions, vec![1]);
         assert_eq!(
-            tables(&database),
-            vec![
-                "schema_migrations".to_owned(),
-                "settings".to_owned(),
-                "sync_state".to_owned()
-            ]
+            applied.versions,
+            MIGRATIONS.iter().map(|one| one.version).collect::<Vec<_>>()
         );
+
+        // The list every statement that has to name a table is built from, checked against what
+        // the migrations actually created. A table added to the schema and not to the list is a
+        // table nothing sweeps, compacts or reads a clock out of, and nothing else would notice.
+        let mut expected: Vec<String> = DATA_TABLES.iter().map(|name| (*name).to_owned()).collect();
+        expected.push("schema_migrations".to_owned());
+        expected.sort();
+
+        assert_eq!(tables(&database), expected);
 
         database.close().expect("the connection closes");
     }
@@ -509,7 +540,15 @@ mod tests {
         let before = tables(&database);
 
         let reverted = revert_to(&database, 0).expect("the migrations revert");
-        assert_eq!(reverted, vec![1]);
+        assert_eq!(
+            reverted,
+            MIGRATIONS
+                .iter()
+                .rev()
+                .map(|one| one.version)
+                .collect::<Vec<_>>(),
+            "the reverse ran in an order that is not the reverse of the forward one"
+        );
         assert_eq!(
             tables(&database),
             vec!["schema_migrations".to_owned()],

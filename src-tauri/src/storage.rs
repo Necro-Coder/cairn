@@ -9,16 +9,28 @@
 //! first successful unlock and stop existing when the vault closes.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use cairn_crypto::UnlockedVault;
-use cairn_db::{DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, device, migrations};
+use cairn_db::codec::FieldCodec;
+use cairn_db::{
+    DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
+};
+use cairn_domain::{Clock, Hlc};
 
-/// The database and the identifier of the device that writes to it.
+/// The database, the identifier of the device that writes to it, and its logical clock.
 #[derive(Debug)]
 pub struct Storage {
     database: Database,
     device: DeviceId,
     schema_version: u32,
+    /// The clock this device stamps its writes with.
+    ///
+    /// Behind a lock of its own rather than inside the connection's, because two writes that
+    /// arrive at the same moment must get two different readings, and that has to hold whether
+    /// or not they are in the same transaction. Taken for the length of one increment and
+    /// released, so it is never held while a statement runs.
+    clock: Mutex<Clock>,
 }
 
 impl Storage {
@@ -50,17 +62,54 @@ impl Storage {
         // running against a shape it does not understand.
         let applied = migrations::apply_all(&database, now_us)?;
 
+        // After the migrations, because the tables it reads have to exist, and before anything
+        // is written, because a clock that starts below what is already in the file would hand
+        // out a reading a row already carries.
+        let resumed = database.with(|connection| clock::resume(connection, device))?;
+
         Ok(Self {
             database,
             device,
             schema_version: applied.to,
+            clock: Mutex::new(resumed),
         })
+    }
+
+    /// The next clock reading, for one write.
+    ///
+    /// Takes the moment as an argument rather than reading a clock, like everything else in
+    /// this workspace. What comes back is strictly greater than every reading this device has
+    /// given out, whatever the argument says.
+    ///
+    /// A poisoned lock is taken anyway and the clock inside it is used as it stands. The
+    /// invariant that matters is that readings never repeat, and that one is kept by the value
+    /// itself: a panic between two ticks cannot lower it.
+    pub fn next_hlc(&self, now_ms: u64) -> Hlc {
+        let mut clock = match self.clock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.clock.clear_poison();
+                poisoned.into_inner()
+            }
+        };
+
+        clock.tick(now_ms)
     }
 
     /// The open database.
     #[must_use]
     pub fn database(&self) -> &Database {
         &self.database
+    }
+
+    /// A codec for the encrypted columns, borrowing the key of an open vault.
+    ///
+    /// Built where it is used and dropped there. It borrows rather than holding, so it cannot
+    /// outlive the closure the keys were read inside, which is what keeps the rule that no key
+    /// is ever copied out of the one place that holds it.
+    #[must_use]
+    pub fn codec<'a>(&self, vault: &'a UnlockedVault) -> FieldCodec<'a> {
+        FieldCodec::new(vault.data_key(), *vault.key_id())
     }
 
     /// The identifier this installation writes into every row.

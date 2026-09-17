@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `CivilDay: From<Timestamp>` is not satisfied
+ --> tests/ui/build_a_day_from_a_moment.rs:9:33
+  |
+9 |     let _day: CivilDay = moment.into();
+  |                                 ^^^^ the trait `From<Timestamp>` is not implemented for `CivilDay`
+  |
+  = note: required for `Timestamp` to implement `Into<CivilDay>`

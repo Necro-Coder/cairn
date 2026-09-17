@@ -266,6 +266,26 @@ impl Session {
         self.state().storage.as_ref().map(read)
     }
 
+    /// Runs something that needs both the keys and the open database, under one lock.
+    ///
+    /// Every repository call needs the pair: the database to run the statement against, and the
+    /// key to seal or open the encrypted columns with. Taking them in two calls would leave a
+    /// gap where the vault could close between the two, and the second half would then be a
+    /// statement against a connection that has just been shut.
+    ///
+    /// Answers `None` while the vault is closed, which is the shape the other two have.
+    #[must_use]
+    pub fn with_open<T>(&self, work: impl FnOnce(&UnlockedVault, &Storage) -> T) -> Option<T> {
+        let state = self.state();
+        match (state.vault.as_ref(), state.storage.as_ref()) {
+            (Some(vault), Some(storage)) => Some(work(vault, storage)),
+            // Half of a session, which is the state between the keys arriving and the database
+            // opening, and the state a failed attach leaves for the moment before it locks.
+            // Reported as closed, because nothing can be read or written in it.
+            _ => None,
+        }
+    }
+
     /// Runs the derivation and opens the vault with what it produced.
     ///
     /// The derivation is a closure rather than a call to the cryptographic crate so that

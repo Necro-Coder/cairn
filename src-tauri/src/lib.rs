@@ -68,6 +68,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info::app_info,
             commands::diagnostics::diagnostics,
+            commands::sample::diagnostics_insert_sample_habit,
+            commands::sample::diagnostics_list_sample_habits,
+            commands::sample::diagnostics_delete_sample_habit,
+            commands::sample::diagnostics_seed_data,
             commands::vault::vault_status,
             commands::vault::vault_create,
             commands::vault::vault_unlock,

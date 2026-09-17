@@ -9,8 +9,13 @@
 //! used on the wire. Dependencies point inwards, and this is as far in as they go.
 #![forbid(unsafe_code)]
 
+pub mod hlc;
 pub mod password;
 pub mod session;
+pub mod time;
+
+pub use hlc::{Clock, Hlc, Rev};
+pub use time::{CivilDay, TimeError, Timestamp};
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

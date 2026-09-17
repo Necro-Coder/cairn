@@ -24,6 +24,17 @@ pub fn now_us() -> i64 {
     }
 }
 
+/// The current moment, in milliseconds since the epoch in UTC.
+///
+/// What the logical clock reads. Milliseconds rather than microseconds because that is the unit
+/// the reading carries, and a clock set before the epoch answers with zero: a negative wall
+/// reading is not something the sixteen byte layout can hold, and the clock refuses to go
+/// backwards anyway, so the first write on such a machine simply starts from the beginning.
+#[must_use]
+pub fn now_ms() -> u64 {
+    u64::try_from(cairn_domain::Timestamp::from_micros(now_us()).as_millis()).unwrap_or(0)
+}
+
 /// Converts a distance after the epoch, saturating rather than wrapping.
 fn micros_after_epoch(distance: Duration) -> i64 {
     i64::try_from(distance.as_micros()).unwrap_or(i64::MAX)
