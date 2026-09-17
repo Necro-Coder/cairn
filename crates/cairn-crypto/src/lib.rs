@@ -22,6 +22,7 @@
 
 mod aad;
 mod aead;
+mod digest;
 mod error;
 mod header;
 mod hierarchy;
@@ -33,6 +34,7 @@ mod vault;
 
 pub use aad::{Aad, ID_LEN, MAX_NAME_LEN};
 pub use aead::{MAX_PLAINTEXT_LEN, Sealed, TAG_LEN, open, seal};
+pub use digest::{DIGEST_LEN, digest};
 pub use error::CryptoError;
 pub use header::{
     AUTHENTICATED_PREFIX_LEN, FORMAT_VERSION, HEADER_LEN, MAGIC, VaultHeader, WRAPPED_DEK_LEN,

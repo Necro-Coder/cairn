@@ -11,13 +11,14 @@
 use std::path::{Path, PathBuf};
 
 use cairn_crypto::UnlockedVault;
-use cairn_db::{DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, device};
+use cairn_db::{DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, device, migrations};
 
 /// The database and the identifier of the device that writes to it.
 #[derive(Debug)]
 pub struct Storage {
     database: Database,
     device: DeviceId,
+    schema_version: u32,
 }
 
 impl Storage {
@@ -35,7 +36,7 @@ impl Storage {
     ///
     /// Returns [`DbError::Io`] or [`DbError::Sealed`] if the device identifier cannot be read or
     /// created, and [`DbError::Sqlite`] if the database cannot be opened with this key.
-    pub fn open(directory: &Path, vault: &UnlockedVault) -> Result<Self, DbError> {
+    pub fn open(directory: &Path, vault: &UnlockedVault, now_us: i64) -> Result<Self, DbError> {
         let device = device::load_or_create(
             &directory.join(DEVICE_FILE),
             vault.data_key(),
@@ -43,7 +44,17 @@ impl Storage {
         )?;
         let database = Database::open(&directory.join(DATABASE_FILE), &vault.database_key())?;
 
-        Ok(Self { database, device })
+        // Before anything reads a row. A database at an older schema than this build is brought
+        // up here, once, while nothing else can be holding a statement against it; one that is
+        // newer than this build is refused, and the unlock fails rather than the application
+        // running against a shape it does not understand.
+        let applied = migrations::apply_all(&database, now_us)?;
+
+        Ok(Self {
+            database,
+            device,
+            schema_version: applied.to,
+        })
     }
 
     /// The open database.
@@ -56,6 +67,12 @@ impl Storage {
     #[must_use]
     pub fn device(&self) -> DeviceId {
         self.device
+    }
+
+    /// The schema version the database is at, after any migrations that ran on opening.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Closes the database, answering whether SQLite agreed to let the file go.

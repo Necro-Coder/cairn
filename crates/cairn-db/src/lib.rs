@@ -20,6 +20,7 @@
 pub mod codec;
 pub mod device;
 pub mod error;
+pub mod migrations;
 pub mod open;
 
 #[cfg(test)]
@@ -28,6 +29,7 @@ mod test_support;
 pub use codec::{FieldCodec, RECORD_FORMAT_VERSION, RowKey, SealedColumns};
 pub use device::DeviceId;
 pub use error::DbError;
+pub use migrations::{LATEST_VERSION, Migration};
 pub use open::Database;
 
 /// The name of the encrypted database file.
