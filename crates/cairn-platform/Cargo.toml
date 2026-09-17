@@ -18,6 +18,7 @@ zeroize = { version = "1.9", features = ["alloc"] }
 # the wrapping is three calls and the audit of this crate has to read them anyway.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_Memory",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
