@@ -369,6 +369,14 @@ impl Reading {
                 if manifest.record_version > RECORD_VERSION {
                     return Err(DbError::UnsupportedVersion);
                 }
+                // Checked here rather than left to the first table this build has never heard
+                // of. Both are refusals, but they are not the same refusal: a backup from a
+                // newer Cairn is something an update fixes, and "damaged or incomplete" would
+                // send somebody looking for a second copy of a file that is perfectly fine.
+                if manifest.schema_version > crate::migrations::LATEST_VERSION {
+                    return Err(DbError::UnsupportedVersion);
+                }
+
                 self.seen_manifest = true;
                 self.record_version = manifest.record_version;
                 self.schema_version = manifest.schema_version;
@@ -483,12 +491,14 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use cairn_crypto::{Argon2Params, BACKUP_HEADER_LEN, MIN_MEMORY_KIB, MIN_PASSES, TAG_LEN};
+    use cairn_crypto::{
+        Argon2Params, BACKUP_HEADER_LEN, BackupHeader, MIN_MEMORY_KIB, MIN_PASSES, TAG_LEN,
+    };
     use cairn_domain::Hlc;
 
-    use super::{read_backup, verify_backup};
+    use super::{Reading, read_backup, verify_backup};
     use crate::backup::export::write_backup;
-    use crate::backup::format::RowValues;
+    use crate::backup::format::{FORMAT_NAME, Line, Manifest, RECORD_VERSION, RowValues};
     use crate::backup::schema::{TABLES, table_named};
     use crate::backup::tables::{read_table, write_row};
     use crate::device::DeviceId;
@@ -894,6 +904,72 @@ mod tests {
             .find(|(name, _rows)| name == "settings")
             .map(|(_name, rows)| *rows);
         assert_eq!(settings_rows, Some(48));
+    }
+
+    /// The header of a real exported file, which is the cheapest way to get one.
+    fn a_real_header(sandbox: &Sandbox, name: &str) -> BackupHeader {
+        let path = exported(sandbox, name);
+        let bytes = fs::read(&path).expect("the backup is readable");
+
+        BackupHeader::parse(
+            bytes
+                .get(..BACKUP_HEADER_LEN)
+                .expect("a backup is at least a header long"),
+        )
+        .expect("its header parses")
+    }
+
+    #[test]
+    fn a_manifest_from_a_later_schema_is_refused_as_a_version_and_not_as_damage() {
+        // A file from a newer Cairn is a perfectly good file this build is too old to read,
+        // and saying so is the difference between somebody updating the application and
+        // somebody going looking for a second copy of a backup that was never damaged.
+        //
+        // Driven through the reader's state rather than through a file, because
+        // `write_backup` verifies what it has just written and would refuse to produce one:
+        // a backup from a later schema is by definition written by a build that does not
+        // exist yet.
+        let source = seeded("verify-later-schema");
+        let header = a_real_header(&source, "later-schema.cairn");
+        let mut state = Reading::new(&header);
+
+        let refused = state
+            .line(
+                Line::Manifest(Manifest {
+                    format: FORMAT_NAME.to_owned(),
+                    record_version: RECORD_VERSION,
+                    schema_version: crate::LATEST_VERSION.saturating_add(1),
+                    tables: Vec::new(),
+                }),
+                &mut |_table, _values| Ok(()),
+            )
+            .expect_err("a later schema is refused");
+
+        assert!(
+            matches!(refused, DbError::UnsupportedVersion),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_from_this_schema_is_accepted() {
+        // The other half, so the test above cannot pass because the manifest was wrong in
+        // some way that has nothing to do with the version.
+        let source = seeded("verify-this-schema");
+        let header = a_real_header(&source, "this-schema.cairn");
+        let mut state = Reading::new(&header);
+
+        state
+            .line(
+                Line::Manifest(Manifest {
+                    format: FORMAT_NAME.to_owned(),
+                    record_version: RECORD_VERSION,
+                    schema_version: crate::LATEST_VERSION,
+                    tables: Vec::new(),
+                }),
+                &mut |_table, _values| Ok(()),
+            )
+            .expect("this build's own schema version is accepted");
     }
 
     #[test]
