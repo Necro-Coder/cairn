@@ -10,15 +10,17 @@
    * workspace rather than changing anything themselves. What opening, closing and pinning
    * mean is in `tabs.ts`, with a test; this decides which keys ask for them.
    */
-  import ModuleScreen from '../../routes/ModuleScreen.svelte';
+  import FinancesScreen from '../../routes/modules/FinancesScreen.svelte';
+  import HabitsScreen from '../../routes/modules/HabitsScreen.svelte';
   import PanelScreen from '../../routes/PanelScreen.svelte';
+  import PasswordsScreen from '../../routes/modules/PasswordsScreen.svelte';
   import SettingsScreen from '../../routes/settings/SettingsScreen.svelte';
   import IconClock from '../icons/IconClock.svelte';
   import { session } from '../session.svelte';
   import CommandPalette from './palette/CommandPalette.svelte';
   import Header from './Header.svelte';
   import TabBar from './TabBar.svelte';
-  import { NUMBERED, sectionOf, type SectionId } from './sections';
+  import { NUMBERED, type SectionId } from './sections';
   import type { Command } from './palette/commands';
   import type { StartupResult } from '../startup';
   import { workspace } from './workspace.svelte';
@@ -52,13 +54,6 @@
       workspace.width = windowWidth;
     }
   });
-
-  /** What each module says when there is nothing in it yet. */
-  const MODULE_EMPTY: Record<'habits' | 'passwords' | 'finances', [string, string]> = {
-    habits: ['Todavía no tienes ningún hábito.', 'Añadir hábito'],
-    passwords: ['Todavía no tienes ninguna contraseña guardada.', 'Añadir contraseña'],
-    finances: ['Todavía no tienes ningún movimiento.', 'Añadir movimiento'],
-  };
 
   /** Opens a section the way the menu, a shortcut and the palette all open one: temporary. */
   function open(id: SectionId): void {
@@ -180,11 +175,14 @@
   <div class="page">
     {#if current === 'panel'}
       <PanelScreen />
-    {:else if current === 'settings'}
-      <SettingsScreen {startup} />
+    {:else if current === 'habits'}
+      <HabitsScreen />
+    {:else if current === 'passwords'}
+      <PasswordsScreen />
+    {:else if current === 'finances'}
+      <FinancesScreen />
     {:else}
-      {@const [empty, action] = MODULE_EMPTY[current]}
-      <ModuleScreen section={sectionOf(current)} {empty} {action} />
+      <SettingsScreen {startup} />
     {/if}
   </div>
 </main>

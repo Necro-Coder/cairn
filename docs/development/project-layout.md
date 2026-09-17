@@ -26,6 +26,7 @@ src/
   lib/shell/         the header, the tab strip, the panel and the command palette
   lib/search/        the search contract every module registers a provider against
   routes/            screens
+  routes/modules/    habits, passwords and finances, drawn before they work
   routes/settings/   the five parts of the settings screen, diagnostics among them
 scripts/             the design token gate, and its tests
 tests/a11y/          the accessibility gate
@@ -48,7 +49,7 @@ That third one is the reason the workspace is one object. `workspace.svelte.ts` 
 
 `lib/search/` is the contract every module will register a search provider against, written before there is anything to search. A hit carries a module, an identity, a title and a date, and there is no field for content, a value, an amount or a snippet: the palette opens on two keys, so the type is what makes showing a secret impossible rather than the care of whoever writes the provider. `contract.test-d.ts` fails to compile if a fifth field appears, whatever it is called. Both arguments a provider is handed are bounded before it sees them, at fifty hits and at two hundred characters of query, because in phase 03 that query stops being matched against eight titles in the WebView and becomes an argument to a command in the core.
 
-`routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active. `routes/settings/` is the five parts of the settings screen — security, appearance, data, diagnostics and shortcuts — with the diagnostics drawn twice: as one of those parts while the vault is open, and as a screen of its own while it is closed, because the machine somebody needs a version number on is usually the one that will not open.
+`routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active. `routes/modules/` is habits, passwords and finances, each drawn in full before any of them works: the real empty state somebody meets on their first day, the shape the data will take — a year of days, a list of accounts, three totals of a month — and a badge where the value will go saying the part is not written. Nothing in them reads or writes anything, and the figures that are shown are zero because a vault with nothing in it holds nothing, which is a fact rather than a placeholder. `routes/settings/` is the five parts of the settings screen — security, appearance, data, diagnostics and shortcuts — with the diagnostics drawn twice: as one of those parts while the vault is open, and as a screen of its own while it is closed, because the machine somebody needs a version number on is usually the one that will not open.
 
 ## Dependencies point inwards
 
