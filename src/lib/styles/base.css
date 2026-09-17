@@ -106,3 +106,24 @@ button {
 :focus:not(:focus-visible) {
   outline: none;
 }
+
+/*
+ * The isolation frame.
+ *
+ * Tauri appends `<iframe id="__tauri_isolation__">` to the body at startup and gives it no
+ * styling at all, so it draws as a blank three hundred by one hundred and fifty rectangle
+ * underneath the page. It has no interface: everything it does happens in messages that
+ * never touch the screen. It only appears in a real window, which is why the browser
+ * preview never showed it.
+ *
+ * Given no size rather than `display: none`. A frame that is not displayed still loads its
+ * document in every engine that matters, but this is the pattern that carries every command
+ * in the application, and "still" is a weaker word than "always" when the cost of being
+ * wrong is an application that cannot talk to its own core.
+ */
+#__tauri_isolation__ {
+  position: fixed;
+  width: 0;
+  height: 0;
+  border: 0;
+}
