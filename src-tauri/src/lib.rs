@@ -58,7 +58,11 @@ pub fn run() {
             commands::vault::vault_change_kdf_params,
             commands::vault::session_heartbeat,
             commands::vault::session_set_inactivity,
-            commands::vault::password_strength
+            commands::vault::password_strength,
+            window::start_window_drag,
+            window::minimize_window,
+            window::toggle_maximize_window,
+            window::close_window
         ])
         .run(tauri::generate_context!())
         .expect("the application context is generated at build time and must be valid");

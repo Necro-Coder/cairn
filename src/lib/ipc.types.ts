@@ -120,7 +120,44 @@ export interface IpcSurface {
    * for, because an event carrying state is an event that can be missed.
    */
   readonly onVaultLocked: (handler: (reason: LockReason) => void) => Promise<() => void>;
+
+  /**
+   * Hands the window to the window manager for a drag. Rejects with a {@link WindowError}.
+   *
+   * The window has no system decoration, so the header is the title bar and these four are
+   * what a title bar does. They are commands of our own rather than entries in the
+   * capability list: `core:window:*` would add four core APIs to what script injected into
+   * the WebView could call, and a custom command needs no entry at all.
+   */
+  readonly startWindowDrag: () => Promise<void>;
+
+  /** Minimises the window. Rejects with a {@link WindowError}. */
+  readonly minimizeWindow: () => Promise<void>;
+
+  /**
+   * Maximises the window or restores it, answering which it now is.
+   *
+   * Answering rather than leaving the interface to ask again means the button redraws
+   * itself from the result of the press rather than from a second round trip.
+   */
+  readonly toggleMaximizeWindow: () => Promise<boolean>;
+
+  /**
+   * Closes the vault and then the window, in that order.
+   *
+   * The order is the core's, not this side's, and it is not negotiable: closing the window
+   * first would tear down the WebView with a key still live in the process.
+   */
+  readonly closeWindow: () => Promise<void>;
 }
+
+/**
+ * Why a window control did not do what it was asked.
+ *
+ * One reason, because none of the four takes a parameter: either the window is there and
+ * the window manager agreed, or it is not.
+ */
+export type WindowError = { readonly kind: 'unavailable' };
 
 /**
  * What reading the vault header at startup found.

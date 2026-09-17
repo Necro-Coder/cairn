@@ -106,6 +106,14 @@ interface PreviewVault {
 
 let vault: PreviewVault | null = null;
 
+/**
+ * Whether the pretend window is maximised.
+ *
+ * A browser tab has no such state, so this exists only so that the button in the header
+ * draws both of its glyphs when somebody presses it.
+ */
+let maximised = false;
+
 /** The listeners the interface has registered for the lock event. */
 const lockListeners = new Set<(reason: LockReason) => void>();
 
@@ -363,5 +371,36 @@ export const ipc: IpcSurface = {
     return Promise.resolve(() => {
       lockListeners.delete(handler);
     });
+  },
+
+  /*
+   * The four window controls.
+   *
+   * A browser tab is not a window this application owns: it cannot be dragged by its
+   * content, it cannot be minimised, and closing it is not something a page may do
+   * unasked. So these accept and do nothing, which is the honest behaviour — the buttons
+   * are drawn and can be reached with the keyboard, and what they do belongs to a real
+   * window.
+   *
+   * Only the maximise state is remembered, so that the button draws the right glyph and
+   * somebody looking at the header can see both of them.
+   */
+  startWindowDrag: () => Promise.resolve(),
+
+  minimizeWindow: () => Promise.resolve(),
+
+  toggleMaximizeWindow: () => {
+    maximised = !maximised;
+    return Promise.resolve(maximised);
+  },
+
+  closeWindow: () => {
+    // The vault half is real even here, and it is the half that matters: this is the one
+    // place where a screen could be written against a close that left the vault open.
+    if (vault !== null && vault.unlocked) {
+      vault.unlocked = false;
+      announceLock('requested');
+    }
+    return Promise.resolve();
   },
 };
