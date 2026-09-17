@@ -13,9 +13,11 @@ pub mod hlc;
 pub mod password;
 pub mod session;
 pub mod time;
+pub mod tree;
 
 pub use hlc::{Clock, Hlc, Rev};
 pub use time::{CivilDay, TimeError, Timestamp};
+pub use tree::{MAX_DEPTH, TreeError};
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

@@ -25,6 +25,7 @@ pub mod migrations;
 pub mod open;
 pub mod repositories;
 pub mod row;
+pub mod search;
 pub mod tombstones;
 
 #[cfg(test)]
