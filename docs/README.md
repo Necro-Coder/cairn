@@ -32,8 +32,8 @@ The user interface is in Spanish. This documentation is in English. See the note
 | Overview | _planned_ — the whole system in one page, read this first |
 | [Threat model](architecture/threat-model.md) | Who the attacker is, what each defence answers, and what it does not. |
 | [Cryptography](architecture/cryptography.md) | The key hierarchy, the vault header byte by byte, nonces and associated data. |
-| Data model | _planned_ — the schema and why every column exists |
-| Storage | _planned_ — the two layers of encryption at rest |
+| [Data model](architecture/data-model.md) | The schema table by table, and why every column exists. |
+| [Storage](architecture/storage.md) | The two layers of encryption at rest, the PRAGMAs and their order, and what stays visible in the cold file. |
 | Backup format | _planned_ — the export file, byte by byte |
 | Sync | _planned_ — transport, handshake and the merge algorithm |
 | Platform hardening | _planned_ — operating system side channels on Windows and iOS |
