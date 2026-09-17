@@ -249,8 +249,7 @@
         <div class="search-heading">
           <span class="label">Buscar en tus datos</span>
           {#if !SEARCH_IS_READY}
-            {@const habits = sectionOf('habits')}
-            <Badge colour={habits.colour} tint={habits.tint} text="En desarrollo" />
+            <Badge tone={sectionOf('habits').tone} text="En desarrollo" />
           {/if}
         </div>
 
@@ -262,7 +261,7 @@
           <ul class="hits">
             {#each hits as hit (`${hit.module}:${hit.id}`)}
               {@const section = sectionOf(hit.module)}
-              <li style="--hit-mark: {section.mark}">
+              <li class={section.tone}>
                 <span class="chip mark" aria-hidden="true"></span>
                 <span class="title">{hit.title}</span>
                 <span class="detail">{section.title}</span>
@@ -455,6 +454,6 @@
     width: var(--chip-size);
     height: var(--chip-size);
     flex: none;
-    background-color: var(--hit-mark);
+    background-color: var(--tone-mark);
   }
 </style>

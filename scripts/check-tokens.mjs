@@ -20,6 +20,15 @@
  *    component that writes `16px` is a component that has stopped reading the tokens,
  *    even when the number happens to be right today.
  * 3. A duration in `ms` or `s`.
+ * 4. A `style` attribute in markup.
+ *
+ * The fourth is not about values at all, and it is here because this is the file that reads
+ * every component. The content security policy in `tauri.conf.json` sets `style-src 'self'`
+ * with no `unsafe-inline`, and that blocks inline style attributes as well as inline `<style>`
+ * elements. A browser with no policy applied honours them, so the preview cannot show the
+ * fault: the declaration is simply dropped in the real window and the colour, the size or the
+ * edge it carried disappears. Module colours reach a component through a class declared in
+ * `base.css`; see the note there.
  *
  * What it deliberately does not look for: `em`, `ch`, `%`, `fr` and the viewport units.
  * Those are relative to something the component already has, so they are a way of saying
@@ -61,7 +70,7 @@ const EXTENSIONS = ['.css', '.svelte'];
 const EXEMPTION = /tokens-exempt:\s*(?!\*\/|-->)\S/;
 
 /**
- * The three things a component may not contain.
+ * The four things a component may not contain.
  *
  * Each one is reported with the name of the token family the author was supposed to
  * reach for, because a gate that only says "no" teaches nobody where to look.
@@ -84,6 +93,13 @@ const RULES = [
     // Anchored on the left so that `0.925em` and a word ending in `s` cannot match.
     pattern: /(?<![\w.-])\d*\.?\d+m?s\b/g,
     advice: 'use --duration-fast or --duration-normal',
+  },
+  {
+    name: 'inline-style',
+    // A `style` attribute in markup, whether it is given a string or a Svelte expression.
+    pattern: /(?<![\w-])style=["{]/g,
+    advice:
+      'the policy drops inline styles in the real window; put the values on a class in base.css',
   },
 ];
 

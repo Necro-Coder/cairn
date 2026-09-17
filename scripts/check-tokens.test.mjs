@@ -128,8 +128,12 @@ test('every violation in a file is reported, not only the first', () => {
 });
 
 test('a component is scanned outside its style block as well', () => {
-  // An inline style attribute is the obvious way around a gate that only read `<style>`.
-  assert.deepEqual(rulesIn('<span style="background: #f2c007"></span>'), ['colour']);
+  // An inline style attribute is the obvious way around a gate that only read `<style>`,
+  // and it is now caught twice: once for the colour and once for the attribute itself.
+  assert.deepEqual(rulesIn('<span style="background: #f2c007"></span>'), [
+    'colour',
+    'inline-style',
+  ]);
 });
 
 test('the numbers an icon is drawn with are not lengths', () => {
@@ -142,4 +146,27 @@ test('the numbers an icon is drawn with are not lengths', () => {
     ),
     [],
   );
+});
+
+test('an inline style attribute is rejected, because the policy drops it in the real window', () => {
+  // Both rules fire: the attribute is the defect, and the colour inside it is a second one.
+  const found = findViolations('<div style="--tone: #ff0000"></div>', 'a.svelte');
+
+  assert.deepEqual(
+    found.map((violation) => violation.rule),
+    ['colour', 'inline-style'],
+  );
+});
+
+test('a style attribute given a Svelte expression is rejected too', () => {
+  const found = findViolations('<div style={whatever}></div>', 'a.svelte');
+
+  assert.deepEqual(
+    found.map((violation) => violation.rule),
+    ['inline-style'],
+  );
+});
+
+test('the word style in ordinary markup is not an inline style', () => {
+  assert.deepEqual(findViolations('<p>lifestyle=</p>\n<p class="style">x</p>', 'a.svelte'), []);
 });

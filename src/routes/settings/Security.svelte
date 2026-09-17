@@ -1,7 +1,19 @@
 <script lang="ts">
+  /**
+   * The security part of the settings screen: how the key is derived, when the vault closes
+   * by itself, and the two operations that rewrite the header.
+   *
+   * Both of those are kept collapsed behind a button. They are things somebody should have to
+   * decide to start rather than find themselves halfway through, and both carry the warning
+   * before the fields rather than after, because a warning under a form is a warning read
+   * after the decision.
+   *
+   * Neither password is held here for longer than the round trip: the fields are emptied
+   * before the call, so this component is not still holding one while it runs.
+   */
   import { ipc } from '$ipc';
-  import { session } from '../lib/session.svelte';
-  import type { InactivityChoice, KdfParams, VaultError } from '../lib/ipc.types';
+  import { session } from '../../lib/session.svelte';
+  import type { InactivityChoice, KdfParams, VaultError } from '../../lib/ipc.types';
 
   /** The periods the interface offers, in the order somebody reads them. */
   const PERIODS: readonly { readonly choice: InactivityChoice; readonly label: string }[] = [
@@ -343,12 +355,12 @@
 </div>
 
 <style>
+  /* No rule of its own at the top: the settings screen already draws one under its chooser,
+   * and two hairlines a few pixels apart read as a mistake. */
   .panel {
     display: flex;
     flex-direction: column;
     gap: var(--space-5);
-    padding-top: var(--space-4);
-    border-top: var(--border-width) solid var(--colour-border);
   }
 
   section {
@@ -410,7 +422,7 @@
     border-color: var(--colour-accent);
     background-color: var(--colour-accent);
     color: var(--colour-accent-contrast);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   form {
@@ -422,7 +434,7 @@
 
   label {
     font-size: var(--text-sm);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   input[type='password'],
@@ -440,7 +452,7 @@
     gap: var(--space-3);
     align-items: flex-start;
     margin-top: var(--space-2);
-    font-weight: 400;
+    font-weight: var(--weight-regular);
   }
 
   .actions {
@@ -455,7 +467,7 @@
     border-radius: var(--radius-md);
     background-color: var(--colour-accent);
     color: var(--colour-accent-contrast);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .actions button[type='submit']:disabled {

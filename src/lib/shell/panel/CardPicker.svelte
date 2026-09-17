@@ -131,8 +131,7 @@
           type="button"
           role="menuitemcheckbox"
           aria-checked={on}
-          class="item"
-          style="--item-mark: {section.mark}"
+          class="item {section.tone}"
           onclick={() => ontoggle(card.id)}
         >
           <span class="chip mark" aria-hidden="true"></span>
@@ -220,7 +219,7 @@
     height: var(--chip-size);
     flex: none;
     margin-top: var(--space-1);
-    background-color: var(--item-mark);
+    background-color: var(--tone-mark);
   }
 
   .text {

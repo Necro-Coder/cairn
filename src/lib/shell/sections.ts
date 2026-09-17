@@ -33,16 +33,13 @@ export interface Section {
   /** The keys that open it, written the way they are drawn. */
   readonly shortcut: string;
   /**
-   * The colour this section is written in, as a token reference.
+   * The class that carries this section's three colours.
    *
-   * A reference rather than a value: every colour in the interface comes from
-   * `tokens.css`, and the gate that enforces that reads this file too.
+   * A class and not three token references, because the content security policy forbids
+   * inline styles and a `style` attribute is how those references used to reach the
+   * component. The class is declared once in `base.css`; see the note there.
    */
-  readonly colour: string;
-  /** The tint it fills with: the active tab's background, a chosen row. */
-  readonly tint: string;
-  /** The colour its figure is drawn in, which for finances is not the colour above. */
-  readonly mark: string;
+  readonly tone: string;
   /** Its icon, in the menu and the palette. */
   readonly icon: Component<{ label?: string | undefined }>;
   /** Whether its tab can be closed. The panel's cannot. */
@@ -61,9 +58,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'panel',
     title: 'Panel',
     shortcut: 'Ctrl 0',
-    colour: 'var(--module-panel)',
-    tint: 'var(--module-panel-tint)',
-    mark: 'var(--module-panel-mark)',
+    tone: 'tone-panel',
     icon: IconPanel,
     closable: false,
   },
@@ -71,9 +66,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'habits',
     title: 'Hábitos',
     shortcut: 'Ctrl 1',
-    colour: 'var(--module-habits)',
-    tint: 'var(--module-habits-tint)',
-    mark: 'var(--module-habits-mark)',
+    tone: 'tone-habits',
     icon: IconHabits,
     closable: true,
   },
@@ -81,9 +74,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'passwords',
     title: 'Contraseñas',
     shortcut: 'Ctrl 2',
-    colour: 'var(--module-passwords)',
-    tint: 'var(--module-passwords-tint)',
-    mark: 'var(--module-passwords-mark)',
+    tone: 'tone-passwords',
     icon: IconPasswords,
     closable: true,
   },
@@ -91,9 +82,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'finances',
     title: 'Finanzas',
     shortcut: 'Ctrl 3',
-    colour: 'var(--module-finances)',
-    tint: 'var(--module-finances-tint)',
-    mark: 'var(--module-finances-mark)',
+    tone: 'tone-finances',
     icon: IconFinances,
     closable: true,
   },
@@ -101,9 +90,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'settings',
     title: 'Ajustes',
     shortcut: 'Ctrl ,',
-    colour: 'var(--module-passwords)',
-    tint: 'var(--module-passwords-tint)',
-    mark: 'var(--module-passwords-mark)',
+    tone: 'tone-settings',
     icon: IconSettings,
     closable: true,
   },

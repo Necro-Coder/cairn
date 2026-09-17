@@ -23,11 +23,16 @@
    */
 
   interface Props {
-    /** How tall the glyph is drawn, as a length token. Defaults to the icon size. */
-    size?: string;
+    /**
+     * Whether this is the seal of the lock screen rather than the corner of the title bar.
+     *
+     * A variant and not a size, because a size would have to arrive in a `style` attribute
+     * and the content security policy drops those. There are two places and two sizes.
+     */
+    seal?: boolean;
   }
 
-  const { size = 'var(--icon-size)' }: Props = $props();
+  const { seal = false }: Props = $props();
 </script>
 
 <svg
@@ -36,7 +41,7 @@
   fill="var(--brand-glyph)"
   role="presentation"
   aria-hidden="true"
-  style="--brand-mark-size: {size}"
+  class:seal
 >
   <!-- Base: the widest and heaviest stone, seated low. -->
   <rect x="3" y="17" width="18" height="4" />
@@ -48,8 +53,14 @@
 
 <style>
   .brand-mark {
-    width: var(--brand-mark-size);
-    height: var(--brand-mark-size);
+    width: var(--icon-size);
+    height: var(--icon-size);
     flex: none;
+  }
+
+  /* The lock screen, where it sits beside the product name at display size. */
+  .seal {
+    width: var(--text-2xl);
+    height: var(--text-2xl);
   }
 </style>

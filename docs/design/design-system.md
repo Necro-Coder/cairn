@@ -106,6 +106,8 @@ This contradicts the rule that vermilion means action, so the exception is named
 1. **The glyph never appears next to a primary button.** Two vermilion shapes in one field of view and the rule is gone.
 2. **The glyph is never clickable**, and never inside anything clickable. It teaches nothing if it cannot be pressed.
 
+The lock screen is where those two statements meet, because it carries the seal and it also has a button. It is resolved in favour of the rule rather than around it: **on the lock screen the button that opens the vault is not accented.** An accent exists to pick one action out of several, and that screen has exactly one — the button is the only thing on it that can be pressed, so nothing is being distinguished from anything. The seal keeps the vermilion, and the rule that vermilion means action survives intact on the one screen where it would otherwise have had to be excused.
+
 It is `aria-hidden` wherever the product name is written beside it, which is everywhere it appears.
 
 ### Values
@@ -435,5 +437,5 @@ WCAG 2.2 AA is the floor and is not negotiable, because the alternative is an ap
 A design system that lives only in a document is a document. Three things keep this one in the code.
 
 1. **Tokens are the only source of values.** `src/lib/styles/tokens.css` holds them and nothing else defines one. A component needing a value that does not exist adds it there, with a comment saying why, rather than typing a number.
-2. **A gate fails the build** on a colour literal, a `px` or `rem` length, or a duration written by hand anywhere in `src/` outside `tokens.css`. It is `node scripts/check-tokens.mjs`, it has no dependencies, and its list of exemptions starts empty. An exemption is a comment on the line above saying why, so each one argues for itself in the diff.
+2. **A gate fails the build** on a colour literal, a `px` or `rem` length, a duration written by hand anywhere in `src/` outside `tokens.css`, or a `style` attribute in markup — the policy this application runs under drops inline styles, so a colour passed that way disappears in the real window and nowhere else. It is `node scripts/check-tokens.mjs`, it has no dependencies, and its list of exemptions starts empty. An exemption is a comment on the line above saying why, so each one argues for itself in the diff.
 3. **The review question is fixed**: does every value in this diff come from a token, does the screen work in both themes, does it work with the keyboard alone, and does it work with motion reduced. Four questions, every time.
