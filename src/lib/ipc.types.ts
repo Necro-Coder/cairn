@@ -24,6 +24,24 @@
  */
 export type BuildProfile = 'debug' | 'release';
 
+/**
+ * What this copy of the application is allowed to do with the data directory.
+ *
+ * Four states rather than a boolean, because they lead to four different screens: carry on,
+ * explain that another copy has it, explain that something is wrong with the machine, and
+ * carry on because there was nothing to take.
+ *
+ * `guaranteedByThePlatform` is not a failure. It is what a platform that runs one copy of an
+ * application by itself reports, said out loud rather than silently succeeding, so that the
+ * question "is the lock working" has an answer everywhere.
+ */
+export type InstanceState = 'held' | 'alreadyRunning' | 'unavailable' | 'guaranteedByThePlatform';
+
+/** What the core answers about the lock on the data directory. */
+export interface InstanceStatus {
+  readonly state: InstanceState;
+}
+
 /** Name, version and build profile of the running application. */
 export interface AppInfo {
   readonly name: string;
@@ -135,6 +153,14 @@ export interface IpcSurface {
    * condition, it is simply not there.
    */
   readonly previewNotice: string | null;
+
+  /**
+   * What this copy of the application is allowed to do with the data directory.
+   *
+   * The first thing the interface asks, before it draws anything else. A second copy never
+   * opened the vault, so every other command on this surface has nothing to answer with.
+   */
+  readonly fetchInstanceStatus: () => Promise<InstanceStatus>;
 
   /** Reads the name, version and build profile of the running application. */
   readonly fetchAppInfo: () => Promise<AppInfo>;

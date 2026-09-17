@@ -33,6 +33,7 @@ import type {
   AppInfo,
   Diagnostics,
   InactivityChoice,
+  InstanceStatus,
   IpcSurface,
   KdfParams,
   KeysetPage,
@@ -45,6 +46,11 @@ import type {
 
 /** The name the core sends the one event under. It must match `window.rs`. */
 const LOCKED_EVENT = 'session://locked';
+
+/** Reads what this copy of the application is allowed to do with the data directory. */
+async function fetchInstanceStatus(): Promise<InstanceStatus> {
+  return invoke<InstanceStatus>('instance_status');
+}
 
 /** Reads the name, version and build profile of the running application. */
 async function fetchAppInfo(): Promise<AppInfo> {
@@ -168,6 +174,7 @@ async function closeWindow(): Promise<void> {
  */
 export const ipc: IpcSurface = {
   previewNotice: null,
+  fetchInstanceStatus,
   fetchAppInfo,
   fetchDiagnostics,
   insertSampleHabit,

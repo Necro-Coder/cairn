@@ -5,6 +5,7 @@
 
 pub mod clock;
 pub mod commands;
+pub mod instance;
 pub mod session;
 pub mod state;
 pub mod storage;
@@ -14,6 +15,7 @@ pub mod window;
 
 use tauri::Manager as _;
 
+use instance::Instance;
 use state::AppState;
 use storage::DataDirectory;
 use vault::Vault;
@@ -53,9 +55,27 @@ pub fn run() {
             // file. And the name it builds the directory from is the bundle identifier, so
             // changing the identifier would move the vault and leave the old one behind,
             // looking exactly like a machine that never had one.
-            let directory = cairn_platform::paths::data_directory()?;
-            let vault = Vault::open_at(&directory)?;
-            app.manage(AppState::new(vault, DataDirectory::new(directory)));
+            let directory = DataDirectory::new(cairn_platform::paths::data_directory()?);
+
+            // Before the vault is read, and before anything is managed. Two copies of this
+            // application with the same database file open is two connections, two logical
+            // clocks issuing readings from the same device identifier, and two sets of keys in
+            // memory; the clock is the part that does real damage, because both would hand out
+            // readings a row already carries.
+            let instance = Instance::take(&directory);
+            let may_continue = instance.status().may_use_the_directory();
+            app.manage(instance);
+
+            // A refused copy stops here, and stopping here is the point: it does not read the
+            // header, it does not create a file, and it does not start the watchdog. What it
+            // does is draw the screen that says why, which is the one thing a second copy can
+            // usefully do. The interface asks `instance_status` before anything else.
+            if !may_continue {
+                return Ok(());
+            }
+
+            let vault = Vault::open_at(directory.path())?;
+            app.manage(AppState::new(vault, directory));
 
             // Started after the state is managed, because the first thing it does is ask for
             // it. In the core rather than in the interface: a WebView that was made to stop
@@ -67,6 +87,7 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::app_info::app_info,
+            commands::instance::instance_status,
             commands::diagnostics::diagnostics,
             commands::sample::diagnostics_insert_sample_habit,
             commands::sample::diagnostics_list_sample_habits,

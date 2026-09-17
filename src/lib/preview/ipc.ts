@@ -33,6 +33,7 @@ import type {
   AppInfo,
   Diagnostics,
   InactivityChoice,
+  InstanceState,
   IpcSurface,
   KdfParams,
   KdfReport,
@@ -194,6 +195,23 @@ function applyInactivity(): void {
   }
 }
 
+/**
+ * Which instance state the preview reports.
+ *
+ * A browser tab is never a second copy of anything: there is no lock, no data directory and no
+ * other process, so the honest answer is always `held`. The query parameter exists because the
+ * screen that explains a refusal is otherwise unreachable here, and a screen nobody can reach is
+ * a screen nobody checks for contrast, focus order or a reader.
+ *
+ * Anything that is not one of the two refusals is `held`, so a value typed into the address bar
+ * cannot put the preview into a state the real application has no name for.
+ */
+function previewInstanceState(): InstanceState {
+  const asked = new URLSearchParams(globalThis.location.search).get('instance');
+
+  return asked === 'alreadyRunning' || asked === 'unavailable' ? asked : 'held';
+}
+
 /** What the interface is told, assembled the way the core assembles it. */
 function status(): VaultStatus {
   applyInactivity();
@@ -256,6 +274,8 @@ function report(params: KdfParams): KdfReport {
  */
 export const ipc: IpcSurface = {
   previewNotice: `Previsualización de la interfaz. Todos los datos son inventados, no hay núcleo detrás y aquí no se cifra nada. ${MARKER}`,
+
+  fetchInstanceStatus: () => Promise.resolve({ state: previewInstanceState() }),
 
   fetchAppInfo: () => Promise.resolve(PREVIEW_APP_INFO),
 
