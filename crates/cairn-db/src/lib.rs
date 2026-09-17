@@ -38,6 +38,12 @@ pub use error::DbError;
 pub use migrations::{LATEST_VERSION, Migration};
 pub use open::Database;
 pub use row::{COMMON_COLUMNS, RowStamp};
+/// The connection type every repository takes.
+///
+/// Re-exported so that a caller which never touches SQLite directly, as the application layer
+/// does not, can still name the type a repository closure is handed without taking a
+/// dependency on the driver and the version skew that would come with it.
+pub use rusqlite::Connection;
 
 /// The name of the encrypted database file.
 ///

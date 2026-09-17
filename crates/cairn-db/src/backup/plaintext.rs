@@ -45,8 +45,10 @@ const PART_SUFFIX: &str = ".part";
 ///
 /// Closed on purpose. This is what a caller may ask to have written out in the clear, and a
 /// free-form table name arriving from the interface would be a way to ask for any table at
-/// all, including the audit log that records these exports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// all, including the audit log that records these exports. That is also why it crosses the
+/// bridge as an enumeration: what arrives is one of three words or nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Module {
     /// Habits, their areas, their entries and their pauses.
     Habits,

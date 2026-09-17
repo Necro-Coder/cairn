@@ -21,30 +21,34 @@
 //! Then the connection is closed, because on Windows a file somebody still has open cannot be
 //! replaced, and the replacement itself is one system call that either happened or did not.
 //!
-//! Only then is the database reopened. If that fails the file on disk is still the right one:
-//! what has been lost is this process's handle to it, not the data, and saying so plainly is
-//! more use than pretending the swap did not happen.
+//! Opening the result again is the caller's job and not this module's. What has to be opened
+//! after a restore is not a connection: it is the device identifier, the migrations, the
+//! logical clock and the decrypted index of titles, all of which live a layer up. A function
+//! here that handed back a connection would be handing back a quarter of a working vault.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use cairn_crypto::DatabaseKey;
 
 use crate::error::DbError;
 use crate::open::Database;
 
 /// What a completed swap leaves behind.
-#[derive(Debug)]
+///
+/// Nothing is open afterwards. The file at the live path is the restored one and the caller
+/// opens it when it is ready to.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Swapped {
-    /// The database that is now live, open and ready.
-    pub database: Database,
     /// Where the copy of the vault that was replaced ended up.
     pub safety_copy: PathBuf,
 }
 
 /// Why a swap did not finish, and what the caller is left holding.
+///
+/// Deliberately not `#[non_exhaustive]`, which every other error type in this crate is. The
+/// whole value of this one is that a caller has to decide, for each case, whether the person's
+/// vault is still theirs; a catch-all arm is a caller guessing at that, and a variant added
+/// later ought to break the code that would have guessed.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum SwapError {
     /// Nothing was replaced. The live database is unchanged and is handed back open.
     ///
@@ -59,37 +63,19 @@ pub enum SwapError {
 
     /// Nothing was replaced, and this process no longer holds the live database open.
     ///
-    /// The close itself failed, or the log files beside it could not be cleared. The vault on
-    /// disk is the one the person had and is untouched; what has to happen next is that
-    /// somebody opens it again.
+    /// The close itself failed, the log files beside it could not be cleared, or the one
+    /// system call that does the replacing refused. The vault on disk is the one the person
+    /// had and is untouched; what has to happen next is that somebody opens it again.
     NotSwapped(DbError),
-
-    /// The replacement happened and the new database could not be reopened.
-    ///
-    /// The file on disk is the restored one and is intact. What is lost is this process's
-    /// handle to it, which a restart fixes. Reported as its own case rather than folded in
-    /// with the two above, because it calls for the opposite thing: this one must never be
-    /// described to anybody as "nothing happened".
-    Reopen(DbError),
 }
 
 impl SwapError {
-    /// What went wrong, whichever side of the swap it happened on.
+    /// What went wrong.
     #[must_use]
     pub fn cause(&self) -> &DbError {
         match self {
-            Self::Refused { cause, .. } | Self::NotSwapped(cause) | Self::Reopen(cause) => cause,
+            Self::Refused { cause, .. } | Self::NotSwapped(cause) => cause,
         }
-    }
-
-    /// Whether the live database was replaced.
-    ///
-    /// The one question worth asking about a failed swap, and the one a caller must not guess
-    /// at: a restore that happened and could not be reopened is nothing like one that never
-    /// started.
-    #[must_use]
-    pub fn replaced_the_live_database(&self) -> bool {
-        matches!(self, Self::Reopen(_))
     }
 }
 
@@ -101,15 +87,10 @@ impl SwapError {
 ///
 /// # Errors
 ///
-/// Returns [`SwapError::Refused`] with the live database still open if anything fails before
-/// the replacement, and [`SwapError::Reopen`] if the replacement happened and the result could
-/// not be opened again.
-pub fn swap_in(
-    live: Database,
-    staging: &Path,
-    key: &DatabaseKey,
-    safety_copy: &Path,
-) -> Result<Swapped, SwapError> {
+/// Returns [`SwapError::Refused`] with the live database still open if anything fails while it
+/// is still open, and [`SwapError::NotSwapped`] if it had already been closed. In either case
+/// the vault on disk is the one the person had.
+pub fn swap_in(live: Database, staging: &Path, safety_copy: &Path) -> Result<Swapped, SwapError> {
     let live_path = live.path().to_path_buf();
 
     // Asked before anything else, because everything else is harder to undo. A staging
@@ -153,7 +134,7 @@ pub fn swap_in(
 
     // The point of no return, and one system call wide.
     if let Err(cause) = cairn_platform::replace::replace(staging, &live_path) {
-        return Err(SwapError::Reopen(DbError::Io {
+        return Err(SwapError::NotSwapped(DbError::Io {
             what: "the restored database",
             operation: "moved into place",
             cause: std::io::Error::other(cause),
@@ -165,10 +146,7 @@ pub fn swap_in(
     // could not be deleted would be refusing to report a restore that has already happened.
     remove_sidecars(staging).ok();
 
-    let database = Database::open(&live_path, key).map_err(SwapError::Reopen)?;
-
     Ok(Swapped {
-        database,
         safety_copy: safety_copy.to_path_buf(),
     })
 }
@@ -338,15 +316,9 @@ mod tests {
         let staging = two.database_with("staging.db", b"la nueva");
         staging.close().expect("the staging database closes");
 
-        let swapped = swap_in(
-            live,
-            &two.path("staging.db"),
-            &two.vault.database_key(),
-            &two.path("copia.db"),
-        )
-        .expect("the swap happens");
-        let value = two.theme_in(&swapped.database);
-        swapped.database.close().expect("it closes");
+        let _swapped = swap_in(live, &two.path("staging.db"), &two.path("copia.db"))
+            .expect("the swap happens");
+        let value = two.theme_of(&two.path("live.db"));
 
         assert_eq!(value, b"la nueva");
         assert!(
@@ -365,14 +337,8 @@ mod tests {
         let staging = two.database_with("staging.db", b"la nueva");
         staging.close().expect("the staging database closes");
 
-        let swapped = swap_in(
-            live,
-            &two.path("staging.db"),
-            &two.vault.database_key(),
-            &two.path("copia.db"),
-        )
-        .expect("the swap happens");
-        swapped.database.close().expect("it closes");
+        let _swapped = swap_in(live, &two.path("staging.db"), &two.path("copia.db"))
+            .expect("the swap happens");
 
         assert_eq!(two.theme_of(&two.path("copia.db")), b"la vieja");
     }
@@ -384,15 +350,9 @@ mod tests {
         let two = Two::new("swap-missing");
         let live = two.database_with("live.db", b"la vieja");
 
-        let refused = swap_in(
-            live,
-            &two.path("not-here.db"),
-            &two.vault.database_key(),
-            &two.path("copia.db"),
-        )
-        .expect_err("a missing staging database is refused");
+        let refused = swap_in(live, &two.path("not-here.db"), &two.path("copia.db"))
+            .expect_err("a missing staging database is refused");
 
-        assert!(!refused.replaced_the_live_database());
         let SwapError::Refused { database, .. } = refused else {
             panic!("the live database was not handed back");
         };
@@ -416,13 +376,8 @@ mod tests {
 
         std::fs::write(two.path("copia.db"), b"algo que ya estaba").expect("the file writes");
 
-        let refused = swap_in(
-            live,
-            &two.path("staging.db"),
-            &two.vault.database_key(),
-            &two.path("copia.db"),
-        )
-        .expect_err("writing over an existing file is refused");
+        let refused = swap_in(live, &two.path("staging.db"), &two.path("copia.db"))
+            .expect_err("writing over an existing file is refused");
 
         let SwapError::Refused { database, .. } = refused else {
             panic!("the live database was not handed back");
