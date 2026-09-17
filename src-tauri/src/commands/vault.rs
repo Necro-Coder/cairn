@@ -395,14 +395,14 @@ impl From<Strength> for StrengthReport {
 /// A failure here closes the vault again rather than leaving it open without storage. Half an
 /// open vault is a state every screen would have to ask about, and the honest answer to somebody
 /// whose database will not open is that the application did not open.
-fn attach_storage(state: &AppState) -> Result<(), VaultError> {
+fn attach_storage(state: &AppState, now: i64) -> Result<(), VaultError> {
     // The path is copied out first so that the directory is not borrowed across the closure that
     // holds the session lock.
     let directory = state.directory().path().to_path_buf();
 
     let opened = state
         .session()
-        .with_vault(|vault| Storage::open(&directory, vault))
+        .with_vault(|vault| Storage::open(&directory, vault, now))
         .ok_or(VaultError::Locked)?;
 
     match opened {
@@ -484,7 +484,7 @@ pub async fn create(
         return Err(error.into());
     }
 
-    attach_storage(state)?;
+    attach_storage(state, now)?;
 
     Ok(status_of(state, now))
 }
@@ -524,7 +524,7 @@ pub async fn unlock(
     match outcome {
         Ok(UnlockOutcome::Opened) => {
             state.vault().record_attempt(0, 0)?;
-            attach_storage(state)?;
+            attach_storage(state, now)?;
             Ok(status_of(state, now))
         }
         // The vault is open, and it is open for everything in this process: there is no

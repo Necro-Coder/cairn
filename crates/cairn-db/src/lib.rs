@@ -20,7 +20,10 @@
 pub mod codec;
 pub mod device;
 pub mod error;
+pub mod migrations;
 pub mod open;
+pub mod repositories;
+pub mod row;
 
 #[cfg(test)]
 mod test_support;
@@ -28,7 +31,9 @@ mod test_support;
 pub use codec::{FieldCodec, RECORD_FORMAT_VERSION, RowKey, SealedColumns};
 pub use device::DeviceId;
 pub use error::DbError;
+pub use migrations::{LATEST_VERSION, Migration};
 pub use open::Database;
+pub use row::{COMMON_COLUMNS, RowStamp};
 
 /// The name of the encrypted database file.
 ///
@@ -38,6 +43,15 @@ pub const DATABASE_FILE: &str = "cairn.db";
 
 /// The name of the file holding the sealed identifier of this installation.
 pub const DEVICE_FILE: &str = "cairn.device";
+
+/// The name of the vault header file.
+///
+/// Named here rather than beside the code that writes it, because two things need it and they
+/// have to agree: the application, which rewrites it when the password changes, and the
+/// migration tool, which reads it to open a vault with no window running. A second spelling of
+/// this name somewhere else is a tool that looks in the wrong place and reports that there is no
+/// vault.
+pub const HEADER_FILE: &str = "cairn.header";
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

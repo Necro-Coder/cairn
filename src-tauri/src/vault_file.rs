@@ -37,9 +37,9 @@ impl VaultPaths {
     #[must_use]
     pub fn in_directory(directory: &Path) -> Self {
         Self {
-            header: directory.join("cairn.header"),
-            backup: directory.join("cairn.header.backup"),
-            temporary: directory.join("cairn.header.new"),
+            header: directory.join(cairn_db::HEADER_FILE),
+            backup: directory.join(format!("{}.backup", cairn_db::HEADER_FILE)),
+            temporary: directory.join(format!("{}.new", cairn_db::HEADER_FILE)),
         }
     }
 
