@@ -225,7 +225,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 34rem;
+    max-width: var(--form-max-width);
     padding: var(--space-5);
     border: var(--border-width) solid var(--colour-negative);
     border-radius: var(--radius-lg);

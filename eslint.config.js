@@ -194,4 +194,22 @@ export default tseslint.config(
     },
     ...tseslint.configs.disableTypeChecked,
   },
+
+  {
+    // The design token gate and its tests. They run in Node, outside the frontend build,
+    // and there is no TypeScript project for them to be checked against: they are plain
+    // modules deliberately kept free of anything that would need one.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    ...tseslint.configs.disableTypeChecked,
+    rules: {
+      ...tseslint.configs.disableTypeChecked.rules,
+      // JavaScript has nowhere to write a return type. What these functions return is
+      // documented in JSDoc above each one, which is where a reader of a `.mjs` file
+      // looks anyway.
+      '@typescript-eslint/explicit-function-return-type': 'off',
+    },
+  },
 );

@@ -21,11 +21,29 @@ src-isolation/       the sandboxed frame every message passes through
 src/
   lib/ipc.ts         the only file that may import the Tauri API
   lib/styles/        design tokens and element defaults
+  lib/fonts/         the two bundled typefaces, as assets, with their licences
+  lib/icons/         the eighteen hand-written icons and the brand glyph
+  lib/shell/         the header, the tab strip, the panel and the command palette
+  lib/search/        the search contract every module registers a provider against
   routes/            screens
+scripts/             the design token gate, and its tests
+tests/a11y/          the accessibility gate
 assets/icon.svg      the source the application icons are generated from
 docs/                this documentation
 .githooks/           the pre-commit hook, kept in the repository so it can be audited
 ```
+
+## The frontend, in more detail
+
+`lib/styles/` is the design system as code. `tokens.css` holds every value in the interface and is the only file in `src/` allowed to contain one; `base.css` declares the two bundled faces and the element defaults everything inherits. [The design system](../design/design-system.md) is where those values come from, and `npm run tokens` is what stops a component from typing its own.
+
+`lib/fonts/` holds two `woff2` files and the `OFL.txt` that has to ship beside each. They are assets, not packages: nothing in `package.json` refers to them, so the runtime dependency count stays at zero. The reasoning is in [decision 0006](../architecture/decisions/0006-tabbed-navigation-and-bundled-type.md).
+
+`lib/icons/` holds eighteen icons and one brand glyph, all hand-written inline SVG. The box, the stroke weight and the decision about assistive technology live once in `IconFrame.svelte`; each icon file contributes its geometry and nothing else. The set is enumerated in the design system, and growing it means adding a line there saying what the new one is for.
+
+`lib/shell/` is the application frame: the header, the tab strip, the panel and the command palette. The state machine behind the tabs is a separate, pure module from the reactive wrapper around it, so the rules — born temporary, replace the temporary slot, pin on double click, cap at six — are tested as ordinary functions over ordinary values rather than through a rendered page.
+
+`routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active.
 
 ## Dependencies point inwards
 
