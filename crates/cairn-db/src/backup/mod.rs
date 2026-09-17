@@ -32,6 +32,7 @@ pub mod base64;
 pub mod compress;
 pub mod export;
 pub mod format;
+pub mod import;
 pub mod schema;
 pub mod tables;
 pub mod verify;
