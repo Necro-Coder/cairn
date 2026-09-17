@@ -19,7 +19,7 @@
 // leftover debugging cannot reach a commit; here the printing is the product.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -218,9 +218,15 @@ fn act(database: &Database, command: Command) -> Result<(), String> {
 
 /// Reads the password from standard input, without the line ending.
 ///
-/// Takes everything up to the first line ending rather than the whole stream, so that a password
-/// piped in from a file with a trailing newline is the password and not the password plus a
-/// newline. The buffer clears itself when it is dropped.
+/// One line, and only one. The obvious alternative — read the whole stream and keep what comes
+/// before the first line ending — passes every test in this repository and cannot be used by a
+/// person, which is who the tool is for: a terminal that somebody is typing into has no end of
+/// file after the Enter key, so reading to the end waits for a key combination nobody thinks to
+/// press. A test that feeds the tool through a pipe never notices, because closing the pipe is
+/// the end of file the person does not have.
+///
+/// A password piped in from a file with a trailing newline is still the password and not the
+/// password plus a newline, because the line ending is trimmed either way.
 ///
 /// # Errors
 ///
@@ -233,7 +239,7 @@ fn read_password() -> Result<Zeroizing<String>, String> {
 
     let mut typed = Zeroizing::new(String::new());
     io::stdin()
-        .read_to_string(&mut typed)
+        .read_line(&mut typed)
         .map_err(|cause| format!("the password could not be read: {cause}"))?;
 
     let first_line = typed

@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES};
 
@@ -236,4 +237,67 @@ fn the_password_is_not_among_the_arguments() {
         !text.contains("--password"),
         "the tool offers a way to put a password on the command line"
     );
+}
+
+/// The defect this exists to keep fixed: the tool was unusable by a person for as long as every
+/// test in this file drove it through a pipe that then closed.
+///
+/// Standard input is kept open after the password is typed, which is what a terminal does. The
+/// earlier version read to the end of the stream and waited for an end of file that a person
+/// pressing Enter never produces, so it hung. Here the tool has to answer and exit while the
+/// stream is still open, and the wait is bounded so a regression fails the run rather than
+/// stopping it.
+#[test]
+fn the_password_is_one_typed_line_and_not_the_whole_stream() {
+    let scratch = Scratch::new("typed-password");
+    a_vault(&scratch.directory);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_migrate"))
+        .arg("--directory")
+        .arg(&scratch.directory)
+        .arg("status")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tool can be started");
+
+    let mut typing = child.stdin.take().expect("the tool takes standard input");
+    typing
+        .write_all(format!("{PASSWORD}\n").as_bytes())
+        .expect("the password can be typed");
+    typing.flush().expect("the password reaches the tool");
+
+    // Deliberately not dropped: holding it is the whole test. A terminal does not close when
+    // somebody presses Enter, and the tool has to finish anyway.
+    let finished = wait_for(&mut child, Duration::from_secs(20));
+    assert!(
+        finished,
+        "the tool did not finish while standard input was still open"
+    );
+
+    let output = child.wait_with_output().expect("the tool finishes");
+    assert!(output.status.success(), "status failed on a typed password");
+    assert!(
+        printed(&output).contains("schema on disk: 0"),
+        "the tool did not answer the question it was asked"
+    );
+    drop(typing);
+}
+
+/// Waits for a child to exit, up to a limit, so a hang fails the test instead of hanging the run.
+fn wait_for(child: &mut std::process::Child, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return true,
+            Ok(None) => {}
+            Err(_cause) => return false,
+        }
+        if std::time::Instant::now() >= deadline {
+            let _killed = child.kill();
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
