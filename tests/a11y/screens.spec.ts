@@ -242,6 +242,7 @@ test('the command palette with something typed', async ({ page }) => {
 for (const [state, heading] of [
   ['alreadyRunning', 'Ya hay una copia abierta'],
   ['unavailable', 'No se ha podido reservar la carpeta de datos'],
+  ['noDirectory', 'No hay dónde guardar la caja'],
 ] as const) {
   test(`the ${state} refusal`, async ({ page }) => {
     await page.goto(`/?instance=${state}`);

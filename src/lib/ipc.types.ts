@@ -27,15 +27,16 @@ export type BuildProfile = 'debug' | 'release';
 /**
  * What this copy of the application is allowed to do with the data directory.
  *
- * Four states rather than a boolean, because they lead to four different screens: carry on,
- * explain that another copy has it, explain that something is wrong with the machine, and
- * carry on because there was nothing to take.
+ * Five states rather than a boolean, because they lead to five different screens: carry on,
+ * explain that another copy has it, explain that something is wrong with the machine, explain
+ * that there is nowhere to keep a vault, and carry on because there was nothing to take.
  *
  * `guaranteedByThePlatform` is not a failure. It is what a platform that runs one copy of an
  * application by itself reports, said out loud rather than silently succeeding, so that the
  * question "is the lock working" has an answer everywhere.
  */
-export type InstanceState = 'held' | 'alreadyRunning' | 'unavailable' | 'guaranteedByThePlatform';
+export type InstanceState =
+  'held' | 'alreadyRunning' | 'unavailable' | 'noDirectory' | 'guaranteedByThePlatform';
 
 /** What the core answers about the lock on the data directory. */
 export interface InstanceStatus {

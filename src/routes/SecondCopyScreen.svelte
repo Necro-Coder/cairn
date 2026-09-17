@@ -1,16 +1,17 @@
 <script lang="ts">
   /**
-   * Another copy of the application already has this data directory, or the lock could not be
-   * taken at all.
+   * Another copy of the application already has this data directory, the lock could not be taken
+   * at all, or there was no directory to take it in.
    *
    * The whole screen is one message and one button, because there is exactly one thing to do
    * and the person did not ask for any of this. What it must not do is offer to carry on
    * anyway: two processes with the same database open is two logical clocks handing out the
    * same readings, and that produces rows no later merge can order.
    *
-   * It says which of the two problems it is, because they lead to different places. Somebody
-   * told "another copy has it" goes looking for a window. Somebody told that would not find
-   * the disk that is full, which is why that case says something else.
+   * It says which of the three problems it is, because they lead to different places. Somebody
+   * told "another copy has it" goes looking for a window. Somebody told that would not find the
+   * disk that is full, and neither of them would find the profile name they mistyped, which is
+   * why each case says something of its own.
    *
    * Nothing on this screen names a path, a process or an account. It is drawn before the
    * vault has been read, so there is nothing to name, and that is by construction rather
@@ -20,7 +21,7 @@
   import type { InstanceState } from '../lib/ipc.types';
 
   interface Props {
-    /** Which of the two refusals happened. */
+    /** Which of the three refusals happened. */
     state: InstanceState;
     /** Closes the window. The only action this screen offers. */
     onclose: () => void;
@@ -44,6 +45,21 @@
       <p class="what-to-do" role="note">
         No se ha tocado nada. Esta copia no ha llegado a abrir la caja fuerte ni a escribir en
         ningún fichero.
+      </p>
+    {:else if state === 'noDirectory'}
+      <h1>No hay dónde guardar la caja</h1>
+      <div class="rule" aria-hidden="true"></div>
+
+      <p>
+        Cairn no ha podido decidir en qué carpeta vive el vault, así que no ha abierto ninguna. Si
+        has arrancado con la variable <code>CAIRN_PROFILE</code>, el nombre que lleva no vale: solo
+        admite letras, números, guiones y guiones bajos, hasta treinta y dos caracteres, y nunca una
+        ruta. Quítala o corrígela y vuelve a abrir.
+      </p>
+
+      <p class="what-to-do" role="note">
+        No se ha tocado nada. Esta copia no ha llegado a abrir la caja fuerte ni a escribir en
+        ningún fichero, y tu vault de siempre sigue donde estaba.
       </p>
     {:else}
       <h1>No se ha podido reservar la carpeta de datos</h1>
