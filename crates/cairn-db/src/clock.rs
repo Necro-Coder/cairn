@@ -141,12 +141,11 @@ mod tests {
                     device,
                     written,
                     NOW_US,
-                    NewHabit {
-                        name: "Andar",
-                        notes: None,
-                        started_on: CivilDay::new(2026, 9, 17).expect("a day that exists"),
-                        position: 0,
-                    },
+                    NewHabit::plain(
+                        "Andar",
+                        CivilDay::new(2026, 9, 17).expect("a day that exists"),
+                        0,
+                    ),
                 )?;
 
                 assert_eq!(highest(connection)?, Some(written));
@@ -197,12 +196,11 @@ mod tests {
                     device,
                     Hlc::new(9_000, 0, [1; 6]),
                     NOW_US,
-                    NewHabit {
-                        name: "Andar",
-                        notes: None,
-                        started_on: CivilDay::new(2026, 9, 17).expect("a day that exists"),
-                        position: 0,
-                    },
+                    NewHabit::plain(
+                        "Andar",
+                        CivilDay::new(2026, 9, 17).expect("a day that exists"),
+                        0,
+                    ),
                 )?;
 
                 assert_eq!(highest(connection)?, Some(Hlc::new(20_000, 0, [1; 6])));

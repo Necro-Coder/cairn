@@ -247,10 +247,8 @@ pub fn diagnostics_insert_sample_habit(
                     hlc,
                     micros,
                     NewHabit {
-                        name: SAMPLE_NAME,
                         notes: Some(SAMPLE_NOTE),
-                        started_on: today(),
-                        position: 0,
+                        ..NewHabit::plain(SAMPLE_NAME, today(), 0)
                     },
                 )
             })
@@ -403,10 +401,8 @@ fn seed(
                 storage.next_hlc(millis),
                 micros,
                 NewHabit {
-                    name: &name,
                     notes: Some(SAMPLE_NOTE),
-                    started_on: today(),
-                    position: i64::from(ordinal),
+                    ..NewHabit::plain(&name, today(), i64::from(ordinal))
                 },
             )?;
         }
