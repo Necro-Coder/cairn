@@ -11,11 +11,13 @@
 //! the value rather than something the interface works out, because the interface does not have
 //! the calendar and would have to be handed one to ask the question again.
 //!
-//! What comes out is the *current* streak only. The record is a different walk over a different
-//! window and lives elsewhere; nothing here remembers anything between calls, and nothing here
-//! reads a clock: `today` is a parameter, because which day today is depends on a time zone and
-//! on the hour the person considers a day to start at, and neither is a question this crate is
-//! allowed to ask.
+//! Two walks come out of here, and they are not one question asked twice. [`current`] measures
+//! the run that is alive now and says whether it is about to end; [`longest`] measures the
+//! longest there has ever been, over the whole history rather than a window, and a record is
+//! never at risk and has no week in progress, so it comes back as a bare number. Nothing here
+//! remembers anything between calls, and nothing here reads a clock: `today` is a parameter,
+//! because which day today is depends on a time zone and on the hour the person considers a day
+//! to start at, and neither is a question this crate is allowed to ask.
 
 use crate::habits::calendar::{IsoWeek, Weekday, iso_week, weekday};
 use crate::habits::day::DayState;
@@ -227,9 +229,79 @@ fn reached_window_start(spec: &HabitSpec, days: &[(CivilDay, DayState)], unbroke
             .is_some_and(|&(oldest, _)| oldest > spec.started_on)
 }
 
+/// The longest streak the history holds, whether or not it is the one running now.
+///
+/// Same slice contract as [`current`]: sorted oldest first, contiguous, one entry per calendar
+/// day. Unlike `current`, this one is given the **whole** history, because a record cut to a
+/// window stops being a record.
+#[must_use]
+pub fn longest(spec: &HabitSpec, days: &[(CivilDay, DayState)], today: CivilDay) -> u32 {
+    match spec.period {
+        Period::Daily => longest_daily(days),
+        Period::Weekly => longest_weekly(spec, days, today),
+    }
+}
+
+/// The longest run of days, walked forwards, keeping the best one seen.
+///
+/// Today needs none of the care [`daily`] takes over it. There, an unmarked today would end a
+/// run the person can still save, so it is held back and reported as a risk instead. Here the
+/// answer is a maximum, and a run that is closed and a run that is broken leave exactly the
+/// same number behind: the one that reached yesterday was recorded when it grew. Writing the
+/// exception anyway would add a branch no history could ever tell apart from its absence.
+fn longest_daily(days: &[(CivilDay, DayState)]) -> u32 {
+    let mut best: u32 = 0;
+    let mut run: u32 = 0;
+
+    for &(_day, state) in days {
+        if state.breaks() {
+            run = 0;
+            continue;
+        }
+
+        if state.counts() {
+            run = run.saturating_add(1);
+            best = best.max(run);
+        }
+    }
+
+    best
+}
+
+/// The longest run of met ISO weeks.
+///
+/// The two weeks [`weekly`] steps over are stepped over here as well, and it has to be the same
+/// two: the week in progress is unfinished, and a week the habit did not exist for was never
+/// asked of anybody. A record that judged either of them would come out below the run the
+/// person is looking at, which is a record that reads as a bug.
+fn longest_weekly(spec: &HabitSpec, days: &[(CivilDay, DayState)], today: CivilDay) -> u32 {
+    let this_week = iso_week(today);
+    let target = u32::from(spec.target_per_period);
+    let mut best: u32 = 0;
+    let mut run: u32 = 0;
+
+    for tally in tally_weeks(days) {
+        if tally.week == this_week || tally.newest < spec.started_on {
+            continue;
+        }
+
+        if tally.done < target {
+            run = 0;
+            continue;
+        }
+
+        run = run.saturating_add(1);
+        best = best.max(run);
+    }
+
+    best
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CurrentStreak, WeekProgress, current, days_left_in_week};
+    use proptest::prelude::*;
+
+    use super::{CurrentStreak, WeekProgress, current, days_left_in_week, longest};
     use crate::habits::calendar::{Weekday, shift, span, weekday};
     use crate::habits::day::{DayState, Entry, classify};
     use crate::habits::spec::{HabitRow, HabitSpec};
@@ -553,5 +625,302 @@ mod tests {
             Some(WeekProgress { done: 3, target: 3 }),
             "the extra day did not count towards the week"
         );
+    }
+
+    #[test]
+    fn case_16_a_run_of_ten_behind_a_miss_and_a_run_of_seven_is_a_record_of_ten() {
+        let spec = spec(row());
+        let missed = back(today(), 7);
+        let days = window(&spec, back(today(), 17), today(), &|on| on != missed);
+
+        assert_eq!(longest(&spec, &days, today()), 10);
+    }
+
+    #[test]
+    fn case_17_a_run_of_ten_that_reaches_today_is_the_record_when_it_is_the_longer_one() {
+        let spec = spec(row());
+        let missed = back(today(), 10);
+        let days = window(&spec, back(today(), 17), today(), &|on| on != missed);
+
+        assert_eq!(
+            longest(&spec, &days, today()),
+            10,
+            "the record is allowed to be the run still going"
+        );
+    }
+
+    #[test]
+    fn case_18_the_days_a_habit_never_asked_about_do_not_cut_its_record_in_two() {
+        let spec = spec(HabitRow {
+            schedule_mask: MONDAY_WEDNESDAY_FRIDAY,
+            ..row()
+        });
+        let from = back(today(), 29);
+        let days = window(&spec, from, today(), &|on| {
+            spec.schedule.includes(weekday(on))
+        });
+        let scheduled = span(from, today())
+            .into_iter()
+            .filter(|&on| spec.schedule.includes(weekday(on)))
+            .count();
+        let expected =
+            u32::try_from(scheduled).expect("thirty days hold fewer sessions than a number does");
+
+        assert_eq!(
+            longest(&spec, &days, today()),
+            expected,
+            "the Tuesdays and Thursdays split a record that was never interrupted"
+        );
+    }
+
+    #[test]
+    fn case_19_a_history_of_nothing_but_misses_is_a_record_of_nothing() {
+        let spec = spec(row());
+        let days = window(&spec, back(today(), 29), today(), &|_no_day| false);
+
+        assert_eq!(longest(&spec, &days, today()), 0);
+    }
+
+    #[test]
+    fn case_20_no_days_at_all_is_a_record_of_nothing() {
+        assert_eq!(longest(&spec(row()), &[], today()), 0);
+    }
+
+    #[test]
+    fn case_21_the_record_of_a_weekly_habit_is_its_best_run_of_weeks_not_its_last() {
+        let spec = spec(weekly_row(3));
+        let today = weekly_today();
+        let short_week_start = day(2026, 2, 16);
+        let days = window(&spec, day(2026, 1, 26), today, &|on| {
+            if on >= short_week_start && on < day(2026, 2, 23) {
+                // Two of the three days that week asked for, which ends the run of three.
+                return matches!(weekday(on), Weekday::Monday | Weekday::Tuesday);
+            }
+
+            // One single day of the week in progress, which is not judged either way.
+            if on >= day(2026, 3, 9) {
+                return on == day(2026, 3, 9);
+            }
+
+            true
+        });
+
+        assert_eq!(longest(&spec, &days, today), 3);
+        assert_eq!(
+            current(&spec, &days, today).streak.days,
+            2,
+            "the case only says anything while the record beats the run in progress"
+        );
+    }
+
+    #[test]
+    fn case_22_the_weeks_before_a_weekly_habit_existed_are_not_part_of_its_record() {
+        let start_of_the_third_week = day(2026, 2, 9);
+        let spec = spec(HabitRow {
+            started_on: start_of_the_third_week,
+            ..weekly_row(3)
+        });
+        let today = weekly_today();
+        // Everything marked up to and including the one day of the week in progress.
+        let days = window(&spec, day(2026, 1, 26), today, &|on| on <= day(2026, 3, 9));
+
+        assert_eq!(
+            longest(&spec, &days, today),
+            4,
+            "a week the habit did not exist for was counted as one it met"
+        );
+    }
+
+    /// The habits the properties below are checked against: two shapes of daily, two of weekly.
+    ///
+    /// All four are built rather than sampled, because a generated `HabitSpec` would be a second
+    /// implementation of the validation in `spec.rs` and would drift from it. Four is enough:
+    /// what the properties are about is the walk, and the walk only sees the period, the
+    /// schedule and the target.
+    fn any_spec() -> impl Strategy<Value = HabitSpec> {
+        prop_oneof![
+            Just(spec(row())),
+            Just(spec(HabitRow {
+                schedule_mask: MONDAY_WEDNESDAY_FRIDAY,
+                ..row()
+            })),
+            Just(spec(weekly_row(3))),
+            Just(spec(HabitRow {
+                schedule_mask: MONDAY_WEDNESDAY_FRIDAY,
+                ..weekly_row(2)
+            })),
+        ]
+    }
+
+    /// One decision per day of a history of up to five hundred days: was it marked.
+    ///
+    /// Four marks in five rather than a fair coin. A fair coin spends nearly every case on runs
+    /// of one or two days, which are exactly the lengths the examples above already pin down,
+    /// and almost never produces a run long enough for a walk to lose its place inside.
+    fn any_marks() -> impl Strategy<Value = Vec<bool>> {
+        proptest::collection::vec(prop_oneof![4 => Just(true), 1 => Just(false)], 1..=500)
+    }
+
+    /// The slice `current` asks for, built from a run of marks that ends on today.
+    ///
+    /// A day outside the schedule is never marked, which is what keeps a generated history
+    /// coherent with the habit it belongs to. It also keeps [`DayState::Extra`] out of it, and
+    /// that is deliberate: a day off that was done anyway carries the run forward without being
+    /// one of the days the habit asked for, so it is the one state that puts the third property
+    /// out of reach. It has its own example above.
+    fn history(spec: &HabitSpec, marks: &[bool], today: CivilDay) -> Vec<(CivilDay, DayState)> {
+        let length = i32::try_from(marks.len()).expect("a history of at most five hundred days");
+        let from = back(today, length - 1);
+
+        span(from, today)
+            .into_iter()
+            .zip(marks)
+            .map(|(on, &marked)| {
+                let entry = (marked && spec.schedule.includes(weekday(on))).then(|| mark(on));
+
+                (on, classify(spec, on, entry, today))
+            })
+            .collect()
+    }
+
+    /// The same marks with the one at `at` turned on, without indexing into anything.
+    fn marking(marks: &[bool], at: usize) -> Vec<bool> {
+        marks
+            .iter()
+            .enumerate()
+            .map(|(position, &marked)| marked || position == at)
+            .collect()
+    }
+
+    /// The same marks with the one at `at` turned off.
+    fn unmarking(marks: &[bool], at: usize) -> Vec<bool> {
+        marks
+            .iter()
+            .enumerate()
+            .map(|(position, &marked)| marked && position != at)
+            .collect()
+    }
+
+    /// Where in a history the days that satisfy `wanted` are.
+    fn positions(days: &[(CivilDay, DayState)], wanted: &dyn Fn(DayState) -> bool) -> Vec<usize> {
+        days.iter()
+            .enumerate()
+            .filter_map(|(position, &(_day, state))| wanted(state).then_some(position))
+            .collect()
+    }
+
+    proptest! {
+        /// Catches a walk that treats a newly met day as the beginning of a run rather than as
+        /// the joint between the two that surrounded the miss it replaced. Such a walk would
+        /// answer one where it should answer eleven, so a person who filled in a day they had
+        /// forgotten would watch their streak collapse for having done more. No example finds
+        /// it: it needs a miss with a run of its own on either side, and the obvious examples
+        /// put the miss at one end.
+        #[test]
+        fn marking_a_missed_day_never_shortens_the_run(
+            spec in any_spec(),
+            marks in any_marks(),
+            pick in any::<prop::sample::Index>(),
+        ) {
+            let days = history(&spec, &marks, today());
+            let missed = positions(&days, &DayState::breaks);
+
+            if missed.is_empty() {
+                return Ok(());
+            }
+
+            let before = current(&spec, &days, today()).streak.days;
+            let filled = history(&spec, &marking(&marks, *pick.get(&missed)), today());
+            let after = current(&spec, &filled, today()).streak.days;
+
+            prop_assert!(
+                after >= before,
+                "marking one more day took the streak from {before} down to {after}"
+            );
+        }
+
+        /// Catches anything remembered between calls: a cached tally, a lazily filled cell, a
+        /// counter that lives outside the function. Every example above calls `current` once
+        /// against a history it built itself, so a walk that folded its answer into state kept
+        /// on the side would agree with all of them and only disagree the second time the same
+        /// history is asked about, which is what the interface does every time a person marks a
+        /// day and unmarks it again.
+        #[test]
+        fn unmarking_a_day_and_marking_it_again_changes_nothing(
+            spec in any_spec(),
+            marks in any_marks(),
+            pick in any::<prop::sample::Index>(),
+        ) {
+            let days = history(&spec, &marks, today());
+            let met = positions(&days, &DayState::counts);
+
+            if met.is_empty() {
+                return Ok(());
+            }
+
+            let at = *pick.get(&met);
+            let before = current(&spec, &days, today());
+
+            let undone = unmarking(&marks, at);
+            let _ = current(&spec, &history(&spec, &undone, today()), today());
+            let redone = history(&spec, &marking(&undone, at), today());
+
+            prop_assert_eq!(current(&spec, &redone, today()), before);
+        }
+
+        /// Catches a walk that counts squares of the calendar instead of the habit's own days:
+        /// one that added a day per entry it stepped over rather than per entry that counted
+        /// would sail past this bound the moment the schedule leaves a weekday out, or the
+        /// window opens before the habit did. The bound is the honest ceiling — a habit cannot
+        /// have been kept more times than it was asked for.
+        #[test]
+        fn a_run_never_outlasts_the_days_the_habit_asked_for(
+            spec in any_spec(),
+            marks in any_marks(),
+        ) {
+            let days = history(&spec, &marks, today());
+            let asked = days
+                .iter()
+                .filter(|&&(on, _state)| {
+                    on >= spec.started_on && spec.schedule.includes(weekday(on))
+                })
+                .count();
+            let asked = u32::try_from(asked).expect("five hundred days fit in a number");
+            let run = current(&spec, &days, today()).streak.days;
+
+            prop_assert!(
+                run <= asked,
+                "a run of {run} out of {asked} days the habit was ever expected on"
+            );
+        }
+
+        /// Catches the two walks drifting apart. They apply the same three exceptions — the
+        /// week in progress, the weeks before the habit existed, the days it never asked about
+        /// — and either walk can lose one without any example noticing, because the examples
+        /// check each walk on its own. The symptom on screen is the one a person would report
+        /// as a bug: a record smaller than the streak printed above it.
+        #[test]
+        fn the_record_always_reaches_the_run_in_progress(
+            spec in any_spec(),
+            marks in any_marks(),
+        ) {
+            let days = history(&spec, &marks, today());
+            let answer = current(&spec, &days, today());
+
+            if answer.reached_window_start {
+                // The run was still going at the oldest day given, so the history holds only
+                // part of it, and a record measured inside the same history is not being
+                // compared with a run the same history contains.
+                return Ok(());
+            }
+
+            let record = longest(&spec, &days, today());
+
+            prop_assert!(
+                record >= answer.streak.days,
+                "a record of {record} behind a run of {} that fits inside the history",
+                answer.streak.days
+            );
+        }
     }
 }
