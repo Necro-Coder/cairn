@@ -5,3 +5,6 @@
 //! its own: the rest of the module is built on it.
 
 pub mod calendar;
+pub mod spec;
+
+pub use spec::{Aggregation, Direction, HabitRow, HabitSpec, Measure, Period, Schedule, SpecError};
