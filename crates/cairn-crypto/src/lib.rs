@@ -24,6 +24,7 @@ mod aad;
 mod aead;
 pub mod backup;
 mod digest;
+mod equality;
 mod error;
 mod header;
 mod hierarchy;
@@ -42,6 +43,7 @@ pub use backup::header::{
     MAX_CHUNK_LEN, MIN_CHUNK_LEN, OLDEST_READABLE_FORMAT_VERSION,
 };
 pub use digest::{DIGEST_LEN, digest};
+pub use equality::constant_time_eq;
 pub use error::CryptoError;
 pub use header::{
     AUTHENTICATED_PREFIX_LEN, FORMAT_VERSION, HEADER_LEN, MAGIC, VaultHeader, WRAPPED_DEK_LEN,

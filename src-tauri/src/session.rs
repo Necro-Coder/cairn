@@ -344,22 +344,21 @@ impl Session {
     /// Single use, and only on a match. A word that is not the right one leaves the ticket
     /// exactly where it was: taking it anyway would mean anything that can reach the bridge
     /// could throw away a restore somebody spent two minutes preparing, by guessing once.
+    ///
+    /// The words are compared in constant time. `==` on a string stops at the first byte that
+    /// differs, and a caller that can ask over and over — which anything reaching the bridge
+    /// can — could read the time back as a count of how many leading characters it had right,
+    /// and walk the word out one character at a time instead of guessing all of it at once.
     #[must_use]
     pub fn take_import(&self, token: &str, now_us: i64) -> Option<ImportTicket> {
         let mut state = self.state();
 
-        let matches = state
-            .import
-            .as_ref()
-            .is_some_and(|waiting| waiting.token == token && waiting.is_live_at(now_us));
+        let matches = state.import.as_ref().is_some_and(|waiting| {
+            cairn_crypto::constant_time_eq(waiting.token.as_bytes(), token.as_bytes())
+                && waiting.is_live_at(now_us)
+        });
 
         if matches { state.import.take() } else { None }
-    }
-
-    /// Takes the waiting import whatever its word is, for the caller that is giving up on it.
-    #[must_use]
-    pub fn abandon_import(&self) -> Option<ImportTicket> {
-        self.state().import.take()
     }
 
     /// Takes the open database out, leaving the keys where they are.
