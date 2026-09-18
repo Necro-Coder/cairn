@@ -713,13 +713,33 @@ fn import_commit(
         .take_import(token, now)
         .ok_or(BackupError::UnknownToken)?;
 
-    let safety_copy = ask_where_to_put_the_copy(app)?;
+    // The ticket is already spent by the time this dialog opens, so a cancellation here is the
+    // end of this import rather than a pause in it — the screen has let go of the word too,
+    // and there is no way back to this staging database. It is removed rather than left: it is
+    // a complete copy of somebody's vault, it can be half a gibibyte, and nothing is ever
+    // going to ask about it again.
+    let safety_copy = match ask_where_to_put_the_copy(app) {
+        Ok(chosen) => chosen,
+        Err(refused) => {
+            let _removed = cairn_db::backup::import::discard(&waiting.staging);
+
+            return Err(refused);
+        }
+    };
 
     // Taken out rather than borrowed, because the file underneath it is about to be replaced
     // and a handle to it has to be closed for that to happen at all. Between here and the
     // attach below, the session has keys and no database, which everything else already reads
     // as closed.
-    let storage = state.session().take_storage().ok_or(BackupError::Locked)?;
+    // The lock takes the waiting ticket with it and removes the staging database, and this one
+    // has already been taken out of the session, so the two paths below have to remove it
+    // themselves. Neither is a failure of the restore: they are the vault closing underneath
+    // one, and the file left over belongs to a question nobody is going to be asked.
+    let Some(storage) = state.session().take_storage() else {
+        let _removed = cairn_db::backup::import::discard(&waiting.staging);
+
+        return Err(BackupError::Locked);
+    };
 
     let attempted = state
         .session()
@@ -729,6 +749,8 @@ fn import_commit(
         // The vault closed between taking the storage and asking for the keys. Nothing has been
         // replaced; the storage is dropped here, which closes it, and the session is already
         // locked as far as anything else is concerned.
+        let _removed = cairn_db::backup::import::discard(&waiting.staging);
+
         return Err(BackupError::Locked);
     };
 
@@ -762,8 +784,10 @@ fn import_commit(
         }
         Err(RestoreFailure::Refused { storage, cause }) => {
             // Nothing moved. The vault goes back where it was, open, and the person is told
-            // why the restore did not start.
+            // why the restore did not start. The staging database goes, for the same reason as
+            // the two paths above: the word that would have confirmed it is spent.
             state.session().attach_storage(*storage);
+            let _removed = cairn_db::backup::import::discard(&waiting.staging);
 
             Err(BackupError::from(cause))
         }
@@ -771,6 +795,7 @@ fn import_commit(
             // Nothing moved and the vault is not open here any more. Locking is the honest
             // thing: the person unlocks again into the vault they already had.
             let _was_open = state.session().lock();
+            let _removed = cairn_db::backup::import::discard(&waiting.staging);
 
             Err(BackupError::Io)
         }

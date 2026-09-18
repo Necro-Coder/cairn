@@ -290,22 +290,6 @@ pub enum RestoreFailure {
     Opened(DbError),
 }
 
-impl RestoreFailure {
-    /// What went wrong.
-    #[must_use]
-    pub fn cause(&self) -> &DbError {
-        match self {
-            Self::Refused { cause, .. } | Self::Closed(cause) | Self::Opened(cause) => cause,
-        }
-    }
-
-    /// Whether the vault the person had was replaced.
-    #[must_use]
-    pub fn replaced_the_vault(&self) -> bool {
-        matches!(self, Self::Opened(_))
-    }
-}
-
 /// Where the four files of a vault live on this machine.
 ///
 /// Read once at startup and kept, rather than asked for again on each unlock. Asking twice
