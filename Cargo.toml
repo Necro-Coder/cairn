@@ -4,6 +4,7 @@ members = [
     "src-tauri",
     "crates/cairn-crypto",
     "crates/cairn-domain",
+    "crates/cairn-clock",
     "crates/cairn-db",
     "crates/cairn-sync",
     "crates/cairn-platform",
@@ -21,6 +22,7 @@ publish = false
 [workspace.dependencies]
 cairn-crypto = { path = "crates/cairn-crypto" }
 cairn-domain = { path = "crates/cairn-domain" }
+cairn-clock = { path = "crates/cairn-clock" }
 cairn-db = { path = "crates/cairn-db" }
 cairn-sync = { path = "crates/cairn-sync" }
 cairn-platform = { path = "crates/cairn-platform" }
