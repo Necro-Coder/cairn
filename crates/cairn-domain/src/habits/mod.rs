@@ -7,6 +7,8 @@
 pub mod calendar;
 pub mod day;
 pub mod spec;
+pub mod streak;
 
 pub use day::{DayState, Entry, classify};
 pub use spec::{Aggregation, Direction, HabitRow, HabitSpec, Measure, Period, Schedule, SpecError};
+pub use streak::{CurrentStreak, Streak, WeekProgress, current};
