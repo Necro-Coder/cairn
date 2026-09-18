@@ -16,7 +16,9 @@
 //! makes the database count past everything it has already handed out, so a long list gets slower
 //! exactly where a person is most likely to still be scrolling.
 
-use cairn_domain::{CivilDay, Hlc, Rev};
+use std::collections::HashSet;
+
+use cairn_domain::{CivilDay, Clock, Hlc, Rev};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -80,6 +82,17 @@ macro_rules! select_habits {
         )
     };
 }
+
+/// The seven common columns of one live habit, which every write to one reads first.
+///
+/// Written once for the same reason [`select_habits`] is: four copies of a column list are four
+/// chances for one of them to drift, and a stamp read in the wrong order is a revision that
+/// lands in `created_at`. Sharing the text also shares the prepared statement, because the
+/// cache is keyed on it.
+const HABIT_STAMP: &str = "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev
+       FROM habits
+      WHERE id = ?1 AND deleted = 0
+      LIMIT 1";
 
 /// One habit, as it comes back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,12 +323,7 @@ pub fn update(
     check_lengths(habit)?;
 
     let Some(stored) = connection
-        .prepare_cached(
-            "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev
-               FROM habits
-              WHERE id = ?1 AND deleted = 0
-              LIMIT 1",
-        )?
+        .prepare_cached(HABIT_STAMP)?
         .query_row([id.as_bytes().as_slice()], RowStamp::read_common)
         .optional()?
     else {
@@ -436,24 +444,91 @@ pub fn page(
         .collect()
 }
 
-/// Marks a habit as deleted and empties its encrypted column.
+/// Archives or unarchives a habit. The same call does both.
 ///
-/// Answers the skeleton that is left: the identifier and the name stay, so a list can show that
-/// something was removed, and the note does not, because a deletion that keeps the content for a
-/// hundred and eighty days is a delay rather than a deletion.
+/// Idempotent: archiving one that is already archived leaves the timestamp it had and still
+/// raises the revision, because the write happened and the merge has to see it.
+///
+/// Takes the codec although nothing here is about the note, and that is not an oversight. Every
+/// encrypted value in this schema is authenticated against its row's revision, so a write that
+/// raises the revision and leaves the old ciphertext in place produces a note that will never
+/// open again. Archiving raises the revision; therefore archiving reseals. The same applies to
+/// [`reorder`], and not to [`delete`], which empties the column instead of keeping it.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if there is no live habit with that identifier, [`DbError::Sealed`] if
+/// its note does not open or cannot be sealed again, and [`DbError::Sqlite`] if the statement
+/// fails.
+pub fn archive(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    hlc: Hlc,
+    now_us: i64,
+    id: Uuid,
+    archived: bool,
+) -> Result<Habit, DbError> {
+    let Some(stored) = connection
+        .prepare_cached(HABIT_STAMP)?
+        .query_row([id.as_bytes().as_slice()], RowStamp::read_common)
+        .optional()?
+    else {
+        return Err(DbError::NotFound);
+    };
+
+    let stamp = RowStamp::from_stored(stored)?.revised(hlc, now_us);
+    let current = get(connection, codec, id)?.ok_or(DbError::NotFound)?;
+
+    // The moment it was archived is the moment it was *first* archived. Rewriting it on every
+    // call would make a list ordered by it reshuffle itself every time somebody archived
+    // something else, and the date a habit was put away is a fact about that habit.
+    let archived_at = archived.then(|| current.archived_at.unwrap_or(now_us));
+
+    let sealed = codec.seal_row(
+        RowKey {
+            table: TABLE,
+            row_id: stamp.id,
+            rev: stamp.rev,
+        },
+        SEALED,
+        &[("notes", current.notes.as_deref().map(Vec::as_slice))],
+    )?;
+
+    connection
+        .prepare_cached(
+            "UPDATE habits
+                SET updated_at = ?2, hlc = ?3, rev = ?4, notes = ?5, archived_at = ?6
+              WHERE id = ?1",
+        )?
+        .execute(params![
+            stamp.id.as_bytes().as_slice(),
+            stamp.updated_at,
+            stamp.hlc_as_stored().as_slice(),
+            stamp.rev_as_stored(),
+            sealed.first().and_then(Option::as_ref),
+            archived_at,
+        ])?;
+
+    get(connection, codec, id)?.ok_or(DbError::NotFound)
+}
+
+/// Marks a habit and every day it was ever marked on as deleted, and empties what was sealed.
+///
+/// Answers the skeleton the habit leaves: the identifier and the name stay, so a list can show
+/// that something was removed, and the note does not, because a deletion that keeps the content
+/// for a hundred and eighty days is a delay rather than a deletion.
+///
+/// The entries go with it, in the same transaction. A habit whose marks outlived it is a year of
+/// somebody's calendar left in the file with nothing pointing at it, and it would come back the
+/// first time the habit's tombstone lost a merge.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::NotFound`] if there is no live habit with that identifier, and
-/// [`DbError::Sqlite`] if the statement fails.
+/// [`DbError::Sqlite`] if any statement fails, in which case nothing at all is written.
 pub fn delete(connection: &Connection, hlc: Hlc, now_us: i64, id: Uuid) -> Result<Habit, DbError> {
     let Some(stored) = connection
-        .prepare_cached(
-            "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev
-               FROM habits
-              WHERE id = ?1 AND deleted = 0
-              LIMIT 1",
-        )?
+        .prepare_cached(HABIT_STAMP)?
         .query_row([id.as_bytes().as_slice()], RowStamp::read_common)
         .optional()?
     else {
@@ -461,8 +536,14 @@ pub fn delete(connection: &Connection, hlc: Hlc, now_us: i64, id: Uuid) -> Resul
     };
 
     let gone = RowStamp::from_stored(stored)?.tombstoned(hlc, now_us);
+    let mut clock = following(hlc);
 
-    connection
+    // Unchecked because the signature takes a shared connection, which is what `Database::with`
+    // hands out and therefore what every caller has. The check it gives up is the one that
+    // refuses a nested transaction, and this call opens exactly one and returns.
+    let transaction = connection.unchecked_transaction()?;
+
+    transaction
         .prepare_cached(
             "UPDATE habits
                 SET deleted = 1, updated_at = ?2, hlc = ?3, rev = ?4, notes = NULL
@@ -475,6 +556,37 @@ pub fn delete(connection: &Connection, hlc: Hlc, now_us: i64, id: Uuid) -> Resul
             gone.rev_as_stored(),
         ])?;
 
+    // Read in full before any of them is written, rather than stepped through while the same
+    // statement writes: a cursor over rows a sibling statement is changing is a shape SQLite
+    // does not promise anything about.
+    let entries = transaction
+        .prepare_cached(
+            "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev
+               FROM habit_entries
+              WHERE habit_id = ?1 AND deleted = 0",
+        )?
+        .query_map([id.as_bytes().as_slice()], RowStamp::read_common)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for stored in entries {
+        let gone = RowStamp::from_stored(stored)?.tombstoned(clock.tick(hlc.wall_ms()), now_us);
+
+        transaction
+            .prepare_cached(
+                "UPDATE habit_entries
+                    SET deleted = 1, updated_at = ?2, hlc = ?3, rev = ?4, note = NULL
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                gone.id.as_bytes().as_slice(),
+                gone.updated_at,
+                gone.hlc_as_stored().as_slice(),
+                gone.rev_as_stored(),
+            ])?;
+    }
+
+    transaction.commit()?;
+
     // The same projection as every other read, because the skeleton that comes back is a
     // `Habit` like any other and a shorter list here would be a second thing to keep in step.
     // Its note comes back as `None` because the statement above emptied the column, not because
@@ -486,6 +598,107 @@ pub fn delete(connection: &Connection, hlc: Hlc, now_us: i64, id: Uuid) -> Resul
     // Assembled with no note rather than decoded with one, and it needs no key to do it: the
     // statement above emptied the column a moment ago, inside the same call.
     assemble(stored, None)
+}
+
+/// Sets the order of every live, unarchived habit in one transaction.
+///
+/// The list has to be the whole set, exactly: same length, same identifiers, no repeats. A
+/// partial list cannot tell a habit that moved from a habit that was dropped by a bug on the
+/// other side of the bridge, and the difference between those two is a habit that quietly ends
+/// up at position zero on every device that merges the result.
+///
+/// Takes the codec for the reason given on [`archive`]: the position is not sealed, but writing
+/// it raises the revision, and a revision raised without resealing is a note that stops opening.
+///
+/// # Errors
+///
+/// [`DbError::IncompleteOrder`] when the list is not exactly that set, [`DbError::Sealed`] if a
+/// note does not open or cannot be sealed again, and [`DbError::Sqlite`] if the transaction
+/// fails. Nothing is written when it is refused.
+pub fn reorder(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    hlc: Hlc,
+    now_us: i64,
+    ids: &[Uuid],
+) -> Result<(), DbError> {
+    // Read and checked before the transaction opens, so that a list that was never going to be
+    // accepted does not take a write lock on the file on its way to being refused.
+    let live = connection
+        .prepare_cached(select_habits!("WHERE deleted = 0 AND archived_at IS NULL"))?
+        .query_map([], read_habit)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|stored| decode(codec, stored))
+        .collect::<Result<Vec<_>, DbError>>()?;
+
+    let offered: HashSet<Uuid> = ids.iter().copied().collect();
+
+    // Three checks and not one, because each catches something the others let through: the
+    // length catches a missing identifier, the set size catches a repeat, and the containment
+    // catches one that belongs to another file or to a habit that is archived. Together they
+    // mean the two sets are equal, which is the only thing that makes an index a position.
+    if ids.len() != live.len() || offered.len() != ids.len() {
+        return Err(DbError::IncompleteOrder);
+    }
+    if !live.iter().all(|habit| offered.contains(&habit.id)) {
+        return Err(DbError::IncompleteOrder);
+    }
+
+    let mut clock = following(hlc);
+    let transaction = connection.unchecked_transaction()?;
+
+    for (index, id) in ids.iter().enumerate() {
+        let Some(stored) = transaction
+            .prepare_cached(HABIT_STAMP)?
+            .query_row([id.as_bytes().as_slice()], RowStamp::read_common)
+            .optional()?
+        else {
+            // Checked a moment ago against the same connection, which no other writer can hold
+            // at the same time. Refused rather than assumed away all the same: this is the one
+            // place where being wrong would write a position onto a row nobody looked at.
+            return Err(DbError::IncompleteOrder);
+        };
+
+        let stamp = RowStamp::from_stored(stored)?.revised(clock.tick(hlc.wall_ms()), now_us);
+        let notes = live
+            .iter()
+            .find(|habit| habit.id == *id)
+            .and_then(|habit| habit.notes.as_deref())
+            .map(Vec::as_slice);
+
+        let sealed = codec.seal_row(
+            RowKey {
+                table: TABLE,
+                row_id: stamp.id,
+                rev: stamp.rev,
+            },
+            SEALED,
+            &[("notes", notes)],
+        )?;
+
+        transaction
+            .prepare_cached(
+                "UPDATE habits
+                    SET updated_at = ?2, hlc = ?3, rev = ?4, notes = ?5, position = ?6
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                stamp.id.as_bytes().as_slice(),
+                stamp.updated_at,
+                stamp.hlc_as_stored().as_slice(),
+                stamp.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+                // The list is exactly as long as the habits in the file, so an index that does
+                // not fit in a signed integer is a database with more rows than addressable
+                // memory. Saturating rather than panicking, as `page` does with its limit.
+                i64::try_from(index).unwrap_or(i64::MAX),
+            ])?;
+    }
+
+    transaction.commit()?;
+
+    Ok(())
 }
 
 /// How many habits are not tombstones.
@@ -794,6 +1007,23 @@ fn check_text(value: Option<&str>, what: &'static str, max: usize) -> Result<(),
     Ok(())
 }
 
+/// A clock that carries on from one reading, for a call that writes more than one row.
+///
+/// Two rows written under the same reading are two rows no merge can order, so a call that
+/// tombstones a habit and five of its days needs six readings and not one. It carries on from
+/// the reading it was given and keeps that device's identifier, so everything it produces is
+/// above what the caller already used and still signed by this machine.
+///
+/// The caller's own clock does not learn about these. It does not have to for the file to be
+/// consistent — the clock is resumed from the highest reading in the database on every unlock,
+/// which is exactly what `clock::resume` is for — but until then that clock can still hand out a
+/// reading inside the same millisecond that one of these already took. The command layer closes
+/// that by moving its clock past what a call like this used, and that is written here rather
+/// than left to be discovered.
+fn following(hlc: Hlc) -> Clock {
+    Clock::resuming(hlc, hlc.device())
+}
+
 /// What a row this application did not write is reported as.
 fn damaged() -> DbError {
     DbError::Sealed(cairn_crypto::CryptoError::Open)
@@ -805,9 +1035,13 @@ mod tests {
     use cairn_domain::{CivilDay, Hlc};
     use uuid::Uuid;
 
+    use std::collections::HashSet;
+
+    use rusqlite::Connection;
+
     use super::{
         Habit, MAX_COLOR_LEN, MAX_ICON_LEN, MAX_NAME_LEN, MAX_PAGE, MAX_UNIT_LEN, Mark, NewHabit,
-        count_live, create, delete, get, is_marked, mark, page, unmark, update,
+        archive, count_live, create, delete, get, is_marked, mark, page, reorder, unmark, update,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -1655,6 +1889,578 @@ mod tests {
                 Ok(())
             })
             .expect("both ends are accepted");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// The position an index in a list becomes.
+    ///
+    /// Named rather than cast, because a cast that silently wraps is exactly what the lint
+    /// refuses and a test that orders three habits has nothing to wrap.
+    fn nth(index: usize) -> i64 {
+        i64::try_from(index).expect("a test never orders more habits than an integer holds")
+    }
+
+    /// What a habit row holds in the three columns the state changes touch.
+    ///
+    /// Read straight out of the table rather than through [`get`], because two of the three are
+    /// the columns a caller is told about and the point of the assertions is what is on disk.
+    fn state_of(connection: &Connection, id: Uuid) -> Result<(i64, Option<i64>, i64), DbError> {
+        Ok(connection.query_row(
+            "SELECT rev, archived_at, position FROM habits WHERE id = ?1",
+            [id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?)
+    }
+
+    /// A habit with a note and five consecutive days marked on it, each with a note of its own.
+    fn a_habit_with_five_days(
+        connection: &Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+    ) -> Result<(Uuid, Vec<Uuid>), DbError> {
+        let habit = create(
+            connection,
+            codec,
+            device,
+            at(1),
+            NOW_US,
+            a_habit("Leer treinta minutos"),
+        )?;
+
+        let mut entries = Vec::new();
+        for (step, day) in (13..18).enumerate() {
+            let entry = mark(
+                connection,
+                codec,
+                device,
+                at(10 + step as u64),
+                NOW_US,
+                Mark {
+                    habit_id: habit.id,
+                    day: CivilDay::new(2026, 9, day).expect("a day of September that exists"),
+                    amount: 1,
+                    note: Some(b"cairn-canary-entry"),
+                },
+            )?;
+            entries.push(entry);
+        }
+
+        Ok((habit.id, entries))
+    }
+
+    /// Three habits in a known order, each carrying a note so a write that forgets to reseal
+    /// one is caught rather than passing because nothing was encrypted.
+    fn three_habits(
+        connection: &Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+    ) -> Result<Vec<Uuid>, DbError> {
+        let mut ids = Vec::new();
+        for (index, name) in ["Uno", "Dos", "Tres"].into_iter().enumerate() {
+            let written = create(
+                connection,
+                codec,
+                device,
+                at(index as u64 + 1),
+                NOW_US,
+                NewHabit {
+                    notes: Some(b"cairn-canary-note"),
+                    ..NewHabit::plain(name, a_day(), nth(index))
+                },
+            )?;
+            ids.push(written.id);
+        }
+
+        Ok(ids)
+    }
+
+    #[test]
+    fn archiving_writes_the_moment_and_raises_the_revision() {
+        let scratch = Scratch::new("habits-archive");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let written = create(
+                    connection,
+                    &codec,
+                    DeviceId::generate()?,
+                    at(1),
+                    NOW_US,
+                    a_habit("Leer treinta minutos"),
+                )?;
+
+                let put_away = archive(connection, &codec, at(2), NOW_US + 1, written.id, true)?;
+                assert_eq!(put_away.archived_at, Some(NOW_US + 1));
+
+                let (rev, archived_at, _position) = state_of(connection, written.id)?;
+                assert_eq!(rev, 1, "the revision did not move");
+                assert_eq!(archived_at, Some(NOW_US + 1));
+
+                // The whole reason this call takes the codec. The revision moved, so the note
+                // had to be sealed again, and a note that was carried across would not open.
+                assert_eq!(
+                    put_away.notes.as_deref().map(Vec::as_slice),
+                    Some(b"cairn-canary-note".as_slice()),
+                    "the note did not survive the revision the archiving raised"
+                );
+                Ok(())
+            })
+            .expect("archiving works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn archiving_something_already_archived_keeps_the_moment_it_had() {
+        let scratch = Scratch::new("habits-archive-twice");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let written = create(
+                    connection,
+                    &codec,
+                    DeviceId::generate()?,
+                    at(1),
+                    NOW_US,
+                    a_habit("Leer treinta minutos"),
+                )?;
+
+                archive(connection, &codec, at(2), NOW_US + 1, written.id, true)?;
+                let again = archive(connection, &codec, at(3), NOW_US + 2, written.id, true)?;
+
+                assert_eq!(
+                    again.archived_at,
+                    Some(NOW_US + 1),
+                    "the second call rewrote the date the habit was put away"
+                );
+                let (rev, _archived_at, _position) = state_of(connection, written.id)?;
+                assert_eq!(rev, 2, "the second write did not raise the revision");
+                Ok(())
+            })
+            .expect("archiving twice works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn unarchiving_puts_the_moment_back_to_nothing() {
+        let scratch = Scratch::new("habits-unarchive");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let written = create(
+                    connection,
+                    &codec,
+                    DeviceId::generate()?,
+                    at(1),
+                    NOW_US,
+                    a_habit("Leer treinta minutos"),
+                )?;
+
+                archive(connection, &codec, at(2), NOW_US + 1, written.id, true)?;
+                let back = archive(connection, &codec, at(3), NOW_US + 2, written.id, false)?;
+
+                assert_eq!(back.archived_at, None);
+                assert_eq!(
+                    back.notes.as_deref().map(Vec::as_slice),
+                    Some(b"cairn-canary-note".as_slice())
+                );
+                let (rev, archived_at, _position) = state_of(connection, written.id)?;
+                assert_eq!(rev, 2);
+                assert_eq!(archived_at, None);
+                Ok(())
+            })
+            .expect("unarchiving works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn archiving_something_that_is_not_there_says_so() {
+        let scratch = Scratch::new("habits-archive-missing");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let refused = archive(
+                    connection,
+                    &codec,
+                    at(1),
+                    NOW_US,
+                    Uuid::from_bytes([9; 16]),
+                    true,
+                );
+                assert!(matches!(refused, Err(DbError::NotFound)));
+                Ok(())
+            })
+            .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn deleting_a_habit_deletes_the_days_it_was_marked_on() {
+        let scratch = Scratch::new("habits-delete-cascade");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let (habit_id, entries) =
+                    a_habit_with_five_days(connection, &codec, DeviceId::generate()?)?;
+                assert_eq!(entries.len(), 5);
+
+                delete(connection, at(20), NOW_US + 1, habit_id)?;
+
+                let still_live: i64 = connection.query_row(
+                    "SELECT count(*) FROM habit_entries WHERE habit_id = ?1 AND deleted = 0",
+                    [habit_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                let tombstoned: i64 = connection.query_row(
+                    "SELECT count(*) FROM habit_entries WHERE habit_id = ?1 AND deleted = 1",
+                    [habit_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+
+                assert_eq!(still_live, 0, "a day outlived the habit it belonged to");
+                assert_eq!(tombstoned, 5, "the days were removed rather than marked");
+                assert_eq!(count_live(connection)?, 0);
+                Ok(())
+            })
+            .expect("the cascade works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_deletion_empties_the_note_of_the_habit_and_of_every_day() {
+        let scratch = Scratch::new("habits-delete-notes");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let (habit_id, _entries) =
+                    a_habit_with_five_days(connection, &codec, DeviceId::generate()?)?;
+
+                delete(connection, at(20), NOW_US + 1, habit_id)?;
+
+                let notes: Option<Vec<u8>> = connection.query_row(
+                    "SELECT notes FROM habits WHERE id = ?1",
+                    [habit_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(notes, None, "the habit's tombstone kept its ciphertext");
+
+                let kept: i64 = connection.query_row(
+                    "SELECT count(*) FROM habit_entries
+                      WHERE habit_id = ?1 AND note IS NOT NULL",
+                    [habit_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(kept, 0, "a day's tombstone kept its ciphertext");
+                Ok(())
+            })
+            .expect("the emptying works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn every_row_the_deletion_touched_gets_its_own_revision_and_its_own_reading() {
+        let scratch = Scratch::new("habits-delete-stamps");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let (habit_id, _entries) =
+                    a_habit_with_five_days(connection, &codec, DeviceId::generate()?)?;
+
+                delete(connection, at(20), NOW_US + 1, habit_id)?;
+
+                let (rev, _archived_at, _position) = state_of(connection, habit_id)?;
+                assert_eq!(rev, 1, "the habit's revision did not move");
+
+                let mut statement = connection.prepare(
+                    "SELECT rev, hlc FROM habit_entries WHERE habit_id = ?1 ORDER BY day",
+                )?;
+                let rows = statement
+                    .query_map([habit_id.as_bytes().as_slice()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                assert_eq!(rows.len(), 5);
+                for (rev, _hlc) in &rows {
+                    assert_eq!(*rev, 1, "a day's revision did not move");
+                }
+
+                // Six rows, six readings. Two rows written under the same reading are two rows
+                // the merge of phase 10 has no way to order against each other.
+                let mut readings: HashSet<Vec<u8>> =
+                    rows.into_iter().map(|(_rev, hlc)| hlc).collect();
+                readings.insert(at(20).to_bytes().to_vec());
+                assert_eq!(readings.len(), 6, "two rows share a clock reading");
+                Ok(())
+            })
+            .expect("the stamps are right");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_deletion_that_cannot_write_the_days_writes_nothing_at_all() {
+        // The test that proves the transaction. The failure is forced with a temporary trigger
+        // that refuses every update of `habit_entries`: a temporary trigger is the only kind
+        // SQLite lets reach into another database, it is gone when this connection is, and it
+        // breaks the statement in the same way a constraint would without leaving a
+        // deliberately malformed row behind for the next test to trip over.
+        let scratch = Scratch::new("habits-delete-rollback");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let (habit_id, _entries) =
+                    a_habit_with_five_days(connection, &codec, DeviceId::generate()?)?;
+
+                connection.execute_batch(
+                    "CREATE TEMP TRIGGER refuse_entry_updates
+                     BEFORE UPDATE ON habit_entries
+                     BEGIN
+                         SELECT RAISE(ABORT, 'refused so the rollback can be observed');
+                     END",
+                )?;
+
+                let refused = delete(connection, at(20), NOW_US + 1, habit_id);
+                assert!(
+                    matches!(refused, Err(DbError::Sqlite(_))),
+                    "the deletion was not refused"
+                );
+
+                connection.execute_batch("DROP TRIGGER temp.refuse_entry_updates")?;
+
+                let (rev, _archived_at, _position) = state_of(connection, habit_id)?;
+                assert_eq!(rev, 0, "the habit was written although the call failed");
+                assert!(
+                    get(connection, &codec, habit_id)?.is_some(),
+                    "the habit was tombstoned although the call failed"
+                );
+
+                let untouched: i64 = connection.query_row(
+                    "SELECT count(*) FROM habit_entries
+                      WHERE habit_id = ?1 AND deleted = 0 AND rev = 0 AND note IS NOT NULL",
+                    [habit_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(untouched, 5, "a day was written although the call failed");
+                Ok(())
+            })
+            .expect("the rollback is observed");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn reordering_with_the_whole_set_writes_the_index_as_the_position() {
+        let scratch = Scratch::new("habits-reorder");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+                let wanted = vec![ids[2], ids[0], ids[1]];
+
+                reorder(connection, &codec, at(10), NOW_US + 1, &wanted)?;
+
+                for (index, id) in wanted.iter().enumerate() {
+                    let (rev, _archived_at, position) = state_of(connection, *id)?;
+                    assert_eq!(position, nth(index), "a habit is not where it was put");
+                    assert_eq!(rev, 1, "the revision did not move");
+
+                    // Resealed, like the archiving. A reordering that raised the revision and
+                    // left the ciphertext alone would silently destroy every note in the list.
+                    let read = get(connection, &codec, *id)?.expect("it is still there");
+                    assert_eq!(
+                        read.notes.as_deref().map(Vec::as_slice),
+                        Some(b"cairn-canary-note".as_slice()),
+                        "a note did not survive the reordering"
+                    );
+                }
+                Ok(())
+            })
+            .expect("the reordering works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_reordering_missing_one_habit_is_refused_and_moves_nothing() {
+        let scratch = Scratch::new("habits-reorder-short");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+
+                let refused = reorder(connection, &codec, at(10), NOW_US + 1, &[ids[2], ids[0]]);
+                assert!(matches!(refused, Err(DbError::IncompleteOrder)));
+
+                for (index, id) in ids.iter().enumerate() {
+                    let (rev, _archived_at, position) = state_of(connection, *id)?;
+                    assert_eq!(position, nth(index), "a position moved on a refused call");
+                    assert_eq!(rev, 0, "a revision moved on a refused call");
+                }
+                Ok(())
+            })
+            .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_reordering_that_names_one_habit_twice_is_refused() {
+        let scratch = Scratch::new("habits-reorder-repeat");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+
+                // The same length as the set, which is exactly why counting is not enough.
+                let refused = reorder(
+                    connection,
+                    &codec,
+                    at(10),
+                    NOW_US + 1,
+                    &[ids[0], ids[0], ids[1]],
+                );
+                assert!(matches!(refused, Err(DbError::IncompleteOrder)));
+
+                let (_rev, _archived_at, position) = state_of(connection, ids[2])?;
+                assert_eq!(position, 2, "a position moved on a refused call");
+                Ok(())
+            })
+            .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_reordering_naming_something_that_is_not_in_this_file_is_refused() {
+        let scratch = Scratch::new("habits-reorder-stranger");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+
+                let refused = reorder(
+                    connection,
+                    &codec,
+                    at(10),
+                    NOW_US + 1,
+                    &[ids[0], ids[1], Uuid::from_bytes([9; 16])],
+                );
+                assert!(matches!(refused, Err(DbError::IncompleteOrder)));
+
+                for (index, id) in ids.iter().enumerate() {
+                    let (_rev, _archived_at, position) = state_of(connection, *id)?;
+                    assert_eq!(position, nth(index), "a position moved on a refused call");
+                }
+                Ok(())
+            })
+            .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn reordering_twice_with_the_same_list_leaves_the_same_positions_and_two_revisions() {
+        // Idempotent in what a person sees and deliberately not in what the merge sees. The
+        // second call wrote, so it has to leave a revision and a reading behind saying so.
+        let scratch = Scratch::new("habits-reorder-twice");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+                let wanted = vec![ids[1], ids[2], ids[0]];
+
+                reorder(connection, &codec, at(10), NOW_US + 1, &wanted)?;
+                reorder(connection, &codec, at(20), NOW_US + 2, &wanted)?;
+
+                for (index, id) in wanted.iter().enumerate() {
+                    let (rev, _archived_at, position) = state_of(connection, *id)?;
+                    assert_eq!(position, nth(index), "the second call moved something");
+                    assert_eq!(rev, 2, "the second write did not raise the revision");
+                }
+                Ok(())
+            })
+            .expect("reordering twice works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn an_archived_habit_is_not_in_the_set_a_reordering_has_to_name() {
+        let scratch = Scratch::new("habits-reorder-archived");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+
+        database
+            .with(|connection| {
+                let ids = three_habits(connection, &codec, DeviceId::generate()?)?;
+                archive(connection, &codec, at(10), NOW_US + 1, ids[1], true)?;
+
+                let refused = reorder(
+                    connection,
+                    &codec,
+                    at(20),
+                    NOW_US + 2,
+                    &[ids[0], ids[1], ids[2]],
+                );
+                assert!(
+                    matches!(refused, Err(DbError::IncompleteOrder)),
+                    "an archived habit was accepted as part of the order"
+                );
+
+                // And the list without it is the whole set, so it is accepted.
+                reorder(connection, &codec, at(30), NOW_US + 3, &[ids[2], ids[0]])?;
+                let (_rev, _archived_at, position) = state_of(connection, ids[2])?;
+                assert_eq!(position, 0);
+                Ok(())
+            })
+            .expect("the check runs");
 
         database.close().expect("the connection closes");
     }
