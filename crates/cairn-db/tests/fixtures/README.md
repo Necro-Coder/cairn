@@ -12,6 +12,8 @@ The test that writes it is marked `#[ignore]` so it cannot run as part of an ord
 
 Exactly one case: a deliberate bump of `BACKUP_FORMAT_VERSION` or of `RECORD_VERSION`, made on purpose and written down in a decision record. Then a second fixture is **added** beside this one, with its own version in the name, and the tests for this one still have to pass. The whole point of a format version is that the old readers keep working; a project that replaces its fixture on every bump has version numbers and no compatibility.
 
+Adding a table to the schema is **not** one of those cases. This file was written at schema 4 and does not carry `audit_events`, which arrived at schema 5, and it opens anyway — which is precisely the thing it is here to demonstrate. The test checks that every table the file carries is still one this build knows and that their relative order has not changed, not that the two lists are identical. The first version of that test did demand they match, and it failed on the first table added after the fixture was frozen. That was the test being wrong, not the file.
+
 ## What is in the file
 
 Six rows across six tables, plus the ten tables a backup carries that happen to be empty. A null in a column where a null means something different from an absent value, text that is not ASCII, and a row that points at another row so that the write order matters. It is small on purpose: the fixture is about the shape of the file, not about volume.

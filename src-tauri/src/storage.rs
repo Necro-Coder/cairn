@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cairn_crypto::UnlockedVault;
+use cairn_db::backup::swap;
 use cairn_db::codec::FieldCodec;
 use cairn_db::search::{Match, TitleIndex};
 use cairn_db::{
@@ -207,6 +208,86 @@ impl Storage {
 
         self.database.close()
     }
+
+    /// Replaces the database underneath with a restored one and opens everything again.
+    ///
+    /// Consumes this storage, because the file it is holding is about to stop existing. What
+    /// comes back is built the same way the one at unlock was: the device identifier is read
+    /// from its own file, which a restore never touches; the migrations are applied, because a
+    /// backup from an older schema arrives at an older schema; the logical clock is resumed
+    /// from the rows that are now there; and the titles are decrypted again, because every one
+    /// of them has just changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RestoreFailure::Refused`] with this storage handed back untouched if the swap
+    /// did not start, [`RestoreFailure::Closed`] if the vault on disk is the one it was and
+    /// this process no longer has it open, and [`RestoreFailure::Opened`] if the restore
+    /// happened and the result could not be opened.
+    pub fn restore_from(
+        self,
+        staging: &Path,
+        vault: &UnlockedVault,
+        safety_copy: &Path,
+        now_us: i64,
+    ) -> Result<Self, RestoreFailure> {
+        // Every file of a vault lives in one directory, and this is the one the database was
+        // opened from, so a restore cannot be made to write anywhere else by anything that
+        // happened since.
+        let directory = self
+            .database
+            .path()
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+
+        // Before the connection goes anywhere. The index is plaintext and it is about to be
+        // wrong in any case, because the rows it was built from are being replaced.
+        self.with_titles(TitleIndex::clear);
+
+        match swap::swap_in(self.database, staging, safety_copy) {
+            Ok(_swapped) => {
+                Storage::open(&directory, vault, now_us).map_err(RestoreFailure::Opened)
+            }
+            Err(swap::SwapError::Refused { database, cause }) => Err(RestoreFailure::Refused {
+                storage: Box::new(Self {
+                    database: *database,
+                    device: self.device,
+                    schema_version: self.schema_version,
+                    clock: self.clock,
+                    titles: self.titles,
+                }),
+                cause,
+            }),
+            Err(swap::SwapError::NotSwapped(cause)) => Err(RestoreFailure::Closed(cause)),
+        }
+    }
+}
+
+/// Why a restore did not finish, and what the caller is left holding.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RestoreFailure {
+    /// Nothing was replaced. The storage is handed back, open and still the real one.
+    Refused {
+        /// The vault as it was, still open.
+        storage: Box<Storage>,
+        /// What went wrong.
+        cause: DbError,
+    },
+
+    /// Nothing was replaced, and the vault is no longer open in this process.
+    ///
+    /// The file on disk is the one the person had. What the caller has to do is lock, so the
+    /// person unlocks again into the vault they already had.
+    Closed(DbError),
+
+    /// The restore happened and the result could not be opened.
+    ///
+    /// The file on disk is the restored one. This must never be described to anybody as
+    /// nothing having happened: their old vault is in the copy taken beside it, and the new
+    /// one is where the old one was.
+    Opened(DbError),
 }
 
 /// Where the four files of a vault live on this machine.

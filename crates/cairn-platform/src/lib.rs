@@ -14,6 +14,7 @@
 
 pub mod memory;
 pub mod paths;
+pub mod replace;
 pub mod secure_storage;
 pub mod single_instance;
 

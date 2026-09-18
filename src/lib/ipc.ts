@@ -32,9 +32,14 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   AppInfo,
   BackupExportReport,
+  BackupModule,
   BackupPasswordSource,
   BackupProgress,
+  BackupStatus,
   BackupVerifyReport,
+  ImportCommittedReport,
+  ImportPreparedReport,
+  PlaintextExportReport,
   Diagnostics,
   InactivityChoice,
   InstanceStatus,
@@ -163,6 +168,34 @@ async function verifyBackup(password: string): Promise<BackupVerifyReport> {
   return invoke<BackupVerifyReport>('backup_verify', { password });
 }
 
+/** Says how long it has been since the last backup, and whether to mention it. */
+async function backupStatus(): Promise<BackupStatus> {
+  return invoke<BackupStatus>('backup_status');
+}
+
+/** Reads a backup into a database of its own beside the live one, touching nothing. */
+async function beginImport(password: string): Promise<ImportPreparedReport> {
+  return invoke<ImportPreparedReport>('backup_import_begin', { password });
+}
+
+/** Replaces the vault with the one that was prepared, after copying the old one aside. */
+async function commitImport(token: string): Promise<ImportCommittedReport> {
+  return invoke<ImportCommittedReport>('backup_import_commit', { token });
+}
+
+/** Throws away a prepared import and the staging database it wrote. */
+async function cancelImport(token: string): Promise<void> {
+  return invoke<void>('backup_import_cancel', { token });
+}
+
+/** Writes one module out as a file anybody can read, after the master password is checked. */
+async function exportPlaintext(
+  module: BackupModule,
+  password: string,
+): Promise<PlaintextExportReport> {
+  return invoke<PlaintextExportReport>('export_plaintext', { module, password });
+}
+
 /** Listens for how far along a running export or verification is. */
 async function onBackupProgress(handler: (progress: BackupProgress) => void): Promise<() => void> {
   return listen<BackupProgress>(BACKUP_PROGRESS_EVENT, (event) => {
@@ -226,6 +259,11 @@ export const ipc: IpcSurface = {
   estimatePasswordStrength,
   exportBackup,
   verifyBackup,
+  backupStatus,
+  beginImport,
+  commitImport,
+  cancelImport,
+  exportPlaintext,
   onBackupProgress,
   onVaultLocked,
   startWindowDrag,

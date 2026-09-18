@@ -55,15 +55,22 @@ pub fn read_table(
 ) -> Result<u64, DbError> {
     let names: Vec<&str> = table.columns().map(|column| column.name).collect();
     let projection = names.join(", ");
+    // Both halves come from `TABLES`, which is a constant of this crate checked against the
+    // schema by a test. Nothing a caller supplies reaches this string, which is the only
+    // form of dynamic SQL this project allows.
     let statement = format!(
         "SELECT {projection} FROM {} WHERE id > ?1 ORDER BY id LIMIT ?2",
         table.name
     );
 
-    // Both halves come from `TABLES`, which is a constant of this crate checked against the
-    // schema by a test. Nothing a caller supplies reaches this string, which is the only
-    // form of dynamic SQL this project allows.
-    let mut cursor = vec![0_u8; 16];
+    // The empty blob, not sixteen zero bytes. SQLite orders blobs by content and then by
+    // length, so the empty one sorts below every sixteen byte identifier including the one
+    // that is all zeros — and sixteen zero bytes as a starting cursor would skip exactly that
+    // row, silently, on every export. A version four UUID cannot be all zeros, so no row this
+    // application generates has that identifier; a row that arrived in a backup can have any
+    // sixteen bytes at all, and a row that is quietly not exported is the worst kind of bug
+    // this file could have.
+    let mut cursor: Vec<u8> = Vec::new();
     let mut written = 0_u64;
 
     loop {
@@ -224,7 +231,13 @@ fn decode_row(table: &TableSpec, values: &RowValues) -> Result<Vec<Value>, DbErr
                 Value::Text(text.clone())
             }
             (ColumnKind::Blob | ColumnKind::Sealed, serde_json::Value::String(text)) => {
-                check_field_len(text.len())?;
+                // Two checks, on two different lengths, and the first one is not the limit.
+                // It bounds what is decoded before a buffer is reserved for it, so it has to
+                // be the encoded size of the limit rather than the limit itself: base64 is
+                // four characters for every three bytes, and checking the limit against the
+                // text would refuse a field this same code is happy to write. It did, and
+                // the export's own verification pass is what caught it.
+                check_encoded_field_len(text.len())?;
                 let Some(bytes) = base64::decode(text) else {
                     return Err(DbError::Malformed);
                 };
@@ -265,6 +278,25 @@ fn check_field_len(len: usize) -> Result<(), DbError> {
             what: "bytes in one field",
             value: u64::try_from(len).unwrap_or(u64::MAX),
             max: u64::try_from(MAX_FIELD_BYTES).unwrap_or(u64::MAX),
+        });
+    }
+
+    Ok(())
+}
+
+/// Refuses base64 text longer than the longest a field within the limit could produce.
+///
+/// The bound that runs before anything is decoded, so that a hostile file cannot ask for a
+/// large buffer by sending a large string. It is the encoded size of [`MAX_FIELD_BYTES`]:
+/// four characters for every three bytes, rounded up to the next whole group of four.
+fn check_encoded_field_len(len: usize) -> Result<(), DbError> {
+    let max = MAX_FIELD_BYTES.div_ceil(3) * 4;
+
+    if len > max {
+        return Err(DbError::TooMany {
+            what: "base64 characters in one field",
+            value: u64::try_from(len).unwrap_or(u64::MAX),
+            max: u64::try_from(max).unwrap_or(u64::MAX),
         });
     }
 
@@ -468,6 +500,97 @@ mod tests {
             .unwrap();
 
         assert_ne!(stored_value(&source), stored_value(&destination));
+    }
+
+    #[test]
+    fn a_field_that_export_accepts_is_a_field_import_accepts() {
+        // A regression, and a cheap one to have shipped. The limit was checked against the
+        // raw bytes on the way out and against the base64 text on the way in, and base64 is
+        // four characters for every three bytes: anything over three quarters of the limit
+        // exported without complaint and refused to come back. It went unnoticed because
+        // every test until this one used values of a few dozen bytes.
+        let source = Sandbox::new("tables-field-band-source");
+        let device = DeviceId::generate().unwrap();
+
+        // Comfortably inside the limit, and comfortably past three quarters of it.
+        let value = vec![0x5a_u8; MAX_FIELD_BYTES - 1];
+
+        source
+            .database()
+            .with(|connection| {
+                settings::put(
+                    connection,
+                    &source.codec(),
+                    device,
+                    HLC,
+                    NOW_US,
+                    "grande",
+                    Some(&value),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let travelling = rows_of(&source, "settings").remove(0);
+
+        let target = Sandbox::new("tables-field-band-target");
+        let spec = table_named("settings").unwrap();
+        target
+            .database()
+            .with(|connection| write_row(connection, &target.codec(), spec, &travelling))
+            .expect("a field this same code exported has to import");
+
+        let arrived = rows_of(&target, "settings").remove(0);
+        assert_eq!(arrived.get("value"), travelling.get("value"));
+    }
+
+    #[test]
+    fn a_row_whose_identifier_is_all_zeros_is_still_read() {
+        // A regression, and the worst kind: it lost data and said nothing. Paging walks the
+        // table with `id > ?1`, and the first cursor used to be sixteen zero bytes, so a row
+        // with that identifier never satisfied the comparison and was simply never read. No
+        // error, no warning — the export just came out one row short. A version four UUID
+        // cannot be all zeros, so nothing this application generates has that identifier, but
+        // a row that arrived in a backup can carry any sixteen bytes at all.
+        let source = Sandbox::new("tables-zero-id-source");
+        let device = DeviceId::generate().unwrap();
+
+        source
+            .database()
+            .with(|connection| {
+                settings::put(
+                    connection,
+                    &source.codec(),
+                    device,
+                    HLC,
+                    NOW_US,
+                    "theme",
+                    Some(b"ink"),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mut values = rows_of(&source, "settings").remove(0);
+        values.insert(
+            "id".to_owned(),
+            serde_json::Value::from(crate::backup::base64::encode(&[0_u8; 16])),
+        );
+
+        let target = Sandbox::new("tables-zero-id-target");
+        let spec = table_named("settings").unwrap();
+        target
+            .database()
+            .with(|connection| write_row(connection, &target.codec(), spec, &values))
+            .expect("the row is written");
+
+        let read = rows_of(&target, "settings");
+        assert_eq!(
+            read.len(),
+            1,
+            "the row with the all zero identifier vanished"
+        );
+        assert_eq!(read[0].get("id"), values.get("id"));
     }
 
     #[test]

@@ -18,6 +18,7 @@ cairn-crypto = { path = "../crates/cairn-crypto" }
 cairn-db = { path = "../crates/cairn-db" }
 cairn-domain = { path = "../crates/cairn-domain" }
 uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1.9", features = ["alloc"] }
 
 [[bin]]
 name = "vault_header"
@@ -29,6 +30,20 @@ bench = false
 [[bin]]
 name = "sqlite_row_decode"
 path = "fuzz_targets/sqlite_row_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import_parser"
+path = "fuzz_targets/import_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "export_stream"
+path = "fuzz_targets/export_stream.rs"
 test = false
 doc = false
 bench = false

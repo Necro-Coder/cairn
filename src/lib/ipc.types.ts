@@ -190,12 +190,65 @@ export type BackupError =
   | { readonly kind: 'lockedOut'; readonly remainingS: number }
   | { readonly kind: 'weakPassword'; readonly chars: number; readonly min: number }
   | { readonly kind: 'cancelled' }
+  | { readonly kind: 'alreadyPreparing' }
+  | { readonly kind: 'unknownToken' }
+  | { readonly kind: 'restoredButNotOpen' }
   | { readonly kind: 'notABackup' }
   | { readonly kind: 'unsupportedVersion' }
   | { readonly kind: 'badPassword' }
   | { readonly kind: 'damaged' }
   | { readonly kind: 'io' }
   | { readonly kind: 'crypto' };
+
+/**
+ * A part of the application, as a person thinks of it.
+ *
+ * A closed set of three rather than a table name, because a table name going the other way
+ * would be a way to ask for any table at all, including the log that records these exports.
+ */
+export type BackupModule = 'habits' | 'vault' | 'finance';
+
+/** How long it has been since the last backup, and whether to say so. */
+export interface BackupStatus {
+  readonly daysSinceLast: number | null;
+  readonly remind: boolean;
+}
+
+/**
+ * One table and how many rows of it a backup carries.
+ *
+ * Not exported, for the reason `SeededTable` above is not: it names the rows of the two
+ * reports below where they are read, and nothing outside this file asks for it by name.
+ */
+interface BackupTableCount {
+  readonly table: string;
+  readonly rows: number;
+}
+
+/**
+ * What reading a backup into a staging database found, and the word that confirms it.
+ *
+ * The token is single use, good for ten minutes, and dies when the vault locks. It goes back
+ * unchanged in the call that replaces the vault, and nowhere else.
+ */
+export interface ImportPreparedReport {
+  readonly token: string;
+  readonly fileName: string;
+  readonly recordsByTable: readonly BackupTableCount[];
+  readonly hasExistingData: boolean;
+}
+
+/** What a finished restore replaced, and what the copy of the old vault is called. */
+export interface ImportCommittedReport {
+  readonly backupCopyFileName: string;
+  readonly recordsByTable: readonly BackupTableCount[];
+}
+
+/** What one readable export wrote. Same rule about the folder. */
+export interface PlaintextExportReport {
+  readonly fileName: string;
+  readonly records: number;
+}
 
 /** How far along a running export or verification is, in bytes processed. */
 export interface BackupProgress {
@@ -305,6 +358,44 @@ export interface IpcSurface {
    * Same rule about the path. Rejects with a {@link BackupError}.
    */
   readonly verifyBackup: (password: string) => Promise<BackupVerifyReport>;
+
+  /** Says how long it has been since the last backup, and whether to mention it. */
+  readonly backupStatus: () => Promise<BackupStatus>;
+
+  /**
+   * Reads a backup into a database of its own beside the live one, touching nothing.
+   *
+   * The long half of a restore. When it resolves, the whole file has been decrypted, checked
+   * and written row by row into a second database, and the live vault has not been opened for
+   * writing. What comes back is a word for confirming it and the counts per table, which is
+   * everything the screen needs to ask the only question worth asking. Rejects with a
+   * {@link BackupError}.
+   */
+  readonly beginImport: (password: string) => Promise<ImportPreparedReport>;
+
+  /**
+   * Replaces the vault with the one that was prepared, after copying the old one aside.
+   *
+   * The irreversible half. The token is the one that came back from
+   * {@link IpcSurface.beginImport}, used once. Rejects with a {@link BackupError}, and the one
+   * to read carefully is `restoredButNotOpen`: it means the replacement did happen.
+   */
+  readonly commitImport: (token: string) => Promise<ImportCommittedReport>;
+
+  /** Throws away a prepared import and the staging database it wrote. */
+  readonly cancelImport: (token: string) => Promise<void>;
+
+  /**
+   * Writes one module out as a file anybody can read, after the master password is checked.
+   *
+   * The word somebody types into the screen guards against absent-mindedness and lives here.
+   * The barrier that matters is the master password, and the core is what checks it. Rejects
+   * with a {@link BackupError}.
+   */
+  readonly exportPlaintext: (
+    module: BackupModule,
+    password: string,
+  ) => Promise<PlaintextExportReport>;
 
   /**
    * Listens for how far along a running export or verification is.

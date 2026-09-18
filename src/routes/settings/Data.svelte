@@ -1,25 +1,33 @@
 <script lang="ts">
   /**
-   * Copies, exporting and importing.
+   * Copies: writing one, checking one, putting one back, and getting data out in the clear.
    *
-   * Two of these work now: writing a backup, and reading one back to check it. Importing is
-   * still declared and still switched off, because the question "can I get my data out of
-   * this?" is one somebody asks before they put anything in, and because the honest answer
-   * about restoring is that it is not built yet rather than that it does not exist.
-   *
-   * Neither operation takes a path from here, and that is the shape of the whole screen. The
+   * Nothing on this screen takes a path from here, and that is the shape of all of it. The
    * core opens the file dialog itself, in a window the operating system draws; a path chosen
    * in a WebView would be a directory somebody else picked. What comes back is a file name
    * and some numbers, never the folder, because a folder carries the account name.
    *
-   * The password is copied out and the field emptied before the round trip, so this
+   * Restoring is two steps because it is the one thing here that destroys data somebody
+   * still has. The first reads the whole file into a database of its own and touches nothing;
+   * only then, knowing the file is good, does the screen ask the question. Nobody is asked to
+   * give up their data until the thing replacing it has proved it is worth it.
+   *
+   * The readable export is the opposite risk and gets the opposite treatment: a word to type
+   * and the master password again, because what it produces has nothing protecting it at all.
+   *
+   * Every password is copied out and its field emptied before the round trip, so this
    * component is not still holding one while a minute of Argon2id and disk work runs.
    */
   import { ipc } from '$ipc';
   import Badge from '../../lib/shell/Badge.svelte';
   import { sectionOf } from '../../lib/shell/sections';
   import { session } from '../../lib/session.svelte';
-  import type { BackupError, BackupPasswordSource } from '../../lib/ipc.types';
+  import type {
+    BackupError,
+    BackupModule,
+    BackupPasswordSource,
+    ImportPreparedReport,
+  } from '../../lib/ipc.types';
 
   /** Borrowed from settings' own colour, because none of this belongs to a module. */
   const section = sectionOf('settings');
@@ -27,12 +35,22 @@
   /** How many bytes go in a mebibyte, for the one place a size is put into words. */
   const BYTES_PER_MIB = 1024 * 1024;
 
+  /**
+   * What somebody has to type before a readable export will run.
+   *
+   * A guard against absent-mindedness and nothing more, which is why it lives here and not in
+   * the core. The barrier that actually stops somebody else at the keyboard is the master
+   * password, and that one is checked in Rust.
+   */
+  const CONFIRMATION_WORD = 'EXPORTAR';
+
+  const MODULES: readonly { readonly id: BackupModule; readonly label: string }[] = [
+    { id: 'habits', label: 'Hábitos' },
+    { id: 'vault', label: 'Caja fuerte de contraseñas' },
+    { id: 'finance', label: 'Finanzas' },
+  ];
+
   const OPERATIONS = [
-    {
-      title: 'Importar una copia',
-      detail:
-        'Leer un fichero exportado desde este u otro equipo, comprobarlo entero antes de tocar nada y sustituir lo que haya. Llega en la segunda mitad de esta fase.',
-    },
     {
       title: 'Copia de seguridad de la cabecera',
       detail:
@@ -49,7 +67,14 @@
 
   let verifyPassword = $state('');
 
-  let busy = $state<'export' | 'verify' | null>(null);
+  let importPassword = $state('');
+  let prepared = $state<ImportPreparedReport | null>(null);
+
+  let plaintextModule = $state<BackupModule>('habits');
+  let plaintextWord = $state('');
+  let plaintextPassword = $state('');
+
+  let busy = $state<'export' | 'verify' | 'prepare' | 'replace' | 'plaintext' | null>(null);
   let done = $state(0);
   let problem = $state<string | null>(null);
   let result = $state<string | null>(null);
@@ -63,6 +88,22 @@
   );
 
   const verifyReady = $derived(busy === null && verifyPassword.length > 0);
+
+  const importReady = $derived(
+    busy === null && unlocked && importPassword.length > 0 && prepared === null,
+  );
+
+  const plaintextReady = $derived(
+    busy === null &&
+      unlocked &&
+      plaintextPassword.length > 0 &&
+      plaintextWord.trim().toUpperCase() === CONFIRMATION_WORD,
+  );
+
+  /** How many rows the prepared file holds altogether, for the sentence that asks. */
+  const preparedRows = $derived(
+    (prepared?.recordsByTable ?? []).reduce((total, count) => total + count.rows, 0),
+  );
 
   /** Turns whatever the core refused with into a sentence, without inventing a reason. */
   function explain(cause: unknown): string | null {
@@ -88,6 +129,14 @@
         return 'La copia no se abre con esa contraseña.';
       case 'damaged':
         return 'La copia está dañada o incompleta. No se puede confiar en ella.';
+      case 'alreadyPreparing':
+        return 'Ya hay una copia preparada esperando respuesta. Contéstala o descártala antes de leer otra.';
+      case 'unknownToken':
+        return 'La copia preparada ya no vale: han pasado más de diez minutos o la caja fuerte se ha cerrado. Vuelve a elegir el fichero.';
+      case 'restoredButNotOpen':
+        // The one message on this screen that must not be softened. It says the opposite of
+        // every other failure here: the replacement did happen.
+        return 'La copia se ha restaurado y la caja fuerte no se ha podido volver a abrir. Tus datos nuevos están en su sitio y los anteriores están en la copia que se guardó antes. Cierra la aplicación y vuelve a abrirla.';
       case 'io':
         return 'No se ha podido leer o escribir el fichero. No se ha dejado nada a medias.';
       default:
@@ -113,7 +162,10 @@
    * the failing one. A listener that outlived its operation would keep moving a bar that
    * belongs to nothing.
    */
-  async function run<T>(which: 'export' | 'verify', operation: () => Promise<T>): Promise<T> {
+  async function run<T>(
+    which: 'export' | 'verify' | 'prepare' | 'replace' | 'plaintext',
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const stop = await ipc.onBackupProgress((progress) => {
       done = progress.done;
     });
@@ -163,6 +215,80 @@
     try {
       const report = await run('verify', () => ipc.verifyBackup(password));
       result = `La copia ${report.fileName} se abre entera: ${inMib(report.bytes)}, ${report.records} registros, formato versión ${report.formatVersion}.`;
+    } catch (cause) {
+      problem = explain(cause);
+    }
+  }
+
+  async function submitImport(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!importReady) {
+      return;
+    }
+
+    const password = importPassword;
+    importPassword = '';
+
+    try {
+      prepared = await run('prepare', () => ipc.beginImport(password));
+    } catch (cause) {
+      problem = explain(cause);
+    }
+  }
+
+  /**
+   * Says yes to the prepared copy, which is the one action here that cannot be undone.
+   *
+   * The token is cleared before the call rather than after. It is single use in the core too,
+   * so a second press while the first is running would be refused anyway; clearing it first
+   * means the screen never offers a button that is going to be refused.
+   */
+  async function replaceEverything(): Promise<void> {
+    const waiting = prepared;
+    if (waiting === null || busy !== null) {
+      return;
+    }
+
+    prepared = null;
+
+    try {
+      const report = await run('replace', () => ipc.commitImport(waiting.token));
+      result = `Restaurado. La caja fuerte que tenías se ha guardado antes en ${report.backupCopyFileName}, en la carpeta que elegiste.`;
+    } catch (cause) {
+      problem = explain(cause);
+    }
+  }
+
+  async function discardPrepared(): Promise<void> {
+    const waiting = prepared;
+    if (waiting === null || busy !== null) {
+      return;
+    }
+
+    prepared = null;
+
+    try {
+      await ipc.cancelImport(waiting.token);
+      result = 'Descartada. No se ha tocado nada.';
+    } catch (cause) {
+      problem = explain(cause);
+    }
+  }
+
+  async function submitPlaintext(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!plaintextReady) {
+      return;
+    }
+
+    const password = plaintextPassword;
+    const chosen = plaintextModule;
+    plaintextPassword = '';
+    plaintextWord = '';
+
+    try {
+      const report = await run('plaintext', () => ipc.exportPlaintext(chosen, password));
+      result = `Escrito ${report.fileName} con ${report.records} filas, sin cifrar. Guárdalo donde lo guardarías si estuviera escrito a mano.`;
     } catch (cause) {
       problem = explain(cause);
     }
@@ -263,6 +389,138 @@
         </button>
       </div>
     </form>
+  </section>
+
+  <section>
+    <h2>Restaurar una copia</h2>
+
+    <p class="muted">
+      Se lee el fichero entero en una base de datos aparte antes de tocar nada. Si algo falla, falla
+      ahí y tu caja fuerte se queda como estaba. Solo cuando la copia está leída y comprobada se te
+      pregunta si quieres sustituir lo que tienes.
+    </p>
+
+    {#if !unlocked}
+      <p class="muted">Abre la caja fuerte para poder restaurar.</p>
+    {:else if prepared === null}
+      <form onsubmit={submitImport}>
+        <label for="import-password">Contraseña de la copia</label>
+        <input
+          id="import-password"
+          type="password"
+          bind:value={importPassword}
+          autocomplete="off"
+          disabled={busy !== null}
+        />
+
+        <div class="actions">
+          <button type="submit" class="reveal" disabled={!importReady}>
+            {busy === 'prepare' ? 'Leyendo la copia…' : 'Elegir un fichero y prepararlo'}
+          </button>
+        </div>
+      </form>
+    {:else}
+      <p class="warning" role="note">
+        {#if prepared.hasExistingData}
+          Esto sustituye <strong>todo</strong> lo que hay ahora en esta caja fuerte por lo que trae la
+          copia. No se mezcla nada: lo que tienes desaparece. Antes de hacerlo se guarda una copia de
+          tu caja fuerte actual y te preguntaremos dónde dejarla.
+        {:else}
+          Esta caja fuerte está vacía, así que no se pierde nada. Aun así se guarda una copia antes
+          de sustituirla y te preguntaremos dónde dejarla.
+        {/if}
+      </p>
+
+      <p class="muted">
+        La copia {prepared.fileName} se ha leído entera y trae {preparedRows} filas.
+      </p>
+
+      <ul class="counts">
+        {#each prepared.recordsByTable.filter((count) => count.rows > 0) as count (count.table)}
+          <li class="count">
+            <span>{count.table}</span>
+            <span>{count.rows}</span>
+          </li>
+        {/each}
+      </ul>
+
+      <div class="actions">
+        <button
+          type="button"
+          class="destructive"
+          onclick={replaceEverything}
+          disabled={busy !== null}
+        >
+          {busy === 'replace' ? 'Sustituyendo…' : 'Sustituir lo que tengo por esta copia'}
+        </button>
+        <button type="button" class="reveal" onclick={discardPrepared} disabled={busy !== null}>
+          Descartar
+        </button>
+      </div>
+    {/if}
+  </section>
+
+  <section>
+    <h2>Sacar un módulo sin cifrar</h2>
+
+    <p class="muted">
+      Un fichero de hoja de cálculo con lo que hay en un módulo, legible por cualquiera. Existe
+      porque unos datos de los que no se puede salir son unos datos secuestrados, y va en un solo
+      sentido: esto sale, no vuelve a entrar.
+    </p>
+
+    {#if !unlocked}
+      <p class="muted">Abre la caja fuerte para poder exportar sin cifrar.</p>
+    {:else}
+      <p class="warning" role="note">
+        El fichero que sale de aquí no lo protege nada. Cualquiera que lo abra lo lee entero,
+        contraseñas incluidas si eliges la caja fuerte. Quedará anotado en el historial de la
+        aplicación que lo hiciste.
+      </p>
+
+      <form onsubmit={submitPlaintext}>
+        <fieldset>
+          <legend>Qué módulo</legend>
+
+          {#each MODULES as option (option.id)}
+            <label class="choice">
+              <input
+                type="radio"
+                value={option.id}
+                bind:group={plaintextModule}
+                disabled={busy !== null}
+              />
+              {option.label}
+            </label>
+          {/each}
+        </fieldset>
+
+        <label for="plaintext-word">Escribe {CONFIRMATION_WORD} para confirmar</label>
+        <input
+          id="plaintext-word"
+          type="text"
+          bind:value={plaintextWord}
+          autocomplete="off"
+          spellcheck="false"
+          disabled={busy !== null}
+        />
+
+        <label for="plaintext-password">Contraseña maestra</label>
+        <input
+          id="plaintext-password"
+          type="password"
+          bind:value={plaintextPassword}
+          autocomplete="current-password"
+          disabled={busy !== null}
+        />
+
+        <div class="actions">
+          <button type="submit" class="destructive" disabled={!plaintextReady}>
+            {busy === 'plaintext' ? 'Escribiendo…' : 'Escribir el fichero sin cifrar'}
+          </button>
+        </div>
+      </form>
+    {/if}
   </section>
 
   <div role="status" aria-live="polite">
@@ -391,6 +649,50 @@
     background-color: var(--colour-surface-raised);
     color: var(--colour-text);
     font-weight: var(--weight-regular);
+  }
+
+  /*
+   * The two buttons that do something nobody can undo. Bordered rather than accented, because
+   * the screen already spends its one accent on exporting, and because an action that destroys
+   * data should not be the most inviting thing on the page. What marks them is the warning
+   * colour, which is the same colour as the block of text above them saying what they do.
+   */
+  .actions button.destructive {
+    padding: var(--space-3) var(--space-5);
+    border: var(--border-width) solid var(--colour-warning);
+    border-radius: var(--radius-md);
+    background-color: var(--colour-surface-raised);
+    color: var(--colour-text);
+    font-weight: var(--weight-semibold);
+  }
+
+  .actions button.destructive:disabled {
+    border-color: var(--colour-border);
+    color: var(--colour-text-faint);
+  }
+
+  input[type='text'] {
+    padding: var(--space-3);
+    border: var(--border-width) solid var(--colour-border);
+    border-radius: var(--radius-md);
+    background-color: var(--colour-surface);
+    color: var(--colour-text);
+    font-family: var(--font-mono);
+  }
+
+  /* What the prepared copy holds, table by table. A list, so it is separated by rules. */
+  ul.counts {
+    max-width: var(--field-max-width);
+  }
+
+  li.count {
+    flex-direction: row;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    color: var(--colour-text-muted);
+    font-size: var(--text-sm);
+    font-family: var(--font-mono);
   }
 
   ul {

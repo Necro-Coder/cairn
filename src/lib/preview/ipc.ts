@@ -477,6 +477,27 @@ export const ipc: IpcSurface = {
 
   verifyBackup: () => rejectBackup({ kind: 'cancelled' }),
 
+  beginImport: () => rejectBackup({ kind: 'cancelled' }),
+
+  exportPlaintext: () => rejectBackup({ kind: 'cancelled' }),
+
+  /*
+   * The two halves of a restore that follow a preparation, and neither can ever be reached
+   * here, because `beginImport` above never hands out a token. They answer the way the core
+   * answers a word it is not holding, which is the only honest thing a stand-in with no
+   * staging database can say.
+   */
+  commitImport: () => rejectBackup({ kind: 'unknownToken' }),
+
+  cancelImport: () => rejectBackup({ kind: 'unknownToken' }),
+
+  /*
+   * The one backup answer a browser tab can give truthfully. There is no vault and therefore
+   * no backup of one, which is exactly what "never" means, and the reminder that follows from
+   * it is the state the screen most needs to be looked at in.
+   */
+  backupStatus: () => Promise.resolve({ daysSinceLast: null, remind: true }),
+
   // Nothing ever runs here, so nothing ever reports progress. The handler is kept and
   // dropped so that a screen which subscribes and unsubscribes behaves as it will.
   onBackupProgress: (handler) => {

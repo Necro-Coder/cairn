@@ -19,6 +19,7 @@
 //! What is not here: the header, the file it lives in, and the count of failed attempts.
 //! Those outlive the process and belong to the layer that owns the disk.
 
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use cairn_crypto::{CryptoError, UnlockedVault};
@@ -95,7 +96,48 @@ struct SessionState {
     /// An option rather than a moment and a flag, because a window that is in front and a
     /// window that lost focus at the beginning of time are not two shades of the same thing.
     focus_lost_at_us: Option<i64>,
+    /// The import that has been read and is waiting to be confirmed, if there is one.
+    ///
+    /// Here, and not in a store of its own, so that it dies when the vault does. A staging
+    /// database is a complete copy of somebody's vault written from a file they were handed; a
+    /// confirmation that survived a lock would be a way to replace the live vault of whoever
+    /// unlocks next.
+    import: Option<ImportTicket>,
 }
+
+/// An import that has been read and verified and is waiting for a yes or a no.
+#[derive(Debug, Clone)]
+pub struct ImportTicket {
+    /// The random word the interface has to give back to confirm this one import.
+    ///
+    /// Not a name for the file and not an index. It is a secret handed to the screen that
+    /// asked, so that a second window, or anything else that reaches the bridge, cannot
+    /// confirm a replacement it did not prepare.
+    pub token: String,
+    /// Where the staging database is.
+    pub staging: PathBuf,
+    /// How many rows of each table the file held, in the order they appeared.
+    ///
+    /// Carried rather than counted again afterwards, because after the swap the same question
+    /// has a different meaning: this is what the backup said it held, and the report exists to
+    /// say that those are what arrived.
+    pub records: Vec<(String, u64)>,
+    /// The moment after which this is no longer good.
+    pub expires_us: i64,
+}
+
+impl ImportTicket {
+    /// Whether it is still good at that moment.
+    #[must_use]
+    pub fn is_live_at(&self, now_us: i64) -> bool {
+        now_us < self.expires_us
+    }
+}
+
+/// There is already an import waiting to be confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("an import is already waiting to be confirmed")]
+pub struct ImportAlreadyWaiting;
 
 /// The vault as this process holds it.
 #[derive(Debug)]
@@ -122,6 +164,7 @@ impl Session {
                 last_activity_us: now_us,
                 timeout,
                 focus_lost_at_us: None,
+                import: None,
             }),
             derivation: tokio::sync::Mutex::new(()),
         }
@@ -234,6 +277,14 @@ impl Session {
         let mut state = self.state();
         state.focus_lost_at_us = None;
 
+        // The waiting import goes with it, and its staging database goes with that. A
+        // confirmation that survived a lock would let whoever unlocks next have their vault
+        // replaced by a file somebody else chose, and the file itself is a complete copy of a
+        // vault that nobody is going to be asked about again.
+        if let Some(waiting) = state.import.take() {
+            let _removed = cairn_db::backup::import::discard(&waiting.staging);
+        }
+
         // The database goes first. It is the thing that holds a file handle, and a failure to
         // let that handle go must not stop the keys being dropped: a vault that stayed open
         // because a statement was still alive would be the worst possible answer to a lock.
@@ -254,6 +305,74 @@ impl Session {
         if let Some(previous) = state.storage.replace(storage) {
             let _released = previous.close();
         }
+    }
+
+    /// Holds an import until somebody confirms it, refusing if one is already waiting.
+    ///
+    /// One at a time, because there is one staging database and its name is fixed. A second
+    /// preparation while the first is still good is refused rather than allowed to overwrite
+    /// it: two files, both half written, would be worse than either.
+    ///
+    /// An expired one is not in the way. It is handed back so the caller can remove the file
+    /// it left behind, because nothing else is ever going to ask about it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImportAlreadyWaiting`] if one is, in which case it is left exactly where it
+    /// was and nothing about it has changed.
+    pub fn hold_import(
+        &self,
+        ticket: ImportTicket,
+        now_us: i64,
+    ) -> Result<Option<ImportTicket>, ImportAlreadyWaiting> {
+        let mut state = self.state();
+
+        match state.import.take() {
+            Some(waiting) if waiting.is_live_at(now_us) => {
+                state.import = Some(waiting);
+                Err(ImportAlreadyWaiting)
+            }
+            expired => {
+                state.import = Some(ticket);
+                Ok(expired)
+            }
+        }
+    }
+
+    /// Takes the waiting import, if the word given is the one it is waiting for.
+    ///
+    /// Single use, and only on a match. A word that is not the right one leaves the ticket
+    /// exactly where it was: taking it anyway would mean anything that can reach the bridge
+    /// could throw away a restore somebody spent two minutes preparing, by guessing once.
+    ///
+    /// The words are compared in constant time. `==` on a string stops at the first byte that
+    /// differs, and a caller that can ask over and over — which anything reaching the bridge
+    /// can — could read the time back as a count of how many leading characters it had right,
+    /// and walk the word out one character at a time instead of guessing all of it at once.
+    #[must_use]
+    pub fn take_import(&self, token: &str, now_us: i64) -> Option<ImportTicket> {
+        let mut state = self.state();
+
+        let matches = state.import.as_ref().is_some_and(|waiting| {
+            cairn_crypto::constant_time_eq(waiting.token.as_bytes(), token.as_bytes())
+                && waiting.is_live_at(now_us)
+        });
+
+        if matches { state.import.take() } else { None }
+    }
+
+    /// Takes the open database out, leaving the keys where they are.
+    ///
+    /// For one caller: the restore, which has to close the file so it can be replaced and then
+    /// open a new one in its place. Between the two the session has keys and no database, which
+    /// [`Session::with_open`] already reports as closed, so nothing can read or write in that
+    /// gap — which is exactly what should happen while the file underneath is being swapped.
+    ///
+    /// Whoever takes it owns it. A caller that drops it on the floor leaves a handle nothing
+    /// can close, so the restore either puts one back or locks the session.
+    #[must_use]
+    pub fn take_storage(&self) -> Option<Storage> {
+        self.state().storage.take()
     }
 
     /// Reads something out of the open database without the database leaving the lock.
@@ -408,7 +527,7 @@ mod tests {
     use cairn_crypto::{Argon2Params, CryptoError, UnlockedVault};
     use cairn_domain::session::{IdleDecision, InactivityMinutes, InactivityTimeout};
 
-    use super::{LockReason, Session, UnlockFailure, UnlockOutcome};
+    use super::{ImportTicket, LockReason, PathBuf, Session, UnlockFailure, UnlockOutcome};
 
     /// A moment in the middle of the range, so the arithmetic either side of it is ordinary.
     const NOW_US: i64 = 1_700_000_000_000_000;
@@ -443,6 +562,107 @@ mod tests {
 
         assert_eq!(opened, UnlockOutcome::Opened);
         session
+    }
+
+    /// A ticket with that word, expiring ten minutes after [`NOW_US`].
+    fn a_ticket(token: &str) -> ImportTicket {
+        ImportTicket {
+            token: token.to_owned(),
+            staging: PathBuf::from("no-existe").join("cairn.import.db"),
+            records: vec![("settings".to_owned(), 3)],
+            expires_us: NOW_US + 10 * 60 * 1_000_000,
+        }
+    }
+
+    #[test]
+    fn an_import_is_confirmed_by_the_word_it_was_given_and_by_no_other() {
+        let session = Session::new(InactivityTimeout::default(), NOW_US);
+        session
+            .hold_import(a_ticket("la palabra"), NOW_US)
+            .expect("nothing was waiting");
+
+        assert!(session.take_import("otra palabra", NOW_US).is_none());
+        // And the wrong word did not take it away, which is what stops one guess from
+        // throwing away a restore somebody spent two minutes preparing.
+        let taken = session
+            .take_import("la palabra", NOW_US)
+            .expect("the right word confirms it");
+
+        assert_eq!(taken.records, vec![("settings".to_owned(), 3)]);
+    }
+
+    #[test]
+    fn an_import_is_confirmed_once_and_not_twice() {
+        let session = Session::new(InactivityTimeout::default(), NOW_US);
+        session
+            .hold_import(a_ticket("la palabra"), NOW_US)
+            .expect("nothing was waiting");
+
+        assert!(session.take_import("la palabra", NOW_US).is_some());
+        assert!(
+            session.take_import("la palabra", NOW_US).is_none(),
+            "a replacement could have happened twice"
+        );
+    }
+
+    #[test]
+    fn an_import_stops_being_good_after_ten_minutes() {
+        let session = Session::new(InactivityTimeout::default(), NOW_US);
+        session
+            .hold_import(a_ticket("la palabra"), NOW_US)
+            .expect("nothing was waiting");
+
+        let just_before = NOW_US + 10 * 60 * 1_000_000 - 1;
+        assert!(session.take_import("la palabra", just_before + 1).is_none());
+        assert!(session.take_import("la palabra", just_before).is_some());
+    }
+
+    #[test]
+    fn a_second_import_is_refused_while_the_first_is_still_waiting() {
+        // There is one staging database and it has one name. Two preparations at once would
+        // be two half written files under it.
+        let session = Session::new(InactivityTimeout::default(), NOW_US);
+        session
+            .hold_import(a_ticket("la primera"), NOW_US)
+            .expect("nothing was waiting");
+
+        assert!(session.hold_import(a_ticket("la segunda"), NOW_US).is_err());
+        assert!(
+            session.take_import("la primera", NOW_US).is_some(),
+            "the refused second one disturbed the first"
+        );
+    }
+
+    #[test]
+    fn an_expired_import_is_out_of_the_way_and_handed_back_to_be_cleaned_up() {
+        let session = Session::new(InactivityTimeout::default(), NOW_US);
+        session
+            .hold_import(a_ticket("la vieja"), NOW_US)
+            .expect("nothing was waiting");
+
+        let later = NOW_US + 11 * 60 * 1_000_000;
+        let displaced = session
+            .hold_import(a_ticket("la nueva"), later)
+            .expect("an expired ticket is not in the way");
+
+        assert_eq!(
+            displaced.map(|ticket| ticket.token),
+            Some("la vieja".to_owned()),
+            "the file the expired one left behind would never be removed"
+        );
+    }
+
+    #[test]
+    fn locking_throws_away_the_import_that_was_waiting() {
+        // A confirmation that survived a lock would let whoever unlocks next have their vault
+        // replaced by a file somebody else chose.
+        let session = an_unlocked_session(InactivityTimeout::default());
+        session
+            .hold_import(a_ticket("la palabra"), NOW_US)
+            .expect("nothing was waiting");
+
+        assert!(session.lock());
+        assert!(session.take_import("la palabra", NOW_US).is_none());
     }
 
     #[test]

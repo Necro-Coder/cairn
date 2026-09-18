@@ -13,6 +13,7 @@
 //! everything it has already handed out, so the last page of a long list costs the most, which
 //! is the opposite of what anybody wants.
 
+pub mod audit;
 pub mod finances;
 pub mod habits;
 pub mod settings;

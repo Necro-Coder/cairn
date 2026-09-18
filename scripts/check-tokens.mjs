@@ -10,8 +10,7 @@
  * It has no dependencies, and that is deliberate rather than minimalism for its own sake.
  * The alternative considered was stylelint with `postcss-html` and the Svelte plugin,
  * which is three packages and their transitive graph to run three regular expressions
- * over a directory. `~/.claude/rules/80-supply-chain.md` §1: what a short script solves
- * does not become a dependency.
+ * over a directory. What a short script solves does not become a dependency.
  *
  * What it looks for, under `src/`, in `.css` and `.svelte` files:
  *

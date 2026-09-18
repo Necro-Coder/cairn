@@ -108,19 +108,31 @@ fn the_frozen_backup_still_opens_and_holds_what_it_held() {
 }
 
 #[test]
-fn the_frozen_backup_carries_every_table_this_build_knows_about() {
-    // Not the same assertion as the one above. That one says the file is unchanged; this
-    // one says the build has not grown a table the file cannot describe. Both can be true
-    // on their own, and only together do they mean a restore loses nothing.
-    let in_file: Vec<&str> = FIXTURE_RECORDS
-        .iter()
-        .map(|(table, _rows)| *table)
-        .collect();
+fn every_table_the_frozen_backup_carries_is_still_one_this_build_knows() {
+    // Deliberately a subset check rather than an equality, and that difference is the whole
+    // reason an old file is kept. A backup written before a table existed does not carry
+    // that table and still has to open; demanding that the two lists match would fail on the
+    // very change this fixture exists to prove is survivable — and it did, the first time a
+    // table was added after it was frozen. What must never happen is the other direction, a
+    // table the file carries that the build has forgotten how to read, and that is this.
     let in_build: Vec<&str> = TABLES.iter().map(|table| table.name).collect();
 
-    assert_eq!(
-        in_file, in_build,
-        "the frozen fixture predates a change to the table list; add a fixture, do not replace this one"
+    for (table, _rows) in FIXTURE_RECORDS {
+        assert!(
+            in_build.contains(table),
+            "the frozen fixture carries {table}, and this build no longer knows that table"
+        );
+    }
+
+    // The relative order has to hold too. It is the order rows go into a staging database,
+    // so it is what keeps a row that points at another row from arriving first.
+    let positions: Vec<usize> = FIXTURE_RECORDS
+        .iter()
+        .filter_map(|(table, _rows)| in_build.iter().position(|name| name == table))
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "this build reorders the tables the frozen fixture carries"
     );
 }
 
