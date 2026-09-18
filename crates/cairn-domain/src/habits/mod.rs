@@ -5,10 +5,12 @@
 //! its own: the rest of the module is built on it.
 
 pub mod calendar;
+pub mod completion;
 pub mod day;
 pub mod spec;
 pub mod streak;
 
+pub use completion::{Ratio, month};
 pub use day::{DayState, Entry, classify};
 pub use spec::{Aggregation, Direction, HabitRow, HabitSpec, Measure, Period, Schedule, SpecError};
 pub use streak::{CurrentStreak, Streak, WeekProgress, current};
