@@ -1,0 +1,135 @@
+# The long fuzzing run.
+#
+# The `fuzz` job in `ci.yml` gives each parser two minutes on every change. Two minutes is a
+# floor: it catches a target that crashes on the first input somebody hands it, the same day
+# that input is written. It does not find anything that needs a hundred thousand cases to
+# reach, and it was never meant to.
+#
+# This is where those cases happen. Half an hour per target, once a night, against a corpus
+# that survives from one night to the next — so the run that finds an interesting input hands
+# it to the run after, and the search does not start over every time.
+#
+# Nothing here gates a pull request. A failure at three in the morning is a bug report with a
+# reproducer attached, not a red cross on somebody's branch.
+#
+# Third party actions are pinned to a full commit SHA rather than a tag, for the reason written
+# out at the top of `ci.yml`. The comment after each SHA records the tag it corresponded to.
+name: nightly
+
+on:
+  schedule:
+    # 03:17 UTC. Off the hour on purpose: every scheduled workflow on GitHub that asks for
+    # midnight is queued at midnight, and the ones that ask for an odd minute start sooner.
+    - cron: '17 3 * * *'
+  # So that somebody who has just touched a parser can run this against it without waiting
+  # for the night, and so that a failure can be reproduced on demand.
+  workflow_dispatch:
+
+# Read only. This job reads the repository, writes to the Actions cache and uploads an
+# artifact, and none of those three need a token that can write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    # Half an hour of fuzzing plus the time to build it. The ceiling is here so that a target
+    # that hangs rather than crashes is still reported as a failure rather than running until
+    # GitHub's own six hour limit cuts it off.
+    timeout-minutes: 45
+    strategy:
+      # One target failing is a finding about that target. The other one still has a night's
+      # worth of work to do, and cancelling it would throw away its corpus growth as well.
+      fail-fast: false
+      matrix:
+        # The two parsers a backup file goes through, which are the two that read bytes
+        # somebody else wrote. `vault_header` and `sqlite_row_decode` are fuzzed in `ci.yml`
+        # on every change and are not repeated here.
+        target: [import_parser, export_stream]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the nightly toolchain
+        # libFuzzer needs sanitizer support that only nightly has. Nothing that ships is
+        # built here.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # nightly
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Restore the corpus from the last run
+        # Restore and save are separate steps rather than one `actions/cache`, because the
+        # combined action only writes its cache when the job succeeds. The night a target
+        # crashes is precisely the night whose corpus is worth keeping.
+        #
+        # The key names the run, so it never hits and the save at the end always writes a new
+        # entry; `restore-keys` is the prefix, and a prefix match returns the most recent
+        # entry that has it. That pair is what makes a corpus grow: every night starts from
+        # the newest one there is and ends by storing a bigger one under a new name.
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz
+        # Thirty minutes, against the seeds committed in `fuzz/corpus/` plus whatever the
+        # restore above brought back. `-print_final_stats` is what makes a run that found
+        # nothing still say something: how many cases it got through and how much of the
+        # target it reached.
+        #
+        # The toolchain is named in the environment rather than left to the directory, and
+        # the target triple is named explicitly. `rust-toolchain.toml` pins the version
+        # everything else is built with and a file override beats an installed nightly, so
+        # without this the sanitizer flags reach a stable compiler that refuses them; and the
+        # default triple on Linux is musl, whose standard library this toolchain does not
+        # carry.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: |
+          cargo fuzz run ${{ matrix.target }} \
+            --target x86_64-unknown-linux-gnu \
+            -- -max_total_time=1800 -print_final_stats=1
+
+      - name: Save the corpus for the next run
+        # Always, including after a crash. See the note on the restore step.
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      - name: Upload the crashing input
+        # Only when something failed, and this is the whole point of the run. `cargo fuzz`
+        # writes the input that crashed into `fuzz/artifacts/`, and without this step it
+        # would be deleted with the runner and the finding would be a stack trace in a log
+        # that nobody can reproduce.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          # A run that failed for a reason other than a crash — a build error, the timeout
+          # above — leaves the directory empty, and an empty upload is not a problem worth a
+          # warning next to a real failure.
+          if-no-files-found: ignore
+          retention-days: 30

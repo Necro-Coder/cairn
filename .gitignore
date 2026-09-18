@@ -92,10 +92,13 @@ DerivedData/
 *.cairnbackup
 backups/
 
-# The one exception, and it is deliberate. The frozen backup fixtures are the only proof
-# that a file written by an older build still opens, so they have to be in the repository.
-# They hold six invented rows and a password that is printed in the test beside them.
+# Two exceptions, and both are deliberate. The frozen backup fixtures are the only proof that
+# a file written by an older build still opens, so they have to be in the repository. They hold
+# six invented rows and a password that is printed in the test beside them.
 !crates/cairn-db/tests/fixtures/*.cairn
+# The fuzzing seed is a copy of that same file and holds nothing else. A fuzzer handed no
+# example of a real backup spends its whole run discovering the eight bytes of magic.
+!fuzz/corpus/export_stream/*.cairn
 
 # ---------------------------------------------------------------------------
 # Test, coverage and audit artifacts
@@ -105,8 +108,29 @@ lcov.info
 *.profraw
 *.profdata
 fuzz/artifacts/
-fuzz/corpus/
 fuzz/coverage/
+# Every corpus except two, and from those two only the seeds. A fuzzer that starts from nothing
+# spends its first minutes rediscovering that a record is a line of JSON and that a backup
+# begins with eight bytes of magic, and a nightly run is too short to afford that. What is
+# committed is a handful of hand-written inputs and one real backup; everything a run finds for
+# itself stays out of the repository and is carried between runs by the cache.
+#
+# The directories are named rather than the files, because git does not look inside a directory
+# it has been told to ignore: `fuzz/corpus/` as a single line would make every negation below
+# it dead text. And each directory's contents are then ignored again, because un-ignoring the
+# directory un-ignores everything in it — a single minute of fuzzing leaves several thousand
+# files there, and they would all have turned up as untracked.
+#
+# The seeds are told apart from the findings by having an extension. libFuzzer names what it
+# writes after the SHA-1 of its contents and gives it no suffix, so this is a rule the fuzzer
+# cannot accidentally satisfy.
+fuzz/corpus/*
+!fuzz/corpus/import_parser/
+fuzz/corpus/import_parser/*
+!fuzz/corpus/import_parser/*.jsonl
+!fuzz/corpus/export_stream/
+fuzz/corpus/export_stream/*
+!fuzz/corpus/export_stream/*.cairn
 mutants.out*/
 criterion/
 audit-report*.json
