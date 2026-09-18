@@ -35,6 +35,24 @@ thiserror = "2.0"
 # and a row identifier that carries when and where it was made is a row identifier that leaks.
 uuid = { version = "1.26", default-features = false, features = ["v4"] }
 
+# Calendar arithmetic: what day of the week a date falls on, which ISO week it belongs to,
+# how many days separate two of them. Streaks are counted in civil days, and a civil day is
+# not a count of seconds; doing that arithmetic by hand here would mean writing a leap year
+# rule and an ISO week rule that nobody audits.
+#
+# `chrono` was discarded because its time zone support lives in a second crate, so the
+# calendar and the place a day happened in would be resolved and upgraded independently.
+# `time` was discarded because `current_local_offset` fails by design in a multithreaded
+# process on Unix, and a multithreaded process on Unix is exactly what the iPhone build is;
+# a library that cannot answer where the person is standing on one of the two platforms is
+# not one a streak can be built on.
+#
+# Default features are off. The calendar is all the domain needs, so the system zone lookup
+# and the bundled time zone database are left for the one crate that has to read where the
+# person is. It is already in the graph through `serde_with`, at this exact version, so the
+# calendar adds no new code to audit.
+jiff = { version = "0.2.37", default-features = false, features = ["std"] }
+
 # SQLite, built from source as SQLCipher with its own copy of OpenSSL linked in.
 #
 # The feature is what makes the encrypted database possible on every platform this

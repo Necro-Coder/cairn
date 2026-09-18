@@ -347,6 +347,7 @@ name = "cairn-domain"
 version = "0.0.1"
 dependencies = [
  "cairn-crypto",
+ "jiff",
  "proptest",
  "thiserror 2.0.20",
  "trybuild",
