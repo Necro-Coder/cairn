@@ -267,9 +267,43 @@ fn cell(column: ColumnSpec, values: &RowValues) -> String {
 
     match (column.kind, value) {
         (_any, serde_json::Value::Null) => String::new(),
-        (ColumnKind::Sealed, serde_json::Value::String(encoded)) => readable(encoded),
-        (_other, serde_json::Value::String(text)) => text.clone(),
+        (ColumnKind::Sealed, serde_json::Value::String(encoded)) => defused(&readable(encoded)),
+        (_other, serde_json::Value::String(text)) => defused(text),
+        // A number or a boolean, rendered from a value the schema typed as one. There is no
+        // text here that somebody wrote, so there is nothing for [`defused`] to do.
         (_other, other) => other.to_string(),
+    }
+}
+
+/// A cell a spreadsheet will show rather than run.
+///
+/// Excel, `LibreOffice` and Sheets all read a cell beginning with `=`, `+`, `-` or `@` as a
+/// formula, and a tab or a carriage return in front of one of those is skipped before they
+/// decide. Quoting does not stop it: the quotation marks belong to the CSV layer and are gone
+/// by the time the value is looked at. So a note that begins `=HYPERLINK(...)` becomes a
+/// request the spreadsheet makes, with the rest of the sheet — which is this person's vault,
+/// in the clear — available to it. That is a real path here rather than a theoretical one: a
+/// backup restored from a file somebody else wrote can carry any text at all, and this export
+/// is where that text stops being inert.
+///
+/// The repair is the one every spreadsheet agrees on: an apostrophe in front, which they read
+/// as "what follows is text". It is visible in the file and in the cell, which is the price,
+/// and it is only paid by the values that would otherwise have been run.
+///
+/// Numbers never come through here. They are rendered from a value the schema typed as a
+/// number, so a negative amount stays `-1250` and a spreadsheet still adds it up.
+fn defused(text: &str) -> String {
+    const TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+    match text.chars().next() {
+        Some(first) if TRIGGERS.contains(&first) => {
+            let mut out = String::with_capacity(text.len() + 1);
+            out.push('\'');
+            out.push_str(text);
+
+            out
+        }
+        _harmless => text.to_owned(),
     }
 }
 
@@ -331,7 +365,7 @@ fn part_path(destination: &Path) -> PathBuf {
 mod tests {
     use cairn_domain::{CivilDay, Hlc};
 
-    use super::{Module, part_path, quoted, write_plaintext};
+    use super::{Module, defused, part_path, quoted, write_plaintext};
     use crate::backup::schema::TABLES;
     use crate::device::DeviceId;
     use crate::error::DbError;
@@ -391,6 +425,85 @@ mod tests {
         assert_eq!(quoted("di \"hola\""), "\"di \"\"hola\"\"\"");
         assert_eq!(quoted("una,coma"), "\"una,coma\"");
         assert_eq!(quoted("un\nsalto"), "\"un\nsalto\"");
+    }
+
+    #[test]
+    fn a_cell_that_would_run_as_a_formula_is_marked_as_text() {
+        // Quoting does not stop this: the quotation marks belong to the CSV layer and are
+        // gone by the time a spreadsheet decides whether it is looking at a formula.
+        assert_eq!(
+            defused("=HYPERLINK(\"http://x\",\"a\")"),
+            "'=HYPERLINK(\"http://x\",\"a\")"
+        );
+        assert_eq!(defused("+1+1"), "'+1+1");
+        assert_eq!(defused("-1+1"), "'-1+1");
+        assert_eq!(defused("@SUM(A1)"), "'@SUM(A1)");
+        // A tab or a carriage return in front of one of those is skipped before the decision,
+        // so the decision has to be made about them too.
+        assert_eq!(defused("\t=1+1"), "'\t=1+1");
+        assert_eq!(defused("\r=1+1"), "'\r=1+1");
+    }
+
+    #[test]
+    fn an_ordinary_cell_is_left_exactly_as_it_was() {
+        assert_eq!(defused("Correr"), "Correr");
+        assert_eq!(defused(""), "");
+        assert_eq!(defused("cinco kilómetros"), "cinco kilómetros");
+        assert_eq!(defused("a=b"), "a=b");
+        // A number is rendered from a value the schema typed as one and never reaches this
+        // function, which is what keeps a negative amount adding up in a spreadsheet.
+        assert_eq!(defused("1250"), "1250");
+    }
+
+    #[test]
+    fn a_name_that_arrived_from_somebody_else_does_not_run_when_the_file_is_opened() {
+        // The path that makes this real rather than theoretical: a backup restored from a
+        // file somebody else wrote can carry any text at all, and this export is where that
+        // text stops being inert.
+        let sandbox = Sandbox::new("plaintext-formula");
+        let device = DeviceId::generate().expect("random bytes");
+        let day = CivilDay::new(2026, 9, 17).expect("a day that exists");
+
+        sandbox
+            .database()
+            .with(|connection| {
+                habits::create(
+                    connection,
+                    &sandbox.codec(),
+                    device,
+                    Hlc::new(1_000, 0, [1; 6]),
+                    NOW_US,
+                    habits::NewHabit {
+                        name: "=1+1",
+                        notes: Some(b"@SUM(A1:A9)"),
+                        started_on: day,
+                        position: 0,
+                    },
+                )?;
+
+                Ok(())
+            })
+            .expect("the seed writes");
+
+        let destination = sandbox.directory().join("habitos.csv");
+        sandbox
+            .database()
+            .with(|connection| {
+                write_plaintext(connection, &sandbox.codec(), Module::Habits, &destination)
+            })
+            .expect("the export works");
+
+        let text = std::fs::read_to_string(&destination).expect("the file is readable");
+
+        assert!(text.contains("\"'=1+1\""), "the name would run: {text}");
+        assert!(
+            text.contains("\"'@SUM(A1:A9)\""),
+            "the note would run: {text}"
+        );
+        assert!(
+            !text.contains("\"=1+1\""),
+            "the name is in the file unmarked: {text}"
+        );
     }
 
     #[test]
