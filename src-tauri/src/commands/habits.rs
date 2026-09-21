@@ -1,11 +1,12 @@
-//! Reading habits, and writing the first one down.
+//! Reading habits, writing them down, and changing what they are.
 //!
-//! The three commands the habit screens open with. They are a thin shell over three things that
-//! already exist: the repository, which reads rows; the domain, which turns a row into a habit
-//! and a column of marks into a streak; and the clock crate, which is the only place allowed to
-//! ask the operating system what day it is. Nothing here counts anything by itself.
+//! The eight commands the habit screens work with, short of the three about a single day. They
+//! are a thin shell over three things that already exist: the repository, which reads and writes
+//! rows; the domain, which turns a row into a habit and a column of marks into a streak; and the
+//! clock crate, which is the only place allowed to ask the operating system what day it is.
+//! Nothing here counts anything by itself.
 //!
-//! Two decisions are worth the words, because both are invisible from any single line.
+//! Three decisions are worth the words, because all three are invisible from any single line.
 //!
 //! The note never appears in a list. It is the one sealed column of this module, and the list is
 //! what gets painted every time somebody opens the application; a summary of the note, a length
@@ -19,6 +20,13 @@
 //! reproduced. If the device does not say what zone it is in, these commands say so and stop.
 //! Falling back to UTC would produce a streak that is wrong in a way nobody can see by looking
 //! at it.
+//!
+//! The warning about an edit is worked out here rather than on the screen, and before the write
+//! rather than after it. Somebody who changes which days a habit is expected on is changing what
+//! their run of two hundred days counted, and they have to be told while they can still say no;
+//! the alternative is a second streak walk written in JavaScript, beside the one in the domain
+//! and free to disagree with it. `update_preview` answers that question and writes nothing at
+//! all, which is the one property of this module worth asserting on the stored revision.
 
 use std::collections::HashMap;
 
@@ -30,7 +38,7 @@ use cairn_db::repositories::habits::{
 };
 use cairn_db::repositories::settings;
 use cairn_db::{Connection, DbError};
-use cairn_domain::habits::calendar::{shift, span};
+use cairn_domain::habits::calendar::{shift, span, weekday};
 use cairn_domain::habits::spec::SpecError;
 use cairn_domain::habits::{
     Aggregation, DayState, Direction, Entry, HabitRow, HabitSpec, Measure, Period, Streak,
@@ -347,6 +355,34 @@ pub struct HabitDraft {
     pub started_on: u32,
 }
 
+/// What an edit changed, and whether the streak now means something different.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HabitUpdateOutcome {
+    /// The habit as it now stands, note included.
+    pub habit: HabitDetail,
+    /// Whether the run on the screen is counted by different rules than it was a moment ago.
+    pub streak_meaning_changed: bool,
+}
+
+/// What saving this draft would do, without saving it.
+///
+/// Exists because the warning has to appear **before** the write, and the alternative would be
+/// working a streak out in JavaScript, which is the one thing this module never does anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateImpact {
+    /// Whether the run would be counted by different rules.
+    pub streak_meaning_changed: bool,
+    /// The run as it stands, counted by the rules the habit has now.
+    pub current_streak_before: u32,
+    /// The run the same calendar produces once the draft is the habit.
+    pub current_streak_after: u32,
+    /// Marks that sit on days the new schedule does not include. They stay, dimmed, and count
+    /// for nothing.
+    pub entries_outside_new_schedule: u32,
+}
+
 /// A list, and how much of the file it could not read.
 ///
 /// The count is on this value rather than on the command's because the command's answer is fixed
@@ -476,6 +512,205 @@ pub fn create(
     })
 }
 
+/// Changes a habit to what the draft describes and answers what it now is.
+///
+/// Does not archive and does not reorder, because [`HabitDraft`] carries neither and a form that
+/// could hide either is a habit that leaves the screen because somebody changed its colour.
+///
+/// # Errors
+///
+/// [`HabitsError::Locked`] if the vault is closed, [`HabitsError::NotFound`] if the identifier
+/// does not name a live habit or is not an identifier at all, [`HabitsError::Invalid`] carrying
+/// every problem the draft has, [`HabitsError::NoZone`] if the clock cannot say what day it is,
+/// and [`HabitsError::Storage`] if the database refuses or the stored row is not a habit this
+/// version understands.
+pub fn update(
+    state: &AppState,
+    clock: &dyn CivilClock,
+    id: &str,
+    draft: &HabitDraft,
+    now: i64,
+) -> Result<HabitUpdateOutcome, HabitsError> {
+    let id = Uuid::parse_str(id).map_err(|_not_a_uuid| HabitsError::NotFound)?;
+    // Judged before the vault is touched, exactly as `create` does it. A draft that was never
+    // going to be accepted needs no connection to be refused, and refusing it out here is also
+    // what makes it impossible for a bad draft to leave half a write behind.
+    let columns = Columns::of(draft)?;
+    let millis = now_ms();
+
+    in_storage(state, |storage, codec, connection| {
+        let today = today_of(connection, codec, clock, now)?;
+        let stored = repository::get(connection, codec, id)?.ok_or(HabitsError::NotFound)?;
+
+        // Read before the write, because afterwards there is nothing left to compare against.
+        let before = spec_of(&stored)?;
+        let after = spec_of_columns(&columns)?;
+        let meaning = meaning_changed(&before, &after);
+
+        let hlc = storage.next_hlc(millis);
+        // The position the row already holds. `update` leaves that column alone; handing it the
+        // stored value rather than a zero means the argument says what is true even so.
+        let habit = repository::update(
+            connection,
+            codec,
+            hlc,
+            now,
+            id,
+            columns.as_new_habit(stored.position),
+        )?;
+
+        Ok(HabitUpdateOutcome {
+            habit: detail_of(connection, &habit, today)?,
+            streak_meaning_changed: meaning,
+        })
+    })
+}
+
+/// What saving this draft would do, without saving it.
+///
+/// Writes nothing: no row, no revision, no entry. Everything it touches is a read, and a test
+/// holds the stored revision to that.
+///
+/// One window, read once, classified twice. The two streaks are a comparison rather than a
+/// measurement, so both are clipped at the same four hundred days; asking for the older window
+/// that [`list`] sometimes asks for would double the reads of a screen somebody is still typing
+/// into, and would move the pair of numbers without ever moving the difference between them.
+///
+/// # Errors
+///
+/// [`HabitsError::Locked`] if the vault is closed, [`HabitsError::NotFound`] if the identifier
+/// does not name a live habit or is not an identifier at all, [`HabitsError::Invalid`] carrying
+/// every problem the draft has, [`HabitsError::NoZone`] if the clock cannot say what day it is,
+/// and [`HabitsError::Storage`] if the database refuses or the stored row is not a habit this
+/// version understands.
+pub fn update_preview(
+    state: &AppState,
+    clock: &dyn CivilClock,
+    id: &str,
+    draft: &HabitDraft,
+    now: i64,
+) -> Result<UpdateImpact, HabitsError> {
+    let id = Uuid::parse_str(id).map_err(|_not_a_uuid| HabitsError::NotFound)?;
+    let columns = Columns::of(draft)?;
+
+    in_storage(state, |_storage, codec, connection| {
+        let today = today_of(connection, codec, clock, now)?;
+        let stored = repository::get(connection, codec, id)?.ok_or(HabitsError::NotFound)?;
+        let before = spec_of(&stored)?;
+        let after = spec_of_columns(&columns)?;
+
+        // The earlier of the two starts, so the one read covers whichever of the two habits
+        // reaches further back. Both are already clamped at four hundred days, so the wider of
+        // them is still a window the repository accepts.
+        let oldest_before = window_start(&before, today, WINDOW_DAYS - 1);
+        let oldest_after = window_start(&after, today, WINDOW_DAYS - 1);
+        let from = oldest_before.min(oldest_after);
+        let entries = repository::window(connection, id, from, today)?;
+
+        Ok(UpdateImpact {
+            streak_meaning_changed: meaning_changed(&before, &after),
+            current_streak_before: streak_over(&before, from, today, &entries),
+            current_streak_after: streak_over(&after, from, today, &entries),
+            entries_outside_new_schedule: outside_schedule(&after, &entries),
+        })
+    })
+}
+
+/// Puts a habit away, or brings it back, and answers it as a list shows it.
+///
+/// Idempotent in both directions: archiving something already archived keeps the day it was
+/// first put away, which is a fact about that habit and not about the last time somebody
+/// pressed the button.
+///
+/// # Errors
+///
+/// [`HabitsError::Locked`] if the vault is closed, [`HabitsError::NotFound`] if the identifier
+/// does not name a live habit or is not an identifier at all, [`HabitsError::NoZone`] if the
+/// clock cannot say what day it is, and [`HabitsError::Storage`] if the database refuses or the
+/// stored row is not a habit this version understands.
+pub fn archive(
+    state: &AppState,
+    clock: &dyn CivilClock,
+    id: &str,
+    archived: bool,
+    now: i64,
+) -> Result<HabitSummary, HabitsError> {
+    let id = Uuid::parse_str(id).map_err(|_not_a_uuid| HabitsError::NotFound)?;
+    let millis = now_ms();
+
+    in_storage(state, |storage, codec, connection| {
+        let today = today_of(connection, codec, clock, now)?;
+
+        // Read, and asked whether this build understands it, before anything is written. The
+        // answer this command owes is a summary, and a summary needs the habit the row
+        // describes; finding out afterwards that there is none would mean reporting a failure
+        // for a row that had already been archived.
+        let stored = repository::get(connection, codec, id)?.ok_or(HabitsError::NotFound)?;
+        let spec = spec_of(&stored)?;
+
+        let hlc = storage.next_hlc(millis);
+        let habit = repository::archive(connection, codec, hlc, now, id, archived)?;
+
+        // The run comes back with it. Archiving does not touch a single entry, so the number a
+        // habit carries out of here is the number it carried in, and that is what lets the
+        // screen that brings one back draw it without a second call.
+        let snapshot = snapshot_of(connection, habit.id, &spec, today)?;
+
+        Ok(summary_of(&habit, &spec, snapshot))
+    })
+}
+
+/// Removes a habit and every day it was ever marked on.
+///
+/// Answers nothing. What a screen has to redraw afterwards it asks for with [`list`]: handing
+/// back the remaining habits here would be a list built at the moment of a deletion, which is
+/// the one moment it is certain to be about to be asked for anyway.
+///
+/// Takes no clock, because nothing here is about a calendar.
+///
+/// # Errors
+///
+/// [`HabitsError::Locked`] if the vault is closed, [`HabitsError::NotFound`] if the identifier
+/// does not name a live habit or is not an identifier at all, and [`HabitsError::Storage`] if
+/// the database refuses, in which case nothing at all was written.
+pub fn delete(state: &AppState, id: &str, now: i64) -> Result<(), HabitsError> {
+    let id = Uuid::parse_str(id).map_err(|_not_a_uuid| HabitsError::NotFound)?;
+    let millis = now_ms();
+
+    in_storage(state, |storage, _codec, connection| {
+        let hlc = storage.next_hlc(millis);
+
+        repository::delete(connection, hlc, now, id)?;
+
+        Ok(())
+    })
+}
+
+/// Sets the order of every habit still being tracked, in one transaction.
+///
+/// The list has to be exactly that set. A partial one cannot tell a habit that moved from a
+/// habit dropped by a bug on the other side of the bridge, and the repository refuses it.
+///
+/// # Errors
+///
+/// [`HabitsError::Locked`] if the vault is closed, [`HabitsError::IncompleteOrder`] if the list
+/// is not that set or carries something that is not an identifier, and [`HabitsError::Storage`]
+/// if the transaction fails, in which case nothing at all was written.
+pub fn reorder(state: &AppState, ids: &[String], now: i64) -> Result<(), HabitsError> {
+    // Parsed out here, before anything is opened. A list carrying text that is not an identifier
+    // is refused without a connection, and the repository never sees a half-converted order.
+    let parsed = parsed_ids(ids)?;
+    let millis = now_ms();
+
+    in_storage(state, |storage, codec, connection| {
+        let hlc = storage.next_hlc(millis);
+
+        repository::reorder(connection, codec, hlc, now, &parsed)?;
+
+        Ok(())
+    })
+}
+
 /// Every habit of one kind, with today's square and the run so far.
 ///
 /// Marked to run off the drawing thread. It walks up to eight hundred days of calendar for every
@@ -536,6 +771,103 @@ pub fn habits_create(
     let zone = SystemZone::detect().map_err(|_no_zone| HabitsError::NoZone)?;
 
     create(&state, &zone, &draft, now_us())
+}
+
+/// Changes a habit to what the draft describes and answers what it now is.
+///
+/// Marked to run off the drawing thread for the reason [`habits_list`] is: it walks the calendar
+/// of the habit it just wrote.
+///
+/// # Errors
+///
+/// See [`update`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn habits_update(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    draft: HabitDraft,
+) -> Result<HabitUpdateOutcome, HabitsError> {
+    let zone = SystemZone::detect().map_err(|_no_zone| HabitsError::NoZone)?;
+
+    update(&state, &zone, &id, &draft, now_us())
+}
+
+/// What saving this draft would do, without saving it.
+///
+/// Marked to run off the drawing thread: it walks four hundred days twice, and the screen that
+/// asks for it is a form somebody is still typing into.
+///
+/// # Errors
+///
+/// See [`update_preview`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn habits_update_preview(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    draft: HabitDraft,
+) -> Result<UpdateImpact, HabitsError> {
+    let zone = SystemZone::detect().map_err(|_no_zone| HabitsError::NoZone)?;
+
+    update_preview(&state, &zone, &id, &draft, now_us())
+}
+
+/// Puts a habit away, or brings it back, and answers it as a list shows it.
+///
+/// # Errors
+///
+/// See [`archive`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn habits_archive(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    archived: bool,
+) -> Result<HabitSummary, HabitsError> {
+    let zone = SystemZone::detect().map_err(|_no_zone| HabitsError::NoZone)?;
+
+    archive(&state, &zone, &id, archived, now_us())
+}
+
+/// Removes a habit and every day it was ever marked on.
+///
+/// # Errors
+///
+/// See [`delete`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn habits_delete(state: tauri::State<'_, AppState>, id: String) -> Result<(), HabitsError> {
+    delete(&state, &id, now_us())
+}
+
+/// Sets the order of every habit still being tracked.
+///
+/// # Errors
+///
+/// See [`reorder`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn habits_reorder(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), HabitsError> {
+    reorder(&state, &ids, now_us())
 }
 
 /// Runs something that needs the keys and the open database, and collapses the two error types.
@@ -1043,6 +1375,73 @@ fn spec_problem(error: &SpecError, without_a_unit: bool) -> FieldProblem {
         // draft is refused as a whole.
         _added_later => FieldProblem::new("period", "unknown"),
     }
+}
+
+/// The habit a stored row describes, or the refusal a screen gets when it is not one.
+fn spec_of(habit: &Habit) -> Result<HabitSpec, HabitsError> {
+    HabitSpec::from_row(row_of(habit)).map_err(|_not_a_habit| HabitsError::Storage)
+}
+
+/// The habit a judged draft describes.
+///
+/// Cannot fail. [`Columns::of`] asks the domain the same question before it hands the columns
+/// back, so a refusal here would mean the two calls disagreed about the same values. Reported as
+/// storage trouble rather than unwrapped, because this project does not panic to prove a point.
+fn spec_of_columns(columns: &Columns) -> Result<HabitSpec, HabitsError> {
+    HabitSpec::from_row(columns.as_row()).map_err(|_already_judged| HabitsError::Storage)
+}
+
+/// Whether the two descriptions count a run by different rules.
+///
+/// Compared through the domain rather than column by column, because two columns can differ and
+/// still mean the same thing: a schedule mask of zero is the whole week, and how the days of a
+/// period combine is a question a habit that is only done or not never asks.
+///
+/// The target is deliberately absent. It is written onto every entry as that entry is marked, so
+/// raising it changes what is asked of tomorrow and leaves every day already judged exactly as
+/// it was; warning about it would teach somebody to dismiss the warning that matters.
+fn meaning_changed(before: &HabitSpec, after: &HabitSpec) -> bool {
+    before.period != after.period
+        || before.direction != after.direction
+        || before.schedule.as_mask() != after.schedule.as_mask()
+        || aggregation_name(before) != aggregation_name(after)
+}
+
+/// How long the run is, for one description of the habit over one window of calendar.
+///
+/// The window is classified rather than read again, which is what lets one read answer for two
+/// descriptions of the same habit.
+fn streak_over(spec: &HabitSpec, from: CivilDay, today: CivilDay, entries: &[StoredEntry]) -> u32 {
+    let days = classified(spec, from, today, entries, today);
+
+    streak::current(spec, &days, today).streak.days
+}
+
+/// How many marks sit on days this schedule does not include.
+///
+/// They are not deleted and not moved. What somebody has to be told is that they will stop
+/// counting, which is a different sentence from the one about losing them.
+fn outside_schedule(spec: &HabitSpec, entries: &[StoredEntry]) -> u32 {
+    let counted = entries
+        .iter()
+        .filter(|entry| !spec.schedule.includes(weekday(entry.day)))
+        .count();
+
+    // A window is four hundred days, so this never reaches the limit. Saturating rather than
+    // panicking, as everywhere else in this file that narrows.
+    u32::try_from(counted).unwrap_or(u32::MAX)
+}
+
+/// The identifiers a list of texts names, or a refusal about the list as a whole.
+///
+/// Text that is not an identifier is [`HabitsError::IncompleteOrder`] and never
+/// [`HabitsError::NotFound`]: what arrived is an order, and what is wrong with it is that it is
+/// not the set of habits there are. Answering that one habit is missing would send the interface
+/// looking for a habit nobody named.
+fn parsed_ids(ids: &[String]) -> Result<Vec<Uuid>, HabitsError> {
+    ids.iter()
+        .map(|id| Uuid::parse_str(id).map_err(|_not_a_uuid| HabitsError::IncompleteOrder))
+        .collect()
 }
 
 #[cfg(test)]
