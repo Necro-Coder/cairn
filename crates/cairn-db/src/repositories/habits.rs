@@ -18,6 +18,8 @@
 
 use std::collections::HashSet;
 
+use cairn_domain::habits::calendar::days_between;
+use cairn_domain::time::{MAX_YEAR, MIN_YEAR};
 use cairn_domain::{CivilDay, Clock, Hlc, Rev};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
@@ -64,6 +66,13 @@ pub const MAX_UNIT_LEN: usize = 32;
 /// bridge, and a number from a WebView does not get to decide how much memory this process
 /// reserves.
 pub const MAX_PAGE: usize = 200;
+
+/// The widest span one call may ask for.
+///
+/// Four hundred days plus a year, so that the streak window and its one extension both fit and
+/// nothing wider does. The number arrives from the other side of the bridge in the end, and a
+/// number from a WebView does not get to decide how much memory this process reserves.
+pub const MAX_WINDOW_DAYS: u32 = 766;
 
 /// A statement that reads habits, built from the one list of columns there is.
 ///
@@ -214,6 +223,26 @@ pub struct Mark<'a> {
     pub amount: i64,
     /// A note about that day, or nothing.
     pub note: Option<&'a [u8]>,
+    /// The target in force the day this is written. `None` for a habit that is only done or not.
+    ///
+    /// Taken once, here, and never recomputed. Judging an old day with today's target is what
+    /// turns a month somebody completed red the afternoon they raise the bar.
+    pub target_snapshot: Option<i64>,
+}
+
+/// One stored mark, as it comes back.
+///
+/// Numbers only. The note of a day is sealed and stays sealed here: a streak, a percentage and a
+/// heat map are read from the amounts, and opening several hundred notes to paint a calendar
+/// would be several hundred decryptions nothing on the screen uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEntry {
+    /// Which square on the calendar.
+    pub day: CivilDay,
+    /// How much was done, in the smallest unit the habit counts in.
+    pub amount: i64,
+    /// The target that day was judged by, or nothing when there was none to remember.
+    pub target_snapshot: Option<i64>,
 }
 
 /// Writes a habit down.
@@ -737,6 +766,7 @@ pub fn mark(
         day,
         amount,
         note,
+        target_snapshot,
     } = entry;
 
     let existing = connection
@@ -771,16 +801,17 @@ pub fn mark(
         .prepare_cached(
             "INSERT INTO habit_entries
                  (id, created_at, updated_at, device_id, deleted, hlc, rev,
-                  habit_id, day, amount, note)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10)
+                  habit_id, day, amount, note, target_snapshot)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO UPDATE SET
-                 updated_at = excluded.updated_at,
-                 device_id  = excluded.device_id,
-                 deleted    = 0,
-                 hlc        = excluded.hlc,
-                 rev        = excluded.rev,
-                 amount     = excluded.amount,
-                 note       = excluded.note",
+                 updated_at      = excluded.updated_at,
+                 device_id       = excluded.device_id,
+                 deleted         = 0,
+                 hlc             = excluded.hlc,
+                 rev             = excluded.rev,
+                 amount          = excluded.amount,
+                 note            = excluded.note,
+                 target_snapshot = excluded.target_snapshot",
         )?
         .execute(params![
             stamp.id.as_bytes().as_slice(),
@@ -793,6 +824,7 @@ pub fn mark(
             day.as_number(),
             amount,
             sealed.first().and_then(Option::as_ref),
+            target_snapshot,
         ])?;
 
     Ok(stamp.id)
@@ -864,6 +896,157 @@ pub fn is_marked(connection: &Connection, habit_id: Uuid, day: CivilDay) -> Resu
         .optional()?;
 
     Ok(found.is_some())
+}
+
+/// Every live entry of one habit between two days, both ends included, oldest first.
+///
+/// Numbers only, and deliberately: the note of a day is never opened here. What reads this is a
+/// streak, a percentage or a heat map, and none of the three looks at a note.
+///
+/// The bound is the contract and not a suggestion. A streak walks four hundred days back and can
+/// be asked to walk one year further; anything wider than the two together is a caller that has
+/// lost track of what it is asking for, and the request arrives from the other side of the
+/// bridge.
+///
+/// # Errors
+///
+/// [`DbError::TooMany`] if the span is wider than [`MAX_WINDOW_DAYS`], and [`DbError::Sqlite`] if
+/// the statement fails.
+pub fn window(
+    connection: &Connection,
+    habit_id: Uuid,
+    from: CivilDay,
+    to: CivilDay,
+) -> Result<Vec<StoredEntry>, DbError> {
+    // A window that ends before it starts is empty, not wrong. A month view asked for a habit
+    // that started yesterday lands here, and answering with an error would make every caller
+    // write the same comparison again before daring to ask.
+    let distance = days_between(from, to);
+    if distance.is_negative() {
+        return Ok(Vec::new());
+    }
+
+    // Not negative, so the conversion has an answer; both ends are included, hence the one.
+    let days = u32::try_from(distance)
+        .unwrap_or(u32::MAX)
+        .saturating_add(1);
+    if days > MAX_WINDOW_DAYS {
+        return Err(DbError::TooMany {
+            what: "the days one window may span",
+            value: u64::from(days),
+            max: u64::from(MAX_WINDOW_DAYS),
+        });
+    }
+
+    entries_between(connection, habit_id, from.as_number(), to.as_number())
+}
+
+/// Every live entry of one habit within one calendar year, oldest first.
+///
+/// One statement. The classification of the calendar — which squares were scheduled, which are
+/// before the habit existed, which have nothing — happens in Rust, over these rows. Working the
+/// day of the week out of a `YYYYMMDD` integer in SQL is string surgery on the indexed column,
+/// and it throws away the very index this query depends on.
+///
+/// # Errors
+///
+/// [`DbError::TooMany`] naming the year when it is outside the range a [`CivilDay`] may hold,
+/// checked before anything is built, and [`DbError::Sqlite`] if the statement fails.
+pub fn year_entries(
+    connection: &Connection,
+    habit_id: Uuid,
+    year: u16,
+) -> Result<Vec<StoredEntry>, DbError> {
+    // Before any statement exists. A year of zero is a sentinel somebody used instead of an
+    // option, and a year of ten thousand does not fit the eight digits a day is stored in.
+    // Asking the database either of them would come back empty, which on a screen reads like a
+    // person with no history rather than like a caller that has lost track of what it is asking.
+    if !(MIN_YEAR..=MAX_YEAR).contains(&year) {
+        return Err(DbError::TooMany {
+            what: "the year asked for",
+            value: u64::from(year),
+            max: u64::from(MAX_YEAR),
+        });
+    }
+
+    // The two extremes of the year in the form the column holds. The first of January and the
+    // thirty-first of December exist in every year, so neither end needs a calendar to build.
+    let year = u32::from(year) * 10_000;
+    entries_between(connection, habit_id, year + 101, year + 1231)
+}
+
+/// The earliest year this habit has a live entry in, if it has any.
+///
+/// What the detail screen needs to know how far back the arrows may go. A `MIN(day)` over the
+/// same index, not a scan.
+///
+/// # Errors
+///
+/// [`DbError::Sqlite`] if the statement fails.
+pub fn first_year_with_data(
+    connection: &Connection,
+    habit_id: Uuid,
+) -> Result<Option<u16>, DbError> {
+    // `MIN` over an empty set is one row holding null rather than no rows at all, so the absence
+    // of any day arrives as the value of the column and not as a missing row.
+    let earliest: Option<u32> = connection
+        .prepare_cached(FIRST_LIVE_DAY)?
+        .query_row(params![habit_id.as_bytes().as_slice()], |row| row.get(0))?;
+
+    earliest
+        .map(|day| {
+            CivilDay::from_number(day)
+                .map(CivilDay::year)
+                .map_err(|_not_a_day| damaged())
+        })
+        .transpose()
+}
+
+/// The one statement that reads the marks of a habit between two days.
+///
+/// A constant rather than a copy in each caller, because the shape of this condition is the shape
+/// the partial index covers, measured rather than assumed, and two copies are two chances for one
+/// of them to drift off the index quietly. The plan tests explain this exact string.
+const ENTRIES_BETWEEN: &str = "SELECT day, amount, target_snapshot
+           FROM habit_entries
+          WHERE habit_id = ?1 AND day BETWEEN ?2 AND ?3 AND deleted = 0
+          ORDER BY day";
+
+/// The statement behind [`first_year_with_data`], kept here for the same reason.
+const FIRST_LIVE_DAY: &str =
+    "SELECT MIN(day) FROM habit_entries WHERE habit_id = ?1 AND deleted = 0";
+
+/// Runs [`ENTRIES_BETWEEN`] with both ends already in the form the column holds.
+///
+/// Takes numbers rather than days because one caller holds a pair of [`CivilDay`] and the other
+/// holds the two extremes of a year, which are the first and the last day of a month in every
+/// year there is and so need no calendar to build.
+fn entries_between(
+    connection: &Connection,
+    habit_id: Uuid,
+    from: u32,
+    to: u32,
+) -> Result<Vec<StoredEntry>, DbError> {
+    let mut statement = connection.prepare_cached(ENTRIES_BETWEEN)?;
+
+    let rows = statement.query_map(params![habit_id.as_bytes().as_slice(), from, to], |row| {
+        let day: u32 = row.get(0)?;
+        let amount: i64 = row.get(1)?;
+        let target_snapshot: Option<i64> = row.get(2)?;
+        Ok((day, amount, target_snapshot))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (day, amount, target_snapshot) = row?;
+        entries.push(StoredEntry {
+            day: CivilDay::from_number(day).map_err(|_not_a_day| damaged())?,
+            amount,
+            target_snapshot,
+        });
+    }
+
+    Ok(entries)
 }
 
 /// One habit exactly as the projection hands it back, before anything in it is checked.
@@ -1032,6 +1215,7 @@ fn damaged() -> DbError {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
+    use cairn_domain::habits::calendar::shift;
     use cairn_domain::{CivilDay, Hlc};
     use uuid::Uuid;
 
@@ -1040,8 +1224,10 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        Habit, MAX_COLOR_LEN, MAX_ICON_LEN, MAX_NAME_LEN, MAX_PAGE, MAX_UNIT_LEN, Mark, NewHabit,
-        archive, count_live, create, delete, get, is_marked, mark, page, reorder, unmark, update,
+        ENTRIES_BETWEEN, FIRST_LIVE_DAY, Habit, MAX_COLOR_LEN, MAX_ICON_LEN, MAX_NAME_LEN,
+        MAX_PAGE, MAX_UNIT_LEN, MAX_WINDOW_DAYS, Mark, NewHabit, StoredEntry, archive, count_live,
+        create, delete, first_year_with_data, get, is_marked, mark, page, reorder, unmark, update,
+        window, year_entries,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -1082,7 +1268,29 @@ mod tests {
             day: a_day(),
             amount,
             note: None,
+            target_snapshot: None,
         }
+    }
+
+    /// A mark on a chosen day, carrying the target that day is judged by.
+    fn a_mark_on(
+        habit_id: Uuid,
+        day: CivilDay,
+        amount: i64,
+        target_snapshot: Option<i64>,
+    ) -> Mark<'static> {
+        Mark {
+            habit_id,
+            day,
+            amount,
+            note: None,
+            target_snapshot,
+        }
+    }
+
+    /// The day `count` days after [`a_day`], which is where every window test measures from.
+    fn day_after(count: i32) -> CivilDay {
+        shift(a_day(), count).expect("a day inside the calendar")
     }
 
     fn a_habit(name: &str) -> NewHabit<'_> {
@@ -1306,6 +1514,9 @@ mod tests {
                     |row| row.get(0),
                 )?;
                 assert_eq!(rows, 2, "marking again did not make a new row");
+
+                let read = window(connection, habit.id, a_day(), a_day())?;
+                assert_eq!(read.len(), 1, "the tombstone came back with the live row");
                 Ok(())
             })
             .expect("a day can be marked again");
@@ -1355,6 +1566,398 @@ mod tests {
                 Ok(())
             })
             .expect("the second mark revises the first");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_target_a_day_was_judged_by_comes_back_with_it() {
+        let scratch = Scratch::new("habits-snapshot-kept");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let counted = create(connection, &codec, device, at(1), NOW_US, a_habit("Nadar"))?;
+                let plain = create(connection, &codec, device, at(2), NOW_US, a_habit("Leer"))?;
+
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(3),
+                    NOW_US,
+                    a_mark_on(counted.id, a_day(), 2_500, Some(2_000)),
+                )?;
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(4),
+                    NOW_US,
+                    a_mark_on(plain.id, a_day(), 1, None),
+                )?;
+
+                assert_eq!(
+                    window(connection, counted.id, a_day(), a_day())?,
+                    vec![StoredEntry {
+                        day: a_day(),
+                        amount: 2_500,
+                        target_snapshot: Some(2_000),
+                    }],
+                    "the target the day was judged by did not survive the round trip"
+                );
+                assert_eq!(
+                    window(connection, plain.id, a_day(), a_day())?,
+                    vec![StoredEntry {
+                        day: a_day(),
+                        amount: 1,
+                        target_snapshot: None,
+                    }],
+                    "a habit that is only done or not invented a target"
+                );
+                Ok(())
+            })
+            .expect("both snapshots come back as they were written");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn correcting_a_day_judges_it_by_todays_target() {
+        // A day corrected today is a day decided today. What must never move is a day nobody
+        // touched, and that is what the second habit in the previous test and the window below
+        // are between them saying.
+        let scratch = Scratch::new("habits-snapshot-replaced");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(connection, &codec, device, at(1), NOW_US, a_habit("Correr"))?;
+
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(2),
+                    NOW_US,
+                    a_mark_on(habit.id, a_day(), 3_000, Some(5_000)),
+                )?;
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(3),
+                    NOW_US + 1,
+                    a_mark_on(habit.id, a_day(), 3_000, Some(10_000)),
+                )?;
+
+                assert_eq!(
+                    window(connection, habit.id, a_day(), a_day())?,
+                    vec![StoredEntry {
+                        day: a_day(),
+                        amount: 3_000,
+                        target_snapshot: Some(10_000),
+                    }],
+                    "the correction did not replace the target on the day it corrected"
+                );
+
+                let live: i64 = connection.query_row(
+                    "SELECT count(*) FROM habit_entries WHERE habit_id = ?1 AND deleted = 0",
+                    [habit.id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(live, 1, "the correction left two live rows on one square");
+                Ok(())
+            })
+            .expect("the second mark replaces the target of the first");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_window_holds_both_ends_and_nothing_outside_them() {
+        let scratch = Scratch::new("habits-window-ends");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(connection, &codec, device, at(1), NOW_US, a_habit("Andar"))?;
+
+                for offset in 0..6_i32 {
+                    mark(
+                        connection,
+                        &codec,
+                        device,
+                        at(10 + u64::try_from(offset).unwrap()),
+                        NOW_US,
+                        a_mark_on(habit.id, day_after(offset), i64::from(offset), None),
+                    )?;
+                }
+
+                let read = window(connection, habit.id, day_after(1), day_after(4))?;
+                let days: Vec<CivilDay> = read.iter().map(|entry| entry.day).collect();
+                assert_eq!(
+                    days,
+                    vec![day_after(1), day_after(2), day_after(3), day_after(4)],
+                    "the window did not include both of its ends, or reached past one"
+                );
+                Ok(())
+            })
+            .expect("the window keeps to its range");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_window_leaves_out_the_days_that_were_unmarked() {
+        let scratch = Scratch::new("habits-window-deleted");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(
+                    connection,
+                    &codec,
+                    device,
+                    at(1),
+                    NOW_US,
+                    a_habit("Estirar"),
+                )?;
+
+                for offset in 0..3_i32 {
+                    mark(
+                        connection,
+                        &codec,
+                        device,
+                        at(10 + u64::try_from(offset).unwrap()),
+                        NOW_US,
+                        a_mark_on(habit.id, day_after(offset), 1, None),
+                    )?;
+                }
+                unmark(connection, at(20), NOW_US + 1, habit.id, day_after(1))?;
+
+                let days: Vec<CivilDay> = window(connection, habit.id, a_day(), day_after(2))?
+                    .iter()
+                    .map(|entry| entry.day)
+                    .collect();
+                assert_eq!(
+                    days,
+                    vec![day_after(0), day_after(2)],
+                    "a tombstone came back as a marked day"
+                );
+                Ok(())
+            })
+            .expect("tombstones stay out of the window");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_window_that_ends_before_it_starts_is_empty_and_not_an_error() {
+        let scratch = Scratch::new("habits-window-backwards");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(connection, &codec, device, at(1), NOW_US, a_habit("Dormir"))?;
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(2),
+                    NOW_US,
+                    a_mark(habit.id, 1),
+                )?;
+
+                assert_eq!(
+                    window(connection, habit.id, day_after(3), a_day())?,
+                    Vec::new(),
+                    "a backwards window answered with something"
+                );
+                Ok(())
+            })
+            .expect("a backwards window is empty");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_window_wider_than_the_ceiling_is_refused_and_the_ceiling_itself_is_not() {
+        let scratch = Scratch::new("habits-window-ceiling");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        // Both ends are included, so the widest accepted window starts one day short of the
+        // ceiling. Asking for one more day than that is the case the bound exists for.
+        let widest = i32::try_from(MAX_WINDOW_DAYS - 1).expect("the ceiling fits in a count");
+
+        database
+            .with(|connection| {
+                let habit = create(
+                    connection,
+                    &codec,
+                    device,
+                    at(1),
+                    NOW_US,
+                    a_habit("Meditar"),
+                )?;
+
+                assert_eq!(
+                    window(connection, habit.id, a_day(), day_after(widest))?,
+                    Vec::new(),
+                    "the widest accepted window was refused"
+                );
+
+                let refused = window(connection, habit.id, a_day(), day_after(widest + 1))
+                    .expect_err("a window one day too wide was accepted");
+                assert!(
+                    matches!(
+                        refused,
+                        DbError::TooMany {
+                            value,
+                            max,
+                            ..
+                        } if value == u64::from(MAX_WINDOW_DAYS) + 1
+                            && max == u64::from(MAX_WINDOW_DAYS)
+                    ),
+                    "{refused:?}"
+                );
+                Ok(())
+            })
+            .expect("the ceiling holds on both sides of itself");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_habit_with_no_marks_has_an_empty_window() {
+        let scratch = Scratch::new("habits-window-empty");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(connection, &codec, device, at(1), NOW_US, a_habit("Pintar"))?;
+
+                assert_eq!(
+                    window(connection, habit.id, a_day(), day_after(30))?,
+                    Vec::new(),
+                    "a habit nobody has marked produced entries"
+                );
+                Ok(())
+            })
+            .expect("an unmarked habit has nothing in its window");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn two_habits_marked_the_same_day_each_see_only_their_own() {
+        let scratch = Scratch::new("habits-window-by-habit");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let first = create(connection, &codec, device, at(1), NOW_US, a_habit("Uno"))?;
+                let second = create(connection, &codec, device, at(2), NOW_US, a_habit("Dos"))?;
+
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(3),
+                    NOW_US,
+                    a_mark_on(first.id, a_day(), 11, Some(100)),
+                )?;
+                mark(
+                    connection,
+                    &codec,
+                    device,
+                    at(4),
+                    NOW_US,
+                    a_mark_on(second.id, a_day(), 22, Some(200)),
+                )?;
+
+                assert_eq!(
+                    window(connection, first.id, a_day(), a_day())?,
+                    vec![StoredEntry {
+                        day: a_day(),
+                        amount: 11,
+                        target_snapshot: Some(100),
+                    }]
+                );
+                assert_eq!(
+                    window(connection, second.id, a_day(), a_day())?,
+                    vec![StoredEntry {
+                        day: a_day(),
+                        amount: 22,
+                        target_snapshot: Some(200),
+                    }]
+                );
+                Ok(())
+            })
+            .expect("each habit sees only its own marks");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn five_hundred_days_come_back_in_order_and_once_each() {
+        let scratch = Scratch::new("habits-window-five-hundred");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = create(connection, &codec, device, at(1), NOW_US, a_habit("Diario"))?;
+
+                for offset in 0..500_i32 {
+                    mark(
+                        connection,
+                        &codec,
+                        device,
+                        at(10 + u64::try_from(offset).unwrap()),
+                        NOW_US,
+                        a_mark_on(habit.id, day_after(offset), i64::from(offset), None),
+                    )?;
+                }
+
+                let read = window(connection, habit.id, a_day(), day_after(499))?;
+                assert_eq!(read.len(), 500, "not every day came back");
+
+                let expected: Vec<CivilDay> = (0..500_i32).map(day_after).collect();
+                let days: Vec<CivilDay> = read.iter().map(|entry| entry.day).collect();
+                assert_eq!(days, expected, "the days came back out of order");
+
+                let distinct: HashSet<CivilDay> = days.iter().copied().collect();
+                assert_eq!(distinct.len(), 500, "a day came back twice");
+                Ok(())
+            })
+            .expect("five hundred days come back whole");
 
         database.close().expect("the connection closes");
     }
@@ -1941,6 +2544,7 @@ mod tests {
                     day: CivilDay::new(2026, 9, day).expect("a day of September that exists"),
                     amount: 1,
                     note: Some(b"cairn-canary-entry"),
+                    target_snapshot: None,
                 },
             )?;
             entries.push(entry);
@@ -2461,6 +3065,450 @@ mod tests {
                 Ok(())
             })
             .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// A day named outright, for the tests that care which year a square falls in.
+    fn day_in(year: u16, month: u8, day: u8) -> CivilDay {
+        CivilDay::new(year, month, day).expect("a day that exists")
+    }
+
+    /// Writes one habit and marks every day it is handed, one reading apart.
+    ///
+    /// The readings have to climb: two rows written under the same one are two rows no merge can
+    /// order, and a helper that reused a reading would hide that from every test using it.
+    fn a_habit_marked_on(
+        connection: &Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+        name: &str,
+        days: &[CivilDay],
+    ) -> Result<Habit, DbError> {
+        let habit = create(connection, codec, device, at(1), NOW_US, a_habit(name))?;
+
+        for (step, day) in days.iter().enumerate() {
+            let step = u64::try_from(step).expect("a test writes a handful of days");
+            mark(
+                connection,
+                codec,
+                device,
+                at(10 + step),
+                NOW_US,
+                a_mark_on(habit.id, *day, 1, None),
+            )?;
+        }
+
+        Ok(habit)
+    }
+
+    /// The `EXPLAIN QUERY PLAN` of a statement, one line per step.
+    ///
+    /// The statement is a constant of this module and never anything a caller supplies, which is
+    /// what makes putting it into the text of another statement acceptable here and nowhere else.
+    fn plan_of(
+        connection: &Connection,
+        statement: &str,
+        parameters: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<String>, DbError> {
+        let mut explained = connection.prepare(&format!("EXPLAIN QUERY PLAN {statement}"))?;
+        let rows = explained.query_map(parameters, |row| row.get::<_, String>(3))?;
+
+        let mut steps = Vec::new();
+        for row in rows {
+            steps.push(row?);
+        }
+
+        Ok(steps)
+    }
+
+    /// The one assertion the three plan tests share.
+    ///
+    /// Both halves matter. Naming the index proves the planner reached for it; refusing a scan of
+    /// the table proves it did not reach for it and then give up, which is what a plan looks like
+    /// when a condition has been reordered into something the partial index no longer covers.
+    fn assert_uses_the_day_index(steps: &[String], what: &str) {
+        let plan = steps.join(" | ");
+        assert!(
+            plan.contains("habit_entries_day_live"),
+            "{what} stopped using the index the schema put there for it: {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN habit_entries"),
+            "{what} fell back to reading the whole table: {plan}"
+        );
+    }
+
+    #[test]
+    fn a_year_brings_back_its_own_days_and_no_others() {
+        let scratch = Scratch::new("habits-year-only-its-own");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Leer",
+                    &[
+                        day_in(2025, 6, 14),
+                        day_in(2025, 12, 31),
+                        day_in(2026, 1, 1),
+                        day_in(2026, 3, 2),
+                    ],
+                )?;
+
+                let days: Vec<CivilDay> = year_entries(connection, habit.id, 2026)?
+                    .iter()
+                    .map(|entry| entry.day)
+                    .collect();
+                assert_eq!(
+                    days,
+                    vec![day_in(2026, 1, 1), day_in(2026, 3, 2)],
+                    "a year reached into the one beside it"
+                );
+                Ok(())
+            })
+            .expect("the year keeps to itself");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_first_and_the_last_day_of_a_year_are_both_inside_it() {
+        let scratch = Scratch::new("habits-year-ends");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Andar",
+                    &[day_in(2026, 1, 1), day_in(2026, 12, 31)],
+                )?;
+
+                let days: Vec<CivilDay> = year_entries(connection, habit.id, 2026)?
+                    .iter()
+                    .map(|entry| entry.day)
+                    .collect();
+                assert_eq!(
+                    days,
+                    vec![day_in(2026, 1, 1), day_in(2026, 12, 31)],
+                    "one of the two ends of the year was left outside it"
+                );
+                Ok(())
+            })
+            .expect("both ends are inside");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_year_the_habit_was_never_marked_in_is_empty() {
+        let scratch = Scratch::new("habits-year-empty");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit =
+                    a_habit_marked_on(connection, &codec, device, "Nadar", &[day_in(2026, 5, 5)])?;
+
+                assert_eq!(
+                    year_entries(connection, habit.id, 2024)?,
+                    Vec::new(),
+                    "an untouched year came back with something in it"
+                );
+                Ok(())
+            })
+            .expect("an empty year is empty");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_day_unmarked_inside_the_year_does_not_come_back() {
+        let scratch = Scratch::new("habits-year-deleted");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Estirar",
+                    &[day_in(2026, 2, 1), day_in(2026, 2, 2), day_in(2026, 2, 3)],
+                )?;
+                unmark(connection, at(50), NOW_US + 1, habit.id, day_in(2026, 2, 2))?;
+
+                let days: Vec<CivilDay> = year_entries(connection, habit.id, 2026)?
+                    .iter()
+                    .map(|entry| entry.day)
+                    .collect();
+                assert_eq!(
+                    days,
+                    vec![day_in(2026, 2, 1), day_in(2026, 2, 3)],
+                    "a tombstone came back as a marked day"
+                );
+                Ok(())
+            })
+            .expect("tombstones stay out of the year");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_habit_with_no_days_has_no_first_year() {
+        let scratch = Scratch::new("habits-first-year-none");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(connection, &codec, device, "Pintar", &[])?;
+
+                assert_eq!(
+                    first_year_with_data(connection, habit.id)?,
+                    None,
+                    "a habit nobody has marked was given a year of history"
+                );
+                Ok(())
+            })
+            .expect("nothing is nothing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_first_year_is_the_earliest_one_holding_a_day() {
+        let scratch = Scratch::new("habits-first-year-earliest");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                // Written newest first on purpose: the answer is the smallest day and not the
+                // first row that was inserted.
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Correr",
+                    &[day_in(2026, 4, 1), day_in(2019, 11, 30)],
+                )?;
+
+                assert_eq!(first_year_with_data(connection, habit.id)?, Some(2019));
+                Ok(())
+            })
+            .expect("the earliest year comes back");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn unmarking_the_only_day_of_the_earliest_year_moves_the_first_year_forward() {
+        let scratch = Scratch::new("habits-first-year-deleted");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Escribir",
+                    &[day_in(2019, 11, 30), day_in(2026, 4, 1)],
+                )?;
+                unmark(
+                    connection,
+                    at(50),
+                    NOW_US + 1,
+                    habit.id,
+                    day_in(2019, 11, 30),
+                )?;
+
+                assert_eq!(
+                    first_year_with_data(connection, habit.id)?,
+                    Some(2026),
+                    "a tombstone still counted as the beginning of the history"
+                );
+                Ok(())
+            })
+            .expect("the first year follows the live days");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_year_outside_the_calendar_is_refused_rather_than_answered_empty() {
+        let scratch = Scratch::new("habits-year-outside");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Meditar",
+                    &[day_in(2026, 7, 7)],
+                )?;
+
+                for year in [0, 10_000] {
+                    let refused = year_entries(connection, habit.id, year).unwrap_err();
+                    assert!(
+                        matches!(
+                            refused,
+                            DbError::TooMany {
+                                what: "the year asked for",
+                                value,
+                                ..
+                            } if value == u64::from(year)
+                        ),
+                        "the year {year} was answered instead of refused"
+                    );
+                }
+                Ok(())
+            })
+            .expect("the check runs");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_year_query_uses_the_day_index() {
+        let scratch = Scratch::new("habits-plan-year");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+
+        database
+            .with(|connection| {
+                let habit_id = Uuid::new_v4();
+                let steps = plan_of(
+                    connection,
+                    ENTRIES_BETWEEN,
+                    rusqlite::params![habit_id.as_bytes().as_slice(), 20_260_101, 20_261_231],
+                )?;
+                assert_uses_the_day_index(&steps, "the query behind a year");
+                Ok(())
+            })
+            .expect("the plan is readable");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_window_query_uses_the_day_index() {
+        // The same statement as the test above, because `window` and `year_entries` run one
+        // statement between them and not two. It is written twice so that splitting them later
+        // leaves a test on each half instead of a test on whichever half kept the constant.
+        let scratch = Scratch::new("habits-plan-window");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+
+        database
+            .with(|connection| {
+                let habit_id = Uuid::new_v4();
+                let steps = plan_of(
+                    connection,
+                    ENTRIES_BETWEEN,
+                    rusqlite::params![
+                        habit_id.as_bytes().as_slice(),
+                        a_day().as_number(),
+                        day_after(30).as_number()
+                    ],
+                )?;
+                assert_uses_the_day_index(&steps, "the query behind a window");
+                Ok(())
+            })
+            .expect("the plan is readable");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_first_year_query_uses_the_day_index() {
+        let scratch = Scratch::new("habits-plan-first-year");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+
+        database
+            .with(|connection| {
+                let habit_id = Uuid::new_v4();
+                let steps = plan_of(
+                    connection,
+                    FIRST_LIVE_DAY,
+                    rusqlite::params![habit_id.as_bytes().as_slice()],
+                )?;
+                assert_uses_the_day_index(&steps, "the query behind the first year");
+                Ok(())
+            })
+            .expect("the plan is readable");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn ten_years_of_days_and_one_year_asked_for_reads_one_year() {
+        const FIRST: u16 = 2017;
+        const YEARS: u16 = 10;
+        const PER_YEAR: usize = 12;
+
+        let scratch = Scratch::new("habits-year-of-ten");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let days: Vec<CivilDay> = (FIRST..FIRST + YEARS)
+                    .flat_map(|year| (1..=12_u8).map(move |month| day_in(year, month, 15)))
+                    .collect();
+                let written = days.len();
+                let habit = a_habit_marked_on(connection, &codec, device, "Tocar", &days)?;
+
+                let read = year_entries(connection, habit.id, 2021)?;
+                assert!(
+                    read.iter().all(|entry| entry.day.year() == 2021),
+                    "a day from another year came back"
+                );
+                // The number of rows this call read, written down rather than left implied: one
+                // year out of the ten in the table, which is the whole point of the index.
+                assert_eq!(read.len(), PER_YEAR, "the year did not come back whole");
+                assert_eq!(
+                    written,
+                    PER_YEAR * usize::from(YEARS),
+                    "the table did not hold the ten years this measurement claims"
+                );
+                Ok(())
+            })
+            .expect("one year out of ten comes back");
 
         database.close().expect("the connection closes");
     }
