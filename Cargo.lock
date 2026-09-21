@@ -290,6 +290,7 @@ dependencies = [
 name = "cairn"
 version = "0.0.1"
 dependencies = [
+ "cairn-clock",
  "cairn-crypto",
  "cairn-db",
  "cairn-domain",

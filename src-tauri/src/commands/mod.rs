@@ -13,6 +13,7 @@
 pub mod app_info;
 pub mod backup;
 pub mod diagnostics;
+pub mod habits;
 pub mod instance;
 pub mod sample;
 pub mod vault;
@@ -26,6 +27,10 @@ pub use backup::{
     PasswordSource,
 };
 pub use diagnostics::{DatabaseStatus, Diagnostics};
+pub use habits::{
+    DayStateDto, FieldProblem, HabitDetail, HabitDraft, HabitFilter, HabitSummary, HabitsError,
+    Listing, StreakDto, WeekProgressDto,
+};
 pub use sample::{KeysetPage, SampleError, SampleHabit, SeedReport, SeededTable};
 pub use vault::{
     ConditionReport, InactivityChoice, KdfReport, StatusInputs, StrengthReport, VaultError,
