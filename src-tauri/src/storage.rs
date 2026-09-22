@@ -14,11 +14,12 @@ use std::sync::Mutex;
 use cairn_crypto::UnlockedVault;
 use cairn_db::backup::swap;
 use cairn_db::codec::FieldCodec;
+use cairn_db::repositories::vault;
 use cairn_db::search::{Results, SearchIndex, Searchable};
 use cairn_db::{
     DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
 };
-use cairn_domain::{Clock, Hlc};
+use cairn_domain::{Clock, Hlc, Timestamp};
 
 /// The database, the identifier of the device that writes to it, and its logical clock.
 #[derive(Debug)]
@@ -73,7 +74,17 @@ impl Storage {
         // After the migrations, because the tables it reads have to exist, and before anything
         // is written, because a clock that starts below what is already in the file would hand
         // out a reading a row already carries.
-        let resumed = database.with(|connection| clock::resume(connection, device))?;
+        let mut resumed = database.with(|connection| clock::resume(connection, device))?;
+
+        // What has run out of its thirty days stops existing here, on the way in, and not on the
+        // way out: closing has to be fast and must never wait on a write, and a machine that is
+        // switched off rather than closed would never sweep at all.
+        //
+        // Before the index is built, so that nothing swept can appear in a search for the rest of
+        // this session. A failure is **not** a failure to unlock: the bin is somebody's own data
+        // and not being able to destroy part of it is no reason to refuse them the rest, so the
+        // outcome is dropped and the next unlock tries again.
+        let _swept = Self::sweep_the_bin(&database, &mut resumed, now_us);
 
         // What the vault cannot search in SQL is opened here, once, while the key is already in
         // hand. A failure is **not** a failure to unlock. Refusing to open the vault because one
@@ -91,6 +102,20 @@ impl Storage {
             schema_version: applied.to,
             clock: Mutex::new(resumed),
             titles: Mutex::new(titles),
+        })
+    }
+
+    /// Destroys what has been in the bin for longer than it may be, in one transaction.
+    ///
+    /// Takes the clock by reference rather than reading one, because this runs before the storage
+    /// exists and the reading it uses has to be the next one this device gives out, not a repeat
+    /// of one already in the file.
+    fn sweep_the_bin(database: &Database, clock: &mut Clock, now_us: i64) -> Result<u32, DbError> {
+        let millis = u64::try_from(Timestamp::from_micros(now_us).as_millis()).unwrap_or(0);
+        let hlc = clock.tick(millis);
+
+        database.in_transaction(|transaction| {
+            vault::empty_bin(transaction, hlc, now_us, vault::Sweep::Expired)
         })
     }
 

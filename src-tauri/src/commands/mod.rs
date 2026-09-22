@@ -33,9 +33,9 @@ pub use habits::{
     Listing, StreakDto, WeekProgressDto,
 };
 pub use passwords::{
-    Cleared, DraftFieldDto, EntryDetail, EntryDraftDto, EntryFilter, EntryKindDto, EntrySummary,
-    FieldDto, FolderDeleted, FolderDto, HistoryItemDto, HistoryScopeDto, PasswordsError,
-    PasswordsSettings, SearchHit, SearchPage, TrashedDto, UrlDto,
+    Cleared, DraftFieldDto, Emptied, EntryDetail, EntryDraftDto, EntryFilter, EntryKindDto,
+    EntrySummary, FieldDto, FolderDeleted, FolderDto, HistoryItemDto, HistoryScopeDto,
+    PasswordsError, PasswordsSettings, SearchHit, SearchPage, TrashedDto, UrlDto,
 };
 pub use sample::{KeysetPage, SampleError, SampleHabit, SeedReport, SeededTable};
 pub use vault::{

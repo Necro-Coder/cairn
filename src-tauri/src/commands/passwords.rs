@@ -26,14 +26,14 @@ use cairn_crypto::constant_time_eq;
 use cairn_db::codec::FieldCodec;
 use cairn_db::repositories::settings;
 use cairn_db::repositories::vault::{
-    self as repository, Entry, HistoryScope, MAX_PAGE, NewEntry, NewField,
+    self as repository, Entry, HistoryScope, MAX_PAGE, NewEntry, NewField, Sweep,
 };
 use cairn_db::search::{Matched, Searchable};
 use cairn_db::{Connection, DbError};
 use cairn_domain::Hlc;
 use cairn_domain::vault::{
     DraftField, EntryDraft, EntryKind, FieldError, FieldKind, Problem, TrashState, ValidEntry,
-    validate_folder_name,
+    trash, validate_folder_name,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -79,6 +79,13 @@ pub enum PasswordsError {
         /// Everything wrong with the draft, one entry per problem.
         problems: Vec<FieldProblem>,
     },
+
+    /// Asked to destroy something that is not in the bin.
+    ///
+    /// Destroying is only reachable from the bin, so that there is no path in this application
+    /// from a list straight to an irreversible deletion.
+    #[error("that entry is not in the bin")]
+    NotInTrash,
 
     /// The order offered is not the set of folders there are.
     #[error("the order was not the whole set")]
@@ -376,6 +383,14 @@ pub struct FolderDeleted {
 pub struct Cleared {
     /// How many old passwords stopped existing.
     pub rows: u32,
+}
+
+/// What emptying the bin destroyed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Emptied {
+    /// How many entries stopped existing.
+    pub entries: u32,
 }
 
 /// Whose history to empty.
@@ -798,6 +813,106 @@ pub fn history_clear(
     })
 }
 
+/// Throws an entry away, or takes it back out, and says what it now is.
+///
+/// Idempotent in both directions. Throwing away something already in the bin leaves the moment it
+/// went in, rather than restarting its thirty days every time somebody clicks twice.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if there is no
+/// such entry, [`PasswordsError::Storage`] if the database refuses.
+pub fn trash(
+    state: &AppState,
+    id: &str,
+    trashed: bool,
+    now: i64,
+) -> Result<EntrySummary, PasswordsError> {
+    let id = parsed(id)?;
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        repository::set_trashed(
+            connection,
+            codec,
+            storage.next_hlc(millis),
+            now,
+            id,
+            trashed,
+        )?;
+
+        // Read afterwards, and through the reader that sees the bin: what the screen needs is
+        // what the entry now is, and the ordinary reader stops seeing it the moment it goes in.
+        let found =
+            repository::any_entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+        let summary = EntrySummary {
+            trashed: trashed_dto(
+                trash::state(now, found.trashed_at, found.deleted),
+                found.trashed_at,
+            ),
+            ..summary_of(&found)
+        };
+
+        // Out of the index on the way in, back into it on the way out. Finding something by
+        // typing its name moments after throwing it away is the opposite of having thrown it away.
+        let update = if trashed {
+            Some((id, None))
+        } else {
+            let addresses = repository::urls(connection, codec, id)?;
+            Some((id, Some(searchable_of_entry(&found, &addresses))))
+        };
+
+        Ok((summary, update))
+    })
+}
+
+/// Destroys an entry that is in the bin, with everything hanging off it.
+///
+/// Refuses anything that is not in the bin. There is no path in this application from a list
+/// straight to an irreversible deletion, not even behind a confirmation: going through the bin
+/// **is** the confirmation, and it lasts thirty days.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if there is no
+/// such entry, [`PasswordsError::NotInTrash`] if it never reached the bin,
+/// [`PasswordsError::Storage`] if the database refuses.
+pub fn delete(state: &AppState, id: &str, now: i64) -> Result<(), PasswordsError> {
+    let id = parsed(id)?;
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        let found =
+            repository::any_entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+        if found.trashed_at.is_none() {
+            return Err(PasswordsError::NotInTrash);
+        }
+
+        repository::delete_entry(connection, storage.next_hlc(millis), now, id)?;
+
+        Ok(((), Some((id, None))))
+    })
+}
+
+/// Destroys everything in the bin, whether or not its thirty days have run out.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::Storage`] if the database
+/// refuses.
+pub fn empty_trash(state: &AppState, now: i64) -> Result<Emptied, PasswordsError> {
+    let millis = now_ms();
+
+    writing(state, |storage, _codec, connection| {
+        let destroyed =
+            repository::empty_bin(connection, storage.next_hlc(millis), now, Sweep::All)?;
+
+        // Nothing to tell the index. Everything the bin held left it when it went in, and an
+        // index built by an unlock never saw what was already in there.
+        Ok((Emptied { entries: destroyed }, None))
+    })
+}
+
 /// Every entry a filter admits, one page at a time.
 ///
 /// # Errors
@@ -1004,6 +1119,55 @@ pub fn passwords_history_clear(
     history_clear(&state, &scope, now_us())
 }
 
+/// Throws an entry away, or takes it back out.
+///
+/// # Errors
+///
+/// See [`trash`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_trash(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    trashed: bool,
+) -> Result<EntrySummary, PasswordsError> {
+    trash(&state, &id, trashed, now_us())
+}
+
+/// Destroys an entry that is in the bin.
+///
+/// # Errors
+///
+/// See [`delete`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), PasswordsError> {
+    delete(&state, &id, now_us())
+}
+
+/// Destroys everything in the bin.
+///
+/// # Errors
+///
+/// See [`empty_trash`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_empty_trash(state: tauri::State<'_, AppState>) -> Result<Emptied, PasswordsError> {
+    empty_trash(&state, now_us())
+}
+
 /// What the search index has to be told after a write, once it is certain the write happened.
 type IndexUpdate = Option<(Uuid, Option<Searchable>)>;
 
@@ -1183,6 +1347,19 @@ fn password_changed(current: Option<&str>, wanted: Option<&str>) -> bool {
         (None, None) => false,
         (Some(_), None) | (None, Some(_)) => true,
         (Some(current), Some(wanted)) => !constant_time_eq(current.as_bytes(), wanted.as_bytes()),
+    }
+}
+
+/// What the index needs to know about an entry that is already in the file.
+fn searchable_of_entry(entry: &Entry, addresses: &[repository::Url]) -> Searchable {
+    Searchable {
+        id: entry.id,
+        title: entry.title.clone(),
+        username: entry.username.clone(),
+        urls: addresses
+            .iter()
+            .map(|address| address.value.clone())
+            .collect(),
     }
 }
 

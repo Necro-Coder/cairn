@@ -1896,9 +1896,23 @@ fn decode_entry(codec: &FieldCodec<'_>, stored: StoredEntry) -> Result<Entry, Db
 
 /// Reads one entry whether or not it is in the bin.
 ///
-/// For the two callers that have to see what is in there: the one that takes something back out,
-/// and the one that reseals a row on its way in. Every other read of this module goes through
-/// [`entry`], which does not.
+/// For the callers that have to see what is in there: the one that takes something back out, the
+/// one that reseals a row on its way in, and the one that has to refuse to destroy something that
+/// never reached the bin. Every ordinary read of this module goes through [`entry`], which does
+/// not see it.
+///
+/// # Errors
+///
+/// [`DbError::Sealed`] if a value does not open, [`DbError::Sqlite`] if the statement fails.
+pub fn any_entry(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    id: Uuid,
+) -> Result<Option<Entry>, DbError> {
+    read_any_entry(connection, codec, id)
+}
+
+/// Reads one entry whether or not it is in the bin.
 fn read_any_entry(
     connection: &Connection,
     codec: &FieldCodec<'_>,
