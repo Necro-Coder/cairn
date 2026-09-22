@@ -245,9 +245,13 @@
           bind:value={form.name}
           aria-describedby={sentencesFor('name').length > 0 ? 'habit-name-problem' : undefined}
         />
-        {#each sentencesFor('name') as said, at (at)}
-          <p class="problem" id="habit-name-problem">{said}</p>
-        {/each}
+        {#if sentencesFor('name').length > 0}
+          <div class="problems" id="habit-name-problem">
+            {#each sentencesFor('name') as said, at (at)}
+              <p class="problem">{said}</p>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <div class="field">
@@ -312,9 +316,13 @@
               ? 'habit-target-problem'
               : undefined}
           />
-          {#each sentencesFor('target') as said, at (at)}
-            <p class="problem" id="habit-target-problem">{said}</p>
-          {/each}
+          {#if sentencesFor('target').length > 0}
+            <div class="problems" id="habit-target-problem">
+              {#each sentencesFor('target') as said, at (at)}
+                <p class="problem">{said}</p>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -501,6 +509,20 @@
   }
 
   /* Under the field it belongs to, never in a column above the form. */
+  /*
+   * One box per field, holding every complaint the core made about it.
+   *
+   * The box exists so that the identifier `aria-describedby` points at is written once. A
+   * field the core objects to twice used to render the same identifier twice, which is an
+   * invalid document and a description that names an element the browser has to pick
+   * between.
+   */
+  .problems {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
   .problem {
     margin: 0;
     color: var(--colour-negative);
