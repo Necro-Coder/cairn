@@ -34,7 +34,7 @@ serde_json = "1.0"
 #
 # `default-features = false` drops the multithreaded encoder, which this never uses: a
 # backup is written once, on request, on a thread of its own already.
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 # Not named by a single line of Rust in this crate, and that is deliberate: declaring it
 # is the only way to pin the exact version of the OpenSSL sources that rusqlite pulls in
