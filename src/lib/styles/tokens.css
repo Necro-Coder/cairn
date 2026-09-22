@@ -180,6 +180,21 @@
   --duration-normal: 160ms;
   --easing: cubic-bezier(0.2, 0, 0.2, 1);
 
+  /*
+   * How long a screen waits before admitting it is waiting.
+   *
+   * The design system asks for a discreet indicator that appears only after 200ms, and the
+   * reason is that against a local database almost everything is instant: an indicator that
+   * flashes for forty milliseconds reads as a fault rather than as progress. It is a token
+   * rather than a number in a component because every screen of every module has to agree
+   * about it — nine of them by the end of phase 07 — and because the one way to find out
+   * whether 200ms is right is to change it in one place and look.
+   *
+   * It is not switched off by reduced motion. It is a delay before something appears, not a
+   * movement, and removing it would make the flash it exists to prevent certain.
+   */
+  --delay-loading: 200ms;
+
   /* ----------------------------------------------------------------------- layout */
   /* The width a column of prose stays readable at. Lists and tables take the width. */
   --measure: 62ch;
