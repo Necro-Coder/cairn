@@ -22,6 +22,8 @@
 //! and will not be, is tags: the tables exist from migration 0003 and nothing reads or writes
 //! them, because the module they were for is not one this product has.
 
+use std::collections::HashMap;
+
 use cairn_domain::vault::{
     EntryKind, MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_FOLDER_NAME_CHARS,
     MAX_URL_CHARS, MAX_URLS, TrashState, trash, validate_folder_name,
@@ -35,6 +37,7 @@ use crate::codec::{FieldCodec, RowKey, SealedColumns};
 use crate::device::DeviceId;
 use crate::error::DbError;
 use crate::row::{RowStamp, StoredStamp, sixteen};
+use crate::search::Searchable;
 
 /// The table entries live in.
 pub const ENTRIES_TABLE: &str = "vault_entries";
@@ -278,18 +281,18 @@ pub fn entries(
         .collect()
 }
 
-/// Every live title, and whether that is all of them.
+/// Everything about every live entry that can be searched, and whether that is all of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Titles {
-    /// The identifier of each live entry beside its opened title, in clock order.
-    pub entries: Vec<(Uuid, Zeroizing<String>)>,
+pub struct Searchables {
+    /// One per live entry, in clock order.
+    pub entries: Vec<Searchable>,
     /// `false` if the file holds more than [`MAX_TITLES`] live entries and the rest were left
     /// unread, which is a search that cannot find them and has to be said out loud rather than
     /// discovered.
     pub complete: bool,
 }
 
-/// The most titles the in-memory index will hold.
+/// The most entries the in-memory index will hold.
 ///
 /// A hundred thousand. The index is the only way this module can be searched at all, so a
 /// ceiling here is a ceiling on searching, and it is set far above what a person accumulates in
@@ -297,10 +300,12 @@ pub struct Titles {
 /// are decided by the size of the file rather than by this program.
 pub const MAX_TITLES: usize = 100_000;
 
-/// Every live entry's identifier and title, for the index that is held in memory.
+/// Everything searchable about every live entry, for the index that is held in memory.
 ///
-/// Reads and opens the title alone. The other three sealed columns of an entry are not touched,
-/// so building the index never brings a password into the process.
+/// Opens the title, the user name and the addresses. Not the notes, not the password and not the
+/// value of any custom field: the notes are the longest and the most revealing thing an entry
+/// holds, and keeping every one of them open so that somebody can search inside them would
+/// multiply what a memory dump of this process shows.
 ///
 /// Answers whether it read everything: `false` means the file holds more than [`MAX_TITLES`]
 /// live entries and the rest were not read, which is a search that cannot find them and has to
@@ -308,11 +313,11 @@ pub const MAX_TITLES: usize = 100_000;
 ///
 /// # Errors
 ///
-/// Returns [`DbError::Sealed`] if a title does not open, and [`DbError::Sqlite`] if the
-/// statement fails.
-pub fn titles(connection: &Connection, codec: &FieldCodec<'_>) -> Result<Titles, DbError> {
+/// Returns [`DbError::Sealed`] if a value does not open, and [`DbError::Sqlite`] if a statement
+/// fails.
+pub fn searchable(connection: &Connection, codec: &FieldCodec<'_>) -> Result<Searchables, DbError> {
     let mut statement = connection.prepare_cached(&format!(
-        "SELECT id, rev, title FROM vault_entries
+        "SELECT id, rev, title, username FROM vault_entries
               WHERE deleted = 0 {NOT_IN_THE_BIN}
               ORDER BY hlc LIMIT ?1"
     ))?;
@@ -326,28 +331,70 @@ pub fn titles(connection: &Connection, codec: &FieldCodec<'_>) -> Result<Titles,
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let complete = rows.len() <= MAX_TITLES;
-    let mut titles = Vec::with_capacity(rows.len().min(MAX_TITLES));
-    for (id, rev, title) in rows.into_iter().take(MAX_TITLES) {
-        let id = Uuid::from_bytes(sixteen(&id)?);
-        let rev = Rev::from_number(u64::try_from(rev).map_err(|_negative| damaged())?);
-        let row = RowKey {
-            table: ENTRIES_TABLE,
-            row_id: id,
-            rev,
-        };
-        let title = open_optional(codec, row, "title", title)?.ok_or_else(damaged)?;
-        titles.push((id, title));
+    let mut addresses = searchable_urls(connection, codec)?;
+    let mut listed = Vec::with_capacity(rows.len().min(MAX_TITLES));
+
+    for (id, rev, title, username) in rows.into_iter().take(MAX_TITLES) {
+        let row = child_row(ENTRIES_TABLE, &id, rev)?;
+        listed.push(Searchable {
+            id: row.row_id,
+            title: open_optional(codec, row, "title", title)?.ok_or_else(damaged)?,
+            username: open_optional(codec, row, "username", username)?,
+            urls: addresses.remove(&row.row_id).unwrap_or_default(),
+        });
     }
 
-    Ok(Titles {
-        entries: titles,
+    Ok(Searchables {
+        entries: listed,
         complete,
     })
+}
+
+/// Every address of every live entry, grouped by the entry it belongs to.
+///
+/// One statement rather than one per entry. A hundred thousand entries would otherwise be a
+/// hundred thousand statements on the unlock, which is the difference between a second and a
+/// minute.
+fn searchable_urls(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+) -> Result<HashMap<Uuid, Vec<Zeroizing<String>>>, DbError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT u.id, u.rev, u.entry_id, u.value
+           FROM vault_urls u
+           JOIN vault_entries e ON e.id = u.entry_id
+          WHERE u.deleted = 0 AND e.deleted = 0 AND e.trashed_at IS NULL
+          ORDER BY u.entry_id, u.position, u.id",
+    )?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut grouped: HashMap<Uuid, Vec<Zeroizing<String>>> = HashMap::new();
+    for (id, rev, entry_id, value) in rows {
+        let row = child_row(URLS_TABLE, &id, rev)?;
+        let value = open_optional(codec, row, "value", value)?.ok_or_else(damaged)?;
+        grouped
+            .entry(Uuid::from_bytes(sixteen(&entry_id)?))
+            .or_default()
+            .push(value);
+    }
+
+    Ok(grouped)
 }
 
 /// Replaces the password of an entry, keeping the old one in the history.
@@ -1966,7 +2013,7 @@ mod tests {
         HistoryScope, MAX_HISTORY, NewEntry, NewField, Sweep, clear_history, create_entry,
         delete_entry, delete_folder, empty_bin, entries, entry, fields, folders, history_len,
         history_moments, history_password, reorder_folders, replace_fields, replace_password,
-        replace_urls, save_folder, set_trashed, titles, trashed, urls,
+        replace_urls, save_folder, searchable, set_trashed, trashed, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -3727,7 +3774,7 @@ mod tests {
 
                 assert_eq!(entry(connection, &codec, id)?, None, "it is still on show");
                 assert!(entries(connection, &codec, None, 10)?.is_empty());
-                assert!(titles(connection, &codec)?.entries.is_empty());
+                assert!(searchable(connection, &codec)?.entries.is_empty());
 
                 let bin = trashed(connection, &codec, NOW_US + 2, 10)?;
                 assert_eq!(bin.len(), 1);

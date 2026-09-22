@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use cairn_crypto::UnlockedVault;
 use cairn_db::backup::swap;
 use cairn_db::codec::FieldCodec;
-use cairn_db::search::{Match, TitleIndex};
+use cairn_db::search::{Results, SearchIndex};
 use cairn_db::{
     DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
 };
@@ -38,7 +38,7 @@ pub struct Storage {
     /// The one piece of plaintext this application keeps outside a single call, and it is here
     /// rather than beside the window for exactly that reason: this is what the lock destroys.
     /// Behind a lock of its own so a search does not wait on a write.
-    titles: Mutex<TitleIndex>,
+    titles: Mutex<SearchIndex>,
 }
 
 impl Storage {
@@ -79,7 +79,7 @@ impl Storage {
         // once, while the key is already in hand. A failure to open one is a failure to unlock:
         // an application that opened with a search that silently finds nothing is worse than one
         // that says the file is damaged.
-        let mut titles = TitleIndex::empty();
+        let mut titles = SearchIndex::empty();
         let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
         database.with(|connection| titles.build(connection, &codec))?;
 
@@ -92,13 +92,13 @@ impl Storage {
         })
     }
 
-    /// The entries whose title contains what was typed.
+    /// One page of the entries whose title, user name or address contains what was typed.
     ///
     /// Reads the index rather than the file. Nothing is decrypted here, because everything this
     /// answers with was decrypted once, on the unlock.
     #[must_use]
-    pub fn search_titles(&self, needle: &str) -> Vec<Match> {
-        self.with_titles(|index| index.matches(needle))
+    pub fn search_entries(&self, needle: &str, page: u16) -> Results {
+        self.with_titles(|index| index.search(needle, page))
     }
 
     /// Opens every live title again, replacing what the index held.
@@ -130,7 +130,7 @@ impl Storage {
     /// A panic elsewhere must not turn the search into a permanent failure, and there is no
     /// invariant to protect: the worst a half written index can be is out of date, and the next
     /// rebuild replaces it.
-    fn with_titles<T>(&self, work: impl FnOnce(&mut TitleIndex) -> T) -> T {
+    fn with_titles<T>(&self, work: impl FnOnce(&mut SearchIndex) -> T) -> T {
         let mut index = match self.titles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -204,7 +204,7 @@ impl Storage {
         // Before the file, and whether or not the file agrees to close. The index is plaintext,
         // and a database that refuses to let go is no reason to leave every title of the vault
         // readable in this process.
-        self.with_titles(TitleIndex::clear);
+        self.with_titles(SearchIndex::clear);
 
         self.database.close()
     }
@@ -243,7 +243,7 @@ impl Storage {
 
         // Before the connection goes anywhere. The index is plaintext and it is about to be
         // wrong in any case, because the rows it was built from are being replaced.
-        self.with_titles(TitleIndex::clear);
+        self.with_titles(SearchIndex::clear);
 
         match swap::swap_in(self.database, staging, safety_copy) {
             Ok(_swapped) => {
