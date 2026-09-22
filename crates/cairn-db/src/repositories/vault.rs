@@ -441,19 +441,40 @@ pub fn history_len(connection: &Connection, entry_id: Uuid) -> Result<usize, DbE
     Ok(usize::try_from(counted).unwrap_or(0))
 }
 
-/// The old passwords of an entry, newest first.
+/// One row of the history, without the password in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryMoment {
+    /// The row's identifier, which is what asking for one of them takes.
+    pub id: Uuid,
+    /// When the password it holds stopped being the current one, in microseconds.
+    pub replaced_at: i64,
+}
+
+/// Whose history to empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryScope {
+    /// One entry's.
+    Entry(Uuid),
+    /// Every entry's, which is the button in the settings screen.
+    All,
+}
+
+/// When each password of an entry was replaced, newest first. No passwords.
+///
+/// What the history screen is drawn from. A moment and an identifier are enough to list them and
+/// to ask for one; the values stay where they are until somebody asks for one by name. The whole
+/// point is what this does not take: there is no codec here, so however this function is called
+/// and whatever is wrong inside it, it cannot hand back a password.
 ///
 /// # Errors
 ///
-/// Returns [`DbError::Sealed`] if a row does not decode, and [`DbError::Sqlite`] if the statement
-/// fails.
-pub fn history(
+/// Returns [`DbError::Sqlite`] if the statement fails.
+pub fn history_moments(
     connection: &Connection,
-    codec: &FieldCodec<'_>,
     entry_id: Uuid,
-) -> Result<Vec<Zeroizing<String>>, DbError> {
+) -> Result<Vec<HistoryMoment>, DbError> {
     let mut statement = connection.prepare_cached(
-        "SELECT id, rev, password FROM vault_password_history
+        "SELECT id, replaced_at FROM vault_password_history
           WHERE entry_id = ?1 AND deleted = 0
           ORDER BY replaced_at DESC, id DESC
           LIMIT ?2",
@@ -465,38 +486,103 @@ pub fn history(
                 entry_id.as_bytes().as_slice(),
                 i64::try_from(MAX_HISTORY).unwrap_or(i64::MAX)
             ],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<Vec<u8>>>(2)?,
-                ))
-            },
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut passwords = Vec::with_capacity(rows.len());
-    for (id, rev, stored) in rows {
-        let Some(bytes) = stored else {
-            // A trimmed row that has not been compacted away yet. It is a tombstone with its
-            // ciphertext emptied, which is the state this module puts them in on purpose, and it
-            // has nothing to hand back.
-            continue;
-        };
-        let id = Uuid::from_bytes(sixteen(&id)?);
-        let rev = Rev::from_number(u64::try_from(rev).map_err(|_negative| damaged())?);
-        passwords.push(codec.open_text(
-            RowKey {
-                table: HISTORY_TABLE,
-                row_id: id,
-                rev,
-            },
-            "password",
-            &bytes,
-        )?);
-    }
+    rows.into_iter()
+        .map(|(id, replaced_at)| {
+            Ok(HistoryMoment {
+                id: Uuid::from_bytes(sixteen(&id)?),
+                replaced_at,
+            })
+        })
+        .collect()
+}
 
-    Ok(passwords)
+/// One old password, by the identifier a moment carried.
+///
+/// Checks that the row belongs to the entry named, and checks it in the `WHERE` rather than
+/// afterwards. Filtering in Rust what could have been filtered in SQL means the row was read and
+/// decrypted before anybody asked whether the caller was entitled to it.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if there is no live row with that identifier under that entry,
+/// [`DbError::Sealed`] if it does not open, [`DbError::Sqlite`].
+pub fn history_password(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    entry_id: Uuid,
+    history_id: Uuid,
+) -> Result<Zeroizing<String>, DbError> {
+    let found: Option<(i64, Option<Vec<u8>>)> = connection
+        .prepare_cached(
+            "SELECT rev, password FROM vault_password_history
+              WHERE id = ?1 AND entry_id = ?2 AND deleted = 0
+              LIMIT 1",
+        )?
+        .query_row(
+            params![
+                history_id.as_bytes().as_slice(),
+                entry_id.as_bytes().as_slice()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    // A row with no ciphertext is one the cap trimmed. It is a tombstone that has not been
+    // compacted away yet and there is nothing inside it, so it is the same answer as a row that
+    // is not there.
+    let (rev, Some(stored)) = found.ok_or(DbError::NotFound)? else {
+        return Err(DbError::NotFound);
+    };
+
+    codec.open_text(
+        child_row(HISTORY_TABLE, history_id.as_bytes(), rev)?,
+        "password",
+        &stored,
+    )
+}
+
+/// Empties the history of one entry, or of every entry.
+///
+/// Marks the rows deleted and empties their ciphertext, which is what every deletion in this
+/// schema does and what makes this an actual erasure rather than a hidden list.
+///
+/// # Errors
+///
+/// [`DbError::Sqlite`].
+pub fn clear_history(
+    connection: &Connection,
+    hlc: Hlc,
+    now_us: i64,
+    scope: HistoryScope,
+) -> Result<u32, DbError> {
+    // One statement either way. A loop over entries would run the same update once per entry to
+    // reach exactly the rows this reaches in one pass.
+    let cleared = match scope {
+        HistoryScope::Entry(entry_id) => connection
+            .prepare_cached(
+                "UPDATE vault_password_history
+                    SET deleted = 1, updated_at = ?2, hlc = ?3, rev = rev + 1, password = NULL
+                  WHERE entry_id = ?1 AND deleted = 0",
+            )?
+            .execute(params![
+                entry_id.as_bytes().as_slice(),
+                now_us,
+                hlc.to_bytes().as_slice(),
+            ])?,
+        HistoryScope::All => connection
+            .prepare_cached(
+                "UPDATE vault_password_history
+                    SET deleted = 1, updated_at = ?1, hlc = ?2, rev = rev + 1, password = NULL
+                  WHERE deleted = 0",
+            )?
+            .execute(params![now_us, hlc.to_bytes().as_slice()])?,
+    };
+
+    Ok(u32::try_from(cleared).unwrap_or(u32::MAX))
 }
 
 /// One address of an entry.
@@ -1610,9 +1696,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Entry, MAX_HISTORY, NewEntry, NewField, Sweep, create_entry, create_folder, delete_entry,
-        empty_bin, entries, entry, fields, history, history_len, replace_fields, replace_password,
-        replace_urls, set_trashed, titles, trashed, urls,
+        HistoryScope, MAX_HISTORY, NewEntry, NewField, Sweep, clear_history, create_entry,
+        create_folder, delete_entry, empty_bin, entries, entry, fields, history_len,
+        history_moments, history_password, replace_fields, replace_password, replace_urls,
+        set_trashed, titles, trashed, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -1653,7 +1740,7 @@ mod tests {
         hlc: Hlc,
         now_us: i64,
         entry: NewEntry<'_>,
-    ) -> Result<Entry, DbError> {
+    ) -> Result<super::Entry, DbError> {
         create_entry(
             connection,
             codec,
@@ -1794,9 +1881,13 @@ mod tests {
                 assert_eq!(read.title.as_str(), "Banco");
                 assert_eq!(read.notes.as_deref().map(String::as_str), Some("una nota"));
 
-                let kept = history(connection, &codec, written.id)?;
+                let kept = history_moments(connection, written.id)?;
                 assert_eq!(kept.len(), 1);
-                assert_eq!(kept.first().map(|old| old.as_str()), Some("contraseña-uno"));
+                let was = kept.first().map(|moment| moment.id).expect("one moment");
+                assert_eq!(
+                    history_password(connection, &codec, written.id, was)?.as_str(),
+                    "contraseña-uno"
+                );
                 Ok(())
             })
             .expect("the replacement works");
@@ -1833,7 +1924,7 @@ mod tests {
                 }
 
                 assert_eq!(history_len(connection, written.id)?, MAX_HISTORY);
-                assert_eq!(history(connection, &codec, written.id)?.len(), MAX_HISTORY);
+                assert_eq!(history_moments(connection, written.id)?.len(), MAX_HISTORY);
 
                 let (trimmed, with_content): (i64, i64) = connection.query_row(
                     "SELECT count(*), count(password) FROM vault_password_history
@@ -2689,6 +2780,219 @@ mod tests {
                 Ok(())
             })
             .expect("nothing is rewritten on the way through");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// An entry whose password has been replaced that many times.
+    fn with_replacements(
+        connection: &rusqlite::Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+        title: &str,
+        times: u64,
+    ) -> Result<Uuid, DbError> {
+        let written = an_account(connection, codec, device, at(1), NOW_US, an_entry(title))?;
+        for step in 1..=times {
+            replace_password(
+                connection,
+                codec,
+                device,
+                at(step + 1),
+                NOW_US + i64::try_from(step).unwrap_or(0),
+                written.id,
+                &format!("contraseña-{step}"),
+            )?;
+        }
+
+        Ok(written.id)
+    }
+
+    #[test]
+    fn the_history_lists_moments_and_never_a_password() {
+        let bench = Bench::new("vault-history-moments");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let bare = an_account(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Sin historial"),
+                )?;
+                assert!(history_moments(connection, bare.id)?.is_empty());
+
+                let id = with_replacements(connection, &codec, bench.device, "Banco", 3)?;
+                let moments = history_moments(connection, id)?;
+                assert_eq!(moments.len(), 3);
+
+                // Newest first, which is the order the screen draws them in.
+                let times: Vec<i64> = moments.iter().map(|moment| moment.replaced_at).collect();
+                let mut sorted = times.clone();
+                sorted.sort_unstable_by(|left, right| right.cmp(left));
+                assert_eq!(times, sorted);
+
+                // The type carries an identifier and a moment, and there is nowhere in it for a
+                // password to be. The assertion is the field list itself.
+                for moment in &moments {
+                    let super::HistoryMoment { id, replaced_at } = *moment;
+                    assert_ne!(id, Uuid::nil());
+                    assert!(replaced_at > 0);
+                }
+                Ok(())
+            })
+            .expect("the moments read");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn eleven_replacements_leave_ten_moments_and_the_oldest_with_nothing_in_it() {
+        let bench = Bench::new("vault-history-cap-moments");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = with_replacements(connection, &codec, bench.device, "Banco", 11)?;
+
+                assert_eq!(history_len(connection, id)?, MAX_HISTORY);
+                assert_eq!(history_moments(connection, id)?.len(), MAX_HISTORY);
+
+                let (trimmed, with_content): (i64, i64) = connection.query_row(
+                    "SELECT count(*), count(password) FROM vault_password_history
+                      WHERE entry_id = ?1 AND deleted = 1",
+                    [id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert!(trimmed > 0, "nothing was trimmed");
+                assert_eq!(with_content, 0, "a trimmed password kept its ciphertext");
+                Ok(())
+            })
+            .expect("the cap still holds");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn one_old_password_is_handed_over_and_only_to_the_entry_it_belongs_to() {
+        let bench = Bench::new("vault-history-one");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let mine = with_replacements(connection, &codec, bench.device, "Mía", 2)?;
+                let theirs = an_account(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(50),
+                    NOW_US,
+                    an_entry("Ajena"),
+                )?;
+
+                let moments = history_moments(connection, mine)?;
+                let newest = moments
+                    .first()
+                    .map(|moment| moment.id)
+                    .expect("two moments");
+                assert_eq!(
+                    history_password(connection, &codec, mine, newest)?.as_str(),
+                    "contraseña-1"
+                );
+
+                // The identifier is real and the entry is not. Checked in the statement, so the
+                // row is never read, let alone decrypted.
+                let stolen = history_password(connection, &codec, theirs.id, newest)
+                    .expect_err("one entry read another's history");
+                assert!(matches!(stolen, DbError::NotFound));
+
+                let invented =
+                    history_password(connection, &codec, mine, Uuid::from_bytes([9; 16]))
+                        .expect_err("an invented identifier was accepted");
+                assert!(matches!(invented, DbError::NotFound));
+                Ok(())
+            })
+            .expect("only the right entry's history is readable");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_trimmed_row_is_the_same_answer_as_a_row_that_is_not_there() {
+        let bench = Bench::new("vault-history-trimmed");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = with_replacements(connection, &codec, bench.device, "Banco", 3)?;
+                let oldest = history_moments(connection, id)?
+                    .last()
+                    .map(|moment| moment.id)
+                    .expect("three moments");
+
+                // What the cap does to the oldest row, done here by hand so the test does not
+                // need eleven replacements to reach the same state.
+                connection.execute(
+                    "UPDATE vault_password_history SET deleted = 1, password = NULL WHERE id = ?1",
+                    [oldest.as_bytes().as_slice()],
+                )?;
+
+                let gone = history_password(connection, &codec, id, oldest)
+                    .expect_err("a trimmed row handed something back");
+                assert!(matches!(gone, DbError::NotFound));
+                Ok(())
+            })
+            .expect("a trimmed row holds nothing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn emptying_a_history_leaves_the_rows_without_their_ciphertext() {
+        let bench = Bench::new("vault-history-clear");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let mine = with_replacements(connection, &codec, bench.device, "Mía", 3)?;
+                let theirs = with_replacements(connection, &codec, bench.device, "Ajena", 2)?;
+
+                assert_eq!(
+                    clear_history(connection, at(60), NOW_US + 100, HistoryScope::Entry(mine))?,
+                    3
+                );
+                assert!(history_moments(connection, mine)?.is_empty());
+                assert_eq!(history_moments(connection, theirs)?.len(), 2);
+
+                let left: i64 = connection.query_row(
+                    "SELECT count(password) FROM vault_password_history WHERE entry_id = ?1",
+                    [mine.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(left, 0, "an emptied history kept a password");
+
+                assert_eq!(
+                    clear_history(connection, at(61), NOW_US + 101, HistoryScope::All)?,
+                    2
+                );
+                assert!(history_moments(connection, theirs)?.is_empty());
+
+                // And on nothing at all, which is the ordinary state of the button.
+                assert_eq!(
+                    clear_history(connection, at(62), NOW_US + 102, HistoryScope::All)?,
+                    0
+                );
+                Ok(())
+            })
+            .expect("the history empties");
 
         database.close().expect("the connection closes");
     }
