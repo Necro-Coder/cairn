@@ -306,6 +306,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-clock"
+version = "0.0.1"
+dependencies = [
+ "cairn-domain",
+ "jiff",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "cairn-crypto"
 version = "0.0.1"
 dependencies = [
@@ -347,6 +356,7 @@ name = "cairn-domain"
 version = "0.0.1"
 dependencies = [
  "cairn-crypto",
+ "jiff",
  "proptest",
  "thiserror 2.0.20",
  "trybuild",

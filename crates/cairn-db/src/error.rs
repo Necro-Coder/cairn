@@ -121,6 +121,18 @@ pub enum DbError {
     #[error("there is no such row")]
     NotFound,
 
+    /// The list offered to a reordering is not the set of rows it has to order.
+    ///
+    /// One variant for four different mistakes — one identifier missing, one repeated, one that
+    /// belongs to nothing in this file, one that is archived and therefore not in the set — and
+    /// deliberately so. From here they are all the same mistake: whoever asked does not hold the
+    /// set this database holds, and a partial list cannot tell a row that moved from a row that
+    /// a bug on the other side of the bridge dropped. Saying which of the four it was would
+    /// invite a caller to patch up the list it has instead of asking again for the one that is
+    /// true, and a list patched up in a WebView is exactly how a row silently loses its place.
+    #[error("the order offered is not the set of rows to order")]
+    IncompleteOrder,
+
     /// The file offered to an import does not begin the way a backup of ours begins.
     ///
     /// The first of the four things an import may say. There are four and there will not be

@@ -312,6 +312,7 @@ jobs:
           cargo build --locked --lib --target aarch64-apple-ios ${{ steps.profile.outputs.flag }} \
             -p cairn-crypto \
             -p cairn-domain \
+            -p cairn-clock \
             -p cairn-db \
             -p cairn-sync \
             -p cairn-platform
@@ -385,6 +386,7 @@ jobs:
           offenders=$(grep -rln --include='*.rs' -E '(^|[^_[:alnum:]])unsafe[[:space:]]' \
             crates/cairn-crypto/src \
             crates/cairn-domain/src \
+            crates/cairn-clock/src \
             crates/cairn-db/src \
             crates/cairn-sync/src \
             src-tauri/src || true)

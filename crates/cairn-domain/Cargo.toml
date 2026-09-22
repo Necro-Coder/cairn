@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 cairn-crypto.workspace = true
+jiff.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

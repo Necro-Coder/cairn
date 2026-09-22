@@ -72,6 +72,12 @@ pub const MIGRATIONS: &[Migration] = &[
         up: include_str!("sql/0005_audit.sql"),
         down: include_str!("sql/0005_audit.down.sql"),
     },
+    Migration {
+        version: 6,
+        name: "habit_period_and_snapshot",
+        up: include_str!("sql/0006_habit_period_and_snapshot.sql"),
+        down: include_str!("sql/0006_habit_period_and_snapshot.down.sql"),
+    },
 ];
 
 /// Every table of user data a fully migrated database has, in the order they were created in.
@@ -692,6 +698,314 @@ mod tests {
             Database::open(&scratch.database_path(), &vault.database_key()).expect("a new file");
 
         assert_eq!(database.with(applied_version).expect("the ledger reads"), 0);
+
+        database.close().expect("the connection closes");
+    }
+
+    /// One habit and one day marked against it, written straight into the tables.
+    ///
+    /// Through SQL rather than through a repository, because what is being checked here is the
+    /// shape of the schema rather than the code that will later read it, and because no
+    /// repository knows the two columns migration 0006 adds yet.
+    ///
+    /// The identifiers are written out as literals rather than built into the statement, so that
+    /// nothing in this fixture is a statement assembled out of a value.
+    fn seed_a_habit_and_a_day(database: &Database) {
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO habits
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          name, kind, schedule_mask, target_per_period, aggregation, direction,
+                          started_on, position)
+                     VALUES
+                         (x'0102030405060708090a0b0c0d0e0f10', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'22222222222222222222222222222222', 0,
+                          'beber agua', 1, 127, 8, 0, 0, 20250101, 3);
+
+                     INSERT INTO habit_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          habit_id, day, amount)
+                     VALUES
+                         (x'1112131415161718191a1b1c1d1e1f20', 3, 4,
+                          x'11111111111111111111111111111111', 0,
+                          x'33333333333333333333333333333333', 0,
+                          x'0102030405060708090a0b0c0d0e0f10', 20250105, 6);",
+                )?;
+                Ok(())
+            })
+            .expect("the seed rows can be written");
+    }
+
+    /// What the seeded rows say in the columns migration 0006 does not touch.
+    fn seeded_values(database: &Database) -> (String, i64, i64, i64, i64) {
+        database
+            .with(|connection| {
+                let habit = connection.query_row(
+                    "SELECT name, target_per_period, started_on FROM habits",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )?;
+                let entry =
+                    connection.query_row("SELECT day, amount FROM habit_entries", [], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    })?;
+
+                Ok((habit.0, habit.1, habit.2, entry.0, entry.1))
+            })
+            .expect("the seeded rows can be read")
+    }
+
+    /// The columns of a table, as SQLite itself reports them.
+    fn columns(database: &Database, table: &str) -> Vec<String> {
+        database
+            .with(|connection| {
+                let mut statement =
+                    connection.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY name")?;
+                let names = statement
+                    .query_map([table], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<String>, _>>()?;
+                Ok(names)
+            })
+            .expect("the columns can be listed")
+    }
+
+    /// The indexes this schema created on a table, by name.
+    fn indexes(database: &Database, table: &str) -> Vec<String> {
+        database
+            .with(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT name FROM sqlite_schema
+                     WHERE type = 'index' AND tbl_name = ?1 AND name NOT LIKE 'sqlite_%'
+                     ORDER BY name",
+                )?;
+                let names = statement
+                    .query_map([table], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<String>, _>>()?;
+                Ok(names)
+            })
+            .expect("the indexes can be listed")
+    }
+
+    /// The SQLite message behind a refusal, or a failure naming what came instead.
+    fn refusal(produced: DbError) -> String {
+        match produced {
+            DbError::Sqlite(cause) => cause.to_string(),
+            other => panic!("the statement failed for a reason other than SQLite: {other}"),
+        }
+    }
+
+    /// A migrated database with one habit and one marked day in it.
+    fn a_seeded_database(label: &str) -> (Scratch, Database) {
+        let scratch = Scratch::new(label);
+        let vault = an_open_vault();
+        let database =
+            Database::open(&scratch.database_path(), &vault.database_key()).expect("a new file");
+        apply_all(&database, NOW_US).expect("the migrations apply");
+        seed_a_habit_and_a_day(&database);
+
+        (scratch, database)
+    }
+
+    #[test]
+    fn applying_0006_reverting_it_and_applying_it_again_keeps_the_rows_of_both_tables() {
+        let (_scratch, database) = a_seeded_database("migrate-0006-round-trip");
+        let before = seeded_values(&database);
+
+        assert_eq!(
+            revert_to(&database, 5).expect("migration 0006 reverts"),
+            vec![6],
+            "reverting to 5 did not run exactly the sixth reverse script"
+        );
+        let applied = apply_all(&database, NOW_US).expect("migration 0006 applies again");
+        assert_eq!(applied.versions, vec![6]);
+
+        assert_eq!(
+            seeded_values(&database),
+            before,
+            "a value in a column the migration does not touch changed across the round trip"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn reverting_0006_takes_both_columns_away() {
+        let (_scratch, database) = a_seeded_database("migrate-0006-columns-gone");
+
+        assert!(
+            columns(&database, "habits").contains(&"period".to_owned()),
+            "the forward script did not add the column the reverse is about to remove"
+        );
+        assert!(
+            columns(&database, "habit_entries").contains(&"target_snapshot".to_owned()),
+            "the forward script did not add the column the reverse is about to remove"
+        );
+
+        revert_to(&database, 5).expect("migration 0006 reverts");
+
+        assert!(
+            !columns(&database, "habits").contains(&"period".to_owned()),
+            "`period` survived the reverse script"
+        );
+        assert!(
+            !columns(&database, "habit_entries").contains(&"target_snapshot".to_owned()),
+            "`target_snapshot` survived the reverse script"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_habit_that_existed_before_0006_is_daily_once_it_is_applied_again() {
+        // The default is what every habit written before this migration becomes, and daily is
+        // what all of them were already being judged as while no column said otherwise.
+        let (_scratch, database) = a_seeded_database("migrate-0006-default");
+
+        revert_to(&database, 5).expect("migration 0006 reverts");
+        apply_all(&database, NOW_US).expect("migration 0006 applies again");
+
+        let period: i64 = database
+            .with(|connection| {
+                Ok(connection.query_row("SELECT period FROM habits", [], |row| row.get(0))?)
+            })
+            .expect("the column can be read");
+
+        assert_eq!(period, 0, "an existing habit did not come back daily");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_period_that_is_neither_daily_nor_weekly_is_refused_by_the_schema() {
+        // The check is the whole reason the column is an integer: a monthly habit is impossible
+        // here rather than something whoever reads the row has to remember to reject.
+        let (_scratch, database) = a_seeded_database("migrate-0006-period-check");
+
+        let refused = database
+            .with(|connection| {
+                connection.execute(
+                    "INSERT INTO habits
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          name, kind, schedule_mask, aggregation, direction, started_on,
+                          position, period)
+                     VALUES
+                         (x'2122232425262728292a2b2c2d2e2f30', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'44444444444444444444444444444444', 0,
+                          'leer', 0, 127, 0, 0, 20250101, 0, ?1)",
+                    [2_i64],
+                )?;
+                Ok(())
+            })
+            .expect_err("a monthly habit was accepted");
+
+        assert!(
+            refusal(refused).contains("CHECK constraint failed"),
+            "the row was refused for some reason other than the check on `period`"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_target_snapshot_of_zero_or_less_is_refused_by_the_schema() {
+        // Neither is a target somebody can meet or miss, and a day recorded as judged by one is
+        // a day the calendar has no honest colour for.
+        let (_scratch, database) = a_seeded_database("migrate-0006-snapshot-check");
+
+        // The same day for both attempts, because a refused insert writes nothing and so cannot
+        // collide with the one after it. A second day here would only add a number that reads
+        // like a date and is stored as one integer.
+        for snapshot in [0_i64, -1] {
+            let refused = database
+                .with(|connection| {
+                    connection.execute(
+                        "INSERT INTO habit_entries
+                             (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                              habit_id, day, amount, target_snapshot)
+                         VALUES
+                             (randomblob(16), 3, 4,
+                              x'11111111111111111111111111111111', 0,
+                              x'55555555555555555555555555555555', 0,
+                              x'0102030405060708090a0b0c0d0e0f10', 20250106, 6, ?1)",
+                        [snapshot],
+                    )?;
+                    Ok(())
+                })
+                .map_or_else(refusal, |()| {
+                    panic!("a target snapshot of {snapshot} was accepted")
+                });
+
+            assert!(
+                refused.contains("CHECK constraint failed"),
+                "a target snapshot of {snapshot} was refused for some other reason: {refused}"
+            );
+        }
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_target_snapshot_that_is_absent_is_accepted() {
+        // Null is what a habit that is done or not done writes, and what every row written
+        // before the column existed already says. Both are judged by the habit's target today.
+        let (_scratch, database) = a_seeded_database("migrate-0006-snapshot-null");
+
+        database
+            .with(|connection| {
+                connection.execute(
+                    "INSERT INTO habit_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          habit_id, day, amount, target_snapshot)
+                     VALUES
+                         (x'3132333435363738393a3b3c3d3e3f40', 3, 4,
+                          x'11111111111111111111111111111111', 0,
+                          x'66666666666666666666666666666666', 0,
+                          x'0102030405060708090a0b0c0d0e0f10', 20250106, 6, ?1)",
+                    [Option::<i64>::None],
+                )?;
+                Ok(())
+            })
+            .expect("a day with no remembered target was refused");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_round_trip_of_0006_leaves_every_index_of_both_tables_in_place() {
+        // The expensive failure this migration could have caused, and the one nothing else would
+        // have noticed: a reverse script that rebuilds a table to drop a column and puts back
+        // five of the six indexes. Nothing fails afterwards. The heatmap just stops meeting its
+        // budget, a year later, on somebody's real data.
+        let (_scratch, database) = a_seeded_database("migrate-0006-indexes");
+
+        revert_to(&database, 5).expect("migration 0006 reverts");
+        apply_all(&database, NOW_US).expect("migration 0006 applies again");
+
+        assert_eq!(
+            indexes(&database, "habits"),
+            vec![
+                "habits_area".to_owned(),
+                "habits_hlc".to_owned(),
+                "habits_sync".to_owned()
+            ]
+        );
+        assert_eq!(
+            indexes(&database, "habit_entries"),
+            vec![
+                "habit_entries_day_live".to_owned(),
+                "habit_entries_hlc".to_owned(),
+                "habit_entries_sync".to_owned()
+            ]
+        );
 
         database.close().expect("the connection closes");
     }

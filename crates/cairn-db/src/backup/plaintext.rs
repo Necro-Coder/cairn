@@ -390,10 +390,8 @@ mod tests {
                     Hlc::new(1_000, 0, [1; 6]),
                     NOW_US,
                     habits::NewHabit {
-                        name: "Correr, \"la de verdad\"",
                         notes: Some("cinco kilómetros,\ncada mañana".as_bytes()),
-                        started_on: day,
-                        position: 0,
+                        ..habits::NewHabit::plain("Correr, \"la de verdad\"", day, 0)
                     },
                 )?;
 
@@ -403,12 +401,7 @@ mod tests {
                     device,
                     Hlc::new(1_001, 0, [1; 6]),
                     NOW_US,
-                    habits::NewHabit {
-                        name: "Un hábito borrado",
-                        notes: None,
-                        started_on: day,
-                        position: 1,
-                    },
+                    habits::NewHabit::plain("Un hábito borrado", day, 1),
                 )?;
                 habits::delete(connection, Hlc::new(1_002, 0, [1; 6]), NOW_US, gone.id)?;
 
@@ -474,10 +467,8 @@ mod tests {
                     Hlc::new(1_000, 0, [1; 6]),
                     NOW_US,
                     habits::NewHabit {
-                        name: "=1+1",
                         notes: Some(b"@SUM(A1:A9)"),
-                        started_on: day,
-                        position: 0,
+                        ..habits::NewHabit::plain("=1+1", day, 0)
                     },
                 )?;
 

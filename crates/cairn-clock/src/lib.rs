@@ -1,24 +1,19 @@
-//! Business logic for Cairn: habit streaks, budget arithmetic, validation rules and
-//! the decisions the merge algorithm makes.
+//! Which day a moment fell on, for the person holding the device.
 //!
-//! Deterministic by construction. The clock and the source of randomness are injected by
-//! the caller rather than read from the environment, so a test can pin both and get the
-//! same answer on every machine.
+//! This is the only crate that asks the operating system where it is. It exists as a crate of
+//! its own rather than as a module of another one because of the shape of the workspace:
+//! `cairn-domain` owns the calendar and must keep knowing nothing about the machine it runs on,
+//! and `cairn-platform` sits below `cairn-crypto`, which sits below the domain, so it cannot see
+//! a calendar day. A crate that depends on the domain and on nothing else in the workspace is
+//! the only place both halves can meet.
 //!
-//! This crate knows nothing about SQLite, about Tauri or about the serialisation format
-//! used on the wire. Dependencies point inwards, and this is as far in as they go.
+//! Nothing here keeps a moment. Every function takes the instant as an argument, so a test can
+//! pin the instant and the zone and get the same answer on every machine, in every season.
 #![forbid(unsafe_code)]
 
-pub mod habits;
-pub mod hlc;
-pub mod password;
-pub mod session;
-pub mod time;
-pub mod tree;
+pub mod clock;
 
-pub use hlc::{Clock, Hlc, Rev};
-pub use time::{CivilDay, TimeError, Timestamp};
-pub use tree::{MAX_DEPTH, TreeError};
+pub use clock::{CivilClock, ClockError, DayStart, SystemZone, zone_named};
 
 /// The version of this crate, taken from its manifest at compile time.
 ///

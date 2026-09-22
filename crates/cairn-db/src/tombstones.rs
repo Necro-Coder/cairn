@@ -184,12 +184,11 @@ mod tests {
                     DeviceId::generate()?,
                     Hlc::new(1, 0, [1; 6]),
                     NOW_US,
-                    NewHabit {
-                        name: "Andar",
-                        notes: None,
-                        started_on: CivilDay::new(2026, 9, 17).expect("a day that exists"),
-                        position: 0,
-                    },
+                    NewHabit::plain(
+                        "Andar",
+                        CivilDay::new(2026, 9, 17).expect("a day that exists"),
+                        0,
+                    ),
                 )?;
                 habits::delete(connection, Hlc::new(2, 0, [1; 6]), NOW_US + 1, habit.id)?;
 
@@ -258,12 +257,11 @@ mod compaction_tests {
             DeviceId::from_bytes([7; 16]),
             Hlc::new(step, 0, [1; 6]),
             moment,
-            NewHabit {
-                name: &format!("Andar {step}"),
-                notes: None,
-                started_on: CivilDay::new(2026, 9, 17).expect("a day that exists"),
-                position: 0,
-            },
+            NewHabit::plain(
+                &format!("Andar {step}"),
+                CivilDay::new(2026, 9, 17).expect("a day that exists"),
+                0,
+            ),
         )?;
         habits::delete(connection, Hlc::new(step + 1, 0, [1; 6]), moment, habit.id)?;
 
@@ -377,12 +375,11 @@ mod compaction_tests {
                     DeviceId::from_bytes([7; 16]),
                     Hlc::new(1, 0, [1; 6]),
                     NOW_US - (RETENTION_DAYS + 100) * DAY_US,
-                    NewHabit {
-                        name: "Andar",
-                        notes: None,
-                        started_on: CivilDay::new(2026, 9, 17).expect("a day that exists"),
-                        position: 0,
-                    },
+                    NewHabit::plain(
+                        "Andar",
+                        CivilDay::new(2026, 9, 17).expect("a day that exists"),
+                        0,
+                    ),
                 )?;
 
                 assert_eq!(compact(connection, NOW_US)?.total, 0);
