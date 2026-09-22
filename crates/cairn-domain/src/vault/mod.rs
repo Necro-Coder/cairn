@@ -9,6 +9,7 @@
 //! hold one is to have passed [`spec::EntryDraft::validate`].
 
 pub mod spec;
+pub mod trash;
 
 pub use spec::{
     DraftField, EntryDraft, EntryKind, FieldError, FieldKind, MAX_FIELD_LABEL_CHARS,
@@ -16,3 +17,4 @@ pub use spec::{
     MAX_TITLE_CHARS, MAX_URL_CHARS, MAX_URLS, MAX_USERNAME_CHARS, Problem, ValidEntry,
     validate_folder_name,
 };
+pub use trash::{TOMBSTONE_DAYS, TRASH_DAYS, TrashState, bin_cutoff_us, state};
