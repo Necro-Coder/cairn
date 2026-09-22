@@ -25,6 +25,9 @@ import {
   streakText,
   targetToday,
   todayText,
+  move,
+  orderOf,
+  without,
 } from './today.ts';
 
 /** A habit with everything ordinary, so each case says only what makes it different. */
@@ -210,4 +213,70 @@ test('an answer about a habit that is gone does not put it back on the screen', 
   const list = [habit({ id: 'a' })];
 
   assert.deepEqual(replace(list, habit({ id: 'gone' })), list);
+});
+
+test('moving the first one down and the last one up puts them where they were asked to go', () => {
+  const list = [habit({ id: 'a' }), habit({ id: 'b' }), habit({ id: 'c' })];
+
+  assert.deepEqual(orderOf(move(list, 'a', 1)), ['b', 'a', 'c']);
+  assert.deepEqual(orderOf(move(list, 'c', -1)), ['a', 'c', 'b']);
+});
+
+test('a list that has been moved about still holds exactly the habits it started with', () => {
+  // The move that loses one is the move nobody notices until the order is sent and the core
+  // refuses the whole thing.
+  const list = [habit({ id: 'a' }), habit({ id: 'b' }), habit({ id: 'c' }), habit({ id: 'd' })];
+
+  let moved = move(list, 'a', 1);
+  moved = move(moved, 'd', -1);
+  moved = move(moved, 'b', -1);
+
+  assert.deepEqual([...orderOf(moved)].sort(), ['a', 'b', 'c', 'd']);
+  assert.equal(moved.length, list.length);
+});
+
+test('a move off either end is not a move, and never wraps round', () => {
+  // A habit that jumped from the bottom to the top would be a keystroke nobody meant.
+  const list = [habit({ id: 'a' }), habit({ id: 'b' })];
+
+  assert.equal(move(list, 'a', -1), list);
+  assert.equal(move(list, 'b', 1), list);
+});
+
+test('moving a habit that is not in the list leaves the list alone', () => {
+  const list = [habit({ id: 'a' })];
+
+  assert.equal(move(list, 'gone', 1), list);
+});
+
+test('the order sent is every habit there is, never a part of one', () => {
+  // The core refuses a partial order, and it is right to: two windows sending halves would
+  // interleave into an order neither of them asked for.
+  const list = [habit({ id: 'a' }), habit({ id: 'b' }), habit({ id: 'c' })];
+
+  const order = orderOf(move(list, 'b', -1));
+
+  assert.equal(order.length, list.length);
+  assert.deepEqual(order, ['b', 'a', 'c']);
+  assert.deepEqual([...order].sort(), orderOf(list).sort());
+});
+
+test('an empty list has an empty order rather than no order', () => {
+  assert.deepEqual(orderOf([]), []);
+});
+
+test('a row taken out goes, and every other row stays exactly as it was', () => {
+  const list = [habit({ id: 'a' }), habit({ id: 'b' }), habit({ id: 'c' })];
+
+  const left = without(list, 'b');
+
+  assert.deepEqual(orderOf(left), ['a', 'c']);
+  assert.equal(left[0], list[0], 'the rows that stayed are the same objects');
+  assert.equal(left[1], list[2]);
+});
+
+test('taking out a habit that is not there changes nothing', () => {
+  const list = [habit({ id: 'a' })];
+
+  assert.deepEqual(orderOf(without(list, 'gone')), ['a']);
 });

@@ -216,6 +216,49 @@ test('the warning that says what changing a habit would mean', async ({ page }) 
   await expect(warning).toHaveCount(0);
 });
 
+test('the list of habits that have been put away', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  await page.getByRole('button', { name: 'Archivados' }).click();
+
+  // An archived habit keeps its whole history, so the row still reads as a habit and the one
+  // control it gains is the way back.
+  await expect(page.getByRole('button', { name: /^Devolver .* a la lista de hoy$/ })).toBeVisible();
+  await expectNoViolations(page, 'the archived habits');
+});
+
+test('putting a habit away from the list, and the line that says so', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  await page.getByRole('button', { name: 'Guardar Meditar en archivados' }).click();
+
+  // The row goes and nothing on screen points at where it went, so it is said.
+  await expect(page.getByText(/Meditar se ha guardado/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Marcar hoy en Meditar' })).toHaveCount(0);
+  await expectNoViolations(page, 'a habit put away');
+});
+
+test('the confirmation before deleting, which names what is lost', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Borrar', exact: true }).click();
+
+  const asking = page.getByRole('dialog');
+  await expect(asking).toBeVisible();
+  // A confirmation that does not name what is lost is a confirmation nobody read.
+  await expect(asking.getByText(/todos los días que marcaste/)).toBeVisible();
+  await expectNoViolations(page, 'the confirmation before deleting');
+
+  await page.keyboard.press('Escape');
+  await expect(asking).toHaveCount(0);
+});
+
 test('the passwords search, switched off with its reason', async ({ page }) => {
   await open(page);
   await createVault(page);

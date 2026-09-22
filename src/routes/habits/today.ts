@@ -145,3 +145,53 @@ export function replace(
 ): readonly HabitSummary[] {
   return habits.map((habit) => (habit.id === updated.id ? updated : habit));
 }
+
+/**
+ * The same list with one habit moved one place, up or down.
+ *
+ * A move on this side only. The core is told once, when the moving is over, with the whole
+ * order — telling it after each step would make three presses three writes, and a list that
+ * is half reordered is a list somebody else's window could read.
+ *
+ * A move off either end is not a move. It returns the same list rather than wrapping, because
+ * a habit that jumped from the bottom to the top would be a keystroke nobody meant.
+ */
+export function move(
+  habits: readonly HabitSummary[],
+  id: string,
+  by: -1 | 1,
+): readonly HabitSummary[] {
+  const from = habits.findIndex((habit) => habit.id === id);
+  const to = from + by;
+  if (from < 0 || to < 0 || to >= habits.length) {
+    return habits;
+  }
+  const moved = [...habits];
+  const [taken] = moved.splice(from, 1);
+  if (taken === undefined) {
+    return habits;
+  }
+  moved.splice(to, 0, taken);
+  return moved;
+}
+
+/**
+ * The order to send, which is every habit there is and never a part of one.
+ *
+ * The core refuses anything else, and it is right to: an order that named half the habits
+ * would leave the other half wherever they happened to be, and two windows sending halves
+ * would interleave into an order neither of them asked for.
+ */
+export function orderOf(habits: readonly HabitSummary[]): string[] {
+  return habits.map((habit) => habit.id);
+}
+
+/**
+ * The same list without one habit.
+ *
+ * Used after putting one away or deleting it. The row goes and the rest stay as they are,
+ * rather than the whole list being asked for again over one row that is no longer in it.
+ */
+export function without(habits: readonly HabitSummary[], id: string): readonly HabitSummary[] {
+  return habits.filter((habit) => habit.id !== id);
+}

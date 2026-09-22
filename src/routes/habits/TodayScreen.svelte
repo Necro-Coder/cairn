@@ -17,22 +17,25 @@
    * the last press, never the answer that happened to arrive last.
    */
   import { ipc } from '$ipc';
-  import type { DayState, HabitSummary } from '../../lib/ipc.types';
+  import type { DayState, HabitFilter, HabitSummary } from '../../lib/ipc.types';
   import Badge from '../../lib/shell/Badge.svelte';
   import EmptyState from '../../lib/shell/EmptyState.svelte';
   import ScreenHeader from '../../lib/shell/ScreenHeader.svelte';
   import { sectionOf } from '../../lib/shell/sections';
   import AsyncView from '../../lib/ui/AsyncView.svelte';
-  import { load, loading, type Async } from '../../lib/ui/async';
+  import { load, loading, messageFor, type Async } from '../../lib/ui/async';
   import {
     countsQuantity,
     forToday,
     isAtRisk,
     isMet,
     markText,
+    move,
+    orderOf,
     replace,
     streakText,
     todayText,
+    without,
   } from './today';
 
   interface Props {
@@ -69,12 +72,35 @@
    */
   const presses: Record<string, number> = {};
 
-  /** Reads the whole list once. Called on mount and never in a loop. */
+  /** Which list is being looked at: the ones being tracked, or the ones put away. */
+  let filter = $state<HabitFilter>('active');
+
+  /**
+   * What just happened, said in one line above the list.
+   *
+   * A row disappearing and an order changing are both changes with nothing on screen to point
+   * at afterwards, so they are said rather than left to be noticed. It is a live region for
+   * that reason and no other, and it is emptied as soon as the next thing happens.
+   */
+  let announcement = $state('');
+
+  /** Reads the whole list once. Called on mount, on a change of filter, and never in a loop. */
   async function read(): Promise<void> {
+    const wanted = filter;
     view = await load(
-      () => ipc.listHabits('active'),
-      (habits) => forToday(habits).length === 0,
+      () => ipc.listHabits(wanted),
+      // A list of archived habits shows every one of them: an archived habit is not asked
+      // anything of today, so filtering it by today's schedule would empty the screen.
+      (habits) => (wanted === 'active' ? forToday(habits).length === 0 : habits.length === 0),
     );
+  }
+
+  /** Switches list, which is a read of the other one and not a filter over what is here. */
+  async function show(wanted: HabitFilter): Promise<void> {
+    filter = wanted;
+    announcement = '';
+    view = loading();
+    await read();
   }
 
   $effect(() => {
@@ -99,9 +125,78 @@
     };
   });
 
-  /** The rows today asks something of, which is every state but the one it never asked about. */
+  /**
+   * The rows to draw.
+   *
+   * In the list being tracked, that is every state but the one today never asked about. In
+   * the list of things put away it is all of them: an archived habit is asked nothing today,
+   * so filtering that list by today's schedule would empty the screen.
+   */
   function rows(habits: readonly HabitSummary[]): readonly HabitSummary[] {
-    return forToday(habits);
+    return filter === 'active' ? forToday(habits) : habits;
+  }
+
+  /**
+   * Puts a habit away, or takes it back out, and removes the row it was on.
+   *
+   * The row goes and the rest stay. Reading the whole list again over one row that is no
+   * longer in it would redraw everything and lose the place somebody was in.
+   *
+   * Pressing twice does nothing the first press did not: the core is told what the habit
+   * should now be rather than to toggle it, so a second press asks for the same state.
+   */
+  async function archive(habit: HabitSummary, away: boolean): Promise<void> {
+    try {
+      await ipc.archiveHabit(habit.id, away);
+      if (view.status === 'ready') {
+        const left = without(view.value, habit.id);
+        view = left.length === 0 ? { status: 'empty' } : { status: 'ready', value: left };
+      }
+      announcement = away
+        ? `${habit.name} se ha guardado. Está en «Archivados».`
+        : `${habit.name} vuelve a la lista de hoy, con la racha que tenía.`;
+    } catch (thrown: unknown) {
+      announcement = describe(thrown);
+      await read();
+    }
+  }
+
+  /** Whatever the core refused, said in the one sentence this module has for it. */
+  function describe(thrown: unknown): string {
+    const error = thrown as { kind?: unknown };
+    return typeof error.kind === 'string'
+      ? messageFor(error as Parameters<typeof messageFor>[0])
+      : 'No se ha podido completar.';
+  }
+
+  /**
+   * Moves one habit a place and tells the core the whole new order.
+   *
+   * One call per press, and each one carries every habit there is. The core refuses a partial
+   * order, and it is right to: two windows sending halves would interleave into an order
+   * neither of them asked for.
+   *
+   * A refusal is not smoothed over. The list is read again and what was on screen is thrown
+   * away, because the file is what the order actually is, and somebody is told in a sentence
+   * rather than watching their rows quietly spring back.
+   */
+  async function reorder(habit: HabitSummary, by: -1 | 1): Promise<void> {
+    if (view.status !== 'ready') {
+      return;
+    }
+    const moved = move(view.value, habit.id, by);
+    if (moved === view.value) {
+      return;
+    }
+    const at = moved.findIndex((each) => each.id === habit.id);
+    view = { status: 'ready', value: moved };
+    announcement = `${habit.name} ahora es el ${String(at + 1)} de ${String(moved.length)}.`;
+    try {
+      await ipc.reorderHabits(orderOf(moved));
+    } catch (thrown: unknown) {
+      announcement = `${describe(thrown)} Se ha vuelto a leer la lista.`;
+      await read();
+    }
   }
 
   /**
@@ -178,14 +273,40 @@
 <ScreenHeader
   {section}
   title="Hábitos"
-  lede="Lo que hoy te pide, y nada más. El año, el detalle y los archivados están dentro de cada hábito."
+  lede={filter === 'active'
+    ? 'Lo que hoy te pide, y nada más. Cada hábito guarda su año entero dentro.'
+    : 'Lo que guardaste. Siguen teniendo toda su historia, y vuelven con la racha que tenían.'}
 />
+
+<div class="filter" role="group" aria-label="Qué lista mirar">
+  <button
+    type="button"
+    class:chosen={filter === 'active'}
+    aria-pressed={filter === 'active'}
+    onclick={() => void show('active')}>Hoy</button
+  >
+  <button
+    type="button"
+    class:chosen={filter === 'archived'}
+    aria-pressed={filter === 'archived'}
+    onclick={() => void show('archived')}>Archivados</button
+  >
+</div>
+
+<!--
+  A row disappearing and an order changing are both changes with nothing left on screen to
+  point at afterwards. The design system rules out announcing form errors and the lock
+  countdown; it does not rule out saying that something moved.
+-->
+<p class="said" aria-live="polite">{announcement}</p>
 
 <AsyncView state={view} label="Leyendo tus hábitos…">
   {#snippet empty()}
     <EmptyState
       {section}
-      sentence="Hoy no hay nada que marcar. Cuando crees un hábito, aparecerá aquí el día que toque."
+      sentence={filter === 'active'
+        ? 'Hoy no hay nada que marcar. Cuando crees un hábito, aparecerá aquí el día que toque.'
+        : 'No has guardado ningún hábito. Los que guardes aparecerán aquí, con su historia entera.'}
       action="Añadir hábito"
       onAction={onCreate}
     />
@@ -193,7 +314,7 @@
 
   {#snippet ready(habits: readonly HabitSummary[])}
     <ul class="rows">
-      {#each rows(habits) as habit (habit.id)}
+      {#each rows(habits) as habit, at (habit.id)}
         <li class="row" class:met={isMet(habit.today)}>
           <button
             type="button"
@@ -229,6 +350,39 @@
           >
             Ver
           </button>
+
+          {#if filter === 'active'}
+            <!-- Two buttons rather than a drag, and never a drag alone. Every gesture in this
+                 application has a keyboard equivalent, which is the promise the undecorated
+                 window already cost us once and is not allowed to cost us twice. -->
+            <button
+              type="button"
+              class="open"
+              aria-label={`Subir ${habit.name}`}
+              disabled={at === 0}
+              onclick={() => void reorder(habit, -1)}>Subir</button
+            >
+            <button
+              type="button"
+              class="open"
+              aria-label={`Bajar ${habit.name}`}
+              disabled={at === rows(habits).length - 1}
+              onclick={() => void reorder(habit, 1)}>Bajar</button
+            >
+            <button
+              type="button"
+              class="open"
+              aria-label={`Guardar ${habit.name} en archivados`}
+              onclick={() => void archive(habit, true)}>Archivar</button
+            >
+          {:else}
+            <button
+              type="button"
+              class="open"
+              aria-label={`Devolver ${habit.name} a la lista de hoy`}
+              onclick={() => void archive(habit, false)}>Desarchivar</button
+            >
+          {/if}
 
           {#if editing === habit.id}
             <form class="amount" onsubmit={() => void commitAmount(habit)}>
@@ -342,6 +496,43 @@
     color: var(--colour-text-muted);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Two lists, one of which is being looked at. A pressed button rather than a tab: the
+   * strip at the top of the window is for the five sections, and this is not one. */
+  .filter {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-6);
+  }
+
+  .filter button {
+    padding: var(--space-2) var(--space-4);
+    border: var(--border-width) solid var(--colour-border-strong);
+    border-radius: var(--radius-sm);
+    background-color: var(--colour-surface-raised);
+    color: var(--colour-text);
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+
+  .filter .chosen {
+    border-color: var(--colour-text);
+    background-color: var(--colour-surface-sunken);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* Empty most of the time, and it keeps no height when it is: a line of nothing above a
+   * list would be a gap nobody could account for. */
+  .said:empty {
+    display: none;
+  }
+
+  .said {
+    max-width: var(--measure);
+    margin: var(--space-4) 0 0;
+    color: var(--colour-text-muted);
+    font-size: var(--text-sm);
   }
 
   .add {

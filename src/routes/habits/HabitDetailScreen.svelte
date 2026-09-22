@@ -89,6 +89,84 @@
     })();
   });
 
+  /** Whether the confirmation before deleting is open. */
+  let asking = $state(false);
+
+  /** What just happened, for the changes that leave nothing on screen to point at. */
+  let announcement = $state('');
+
+  /** The dialog's own element, for the focus trap and for putting the focus back. */
+  let dialog = $state<HTMLDivElement | null>(null);
+  let cameFrom: HTMLElement | null = null;
+
+  /**
+   * Puts the habit away or brings it back, and redraws this screen from what came back.
+   *
+   * Told what the habit should now be rather than to toggle it, so pressing twice asks for the
+   * same state twice and the second press changes nothing.
+   */
+  async function setAway(habit: HabitDetail, away: boolean): Promise<void> {
+    try {
+      await ipc.archiveHabit(habit.id, away);
+      announcement = away
+        ? 'Guardado. Ya no aparece en la lista de hoy.'
+        : 'Vuelve a la lista de hoy, con la racha que tenía.';
+      await readHabit();
+    } catch {
+      announcement = 'No se ha podido completar.';
+    }
+  }
+
+  /** Deletes the habit and its whole calendar, and goes back to the list it came from. */
+  async function remove(habit: HabitDetail): Promise<void> {
+    try {
+      await ipc.deleteHabit(habit.id);
+      onBack();
+    } catch {
+      asking = false;
+      announcement = 'No se ha podido borrar.';
+    }
+  }
+
+  /** Closes the confirmation without deleting anything, and puts the focus back. */
+  function stopAsking(): void {
+    asking = false;
+    cameFrom?.focus();
+  }
+
+  /** Keeps the focus inside the confirmation, and lets Escape out, which is cancelling. */
+  function trap(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      stopAsking();
+      return;
+    }
+    if (event.key !== 'Tab' || dialog === null) {
+      return;
+    }
+    const focusable = dialog.querySelectorAll<HTMLElement>('button');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined) {
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  $effect(() => {
+    if (asking) {
+      // The cancel button, not the destructive one: the finger already on Enter should not be
+      // what deletes a year of somebody's calendar.
+      dialog?.querySelectorAll('button')[1]?.focus();
+    }
+  });
+
   /** This year, as the core counts years. Everything about the arrows is bounded by it. */
   const thisYear = $derived(
     opened.status === 'ready' ? yearOf(opened.value.habit.todayDay) : showing,
@@ -215,11 +293,69 @@
 
       <div class="buttons">
         <button type="button" class="primary" onclick={onEdit}>Editar</button>
+
+        <button type="button" onclick={() => void setAway(detail.habit, !detail.habit.archived)}>
+          {detail.habit.archived ? 'Devolver a la lista de hoy' : 'Archivar'}
+        </button>
+
+        <button
+          type="button"
+          class="danger"
+          onclick={() => {
+            cameFrom =
+              document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            asking = true;
+          }}>Borrar</button
+        >
       </div>
 
-      <p class="pending">Archivar y borrar llegan en el siguiente paso de esta fase.</p>
-      <Badge tone={section.tone} text="En desarrollo" />
+      <p class="pending">
+        {detail.habit.archived
+          ? 'Guardado. Sigue teniendo toda su historia, y vuelve con la racha que tenía.'
+          : 'Archivar lo saca de la lista de hoy sin perder nada de lo marcado.'}
+      </p>
+
+      <p class="said" aria-live="polite">{announcement}</p>
     </section>
+
+    {#if asking}
+      <!--
+        A dialog, because deleting is the one thing on this screen that carrying on cannot
+        undo. What it says is what actually happens, marks included: a confirmation that does
+        not name what is lost is a confirmation nobody read.
+      -->
+      <div class="veil">
+        <div
+          class="dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-title"
+          bind:this={dialog}
+          onkeydown={trap}
+          tabindex="-1"
+        >
+          <h2 id="delete-title">Borrar «{detail.habit.name}»</h2>
+
+          <p>
+            Se borra el hábito y todos los días que marcaste en él. No se puede deshacer.
+            {#if detail.stats.totalEntries > 0}
+              Ahora mismo hay {detail.stats.totalEntries === 1
+                ? '1 día marcado'
+                : `${String(detail.stats.totalEntries)} días marcados`}.
+            {/if}
+          </p>
+
+          <p>Si solo quieres que deje de aparecer, archívalo: eso no borra nada.</p>
+
+          <div class="buttons">
+            <button type="button" class="danger" onclick={() => void remove(detail.habit)}>
+              Borrar el hábito y sus marcas
+            </button>
+            <button type="button" onclick={stopAsking}>Cancelar</button>
+          </div>
+        </div>
+      </div>
+    {/if}
   {/snippet}
 </AsyncView>
 
@@ -335,8 +471,68 @@
     transition: background-color var(--duration-fast) var(--easing);
   }
 
+  .buttons button {
+    padding: var(--space-3) var(--space-4);
+    border: var(--border-width) solid var(--colour-border-strong);
+    border-radius: var(--radius-sm);
+    background-color: var(--colour-surface-raised);
+    color: var(--colour-text);
+    font: inherit;
+  }
+
   .buttons .primary:hover {
     background-color: var(--colour-accent-strong);
+  }
+
+  .said:empty {
+    display: none;
+  }
+
+  .said {
+    max-width: var(--measure);
+    margin: var(--space-3) 0 0;
+    color: var(--colour-text-muted);
+    font-size: var(--text-sm);
+  }
+
+  /* Bordered in the negative colour, never filled with it. The accent on this screen is the
+   * way into the form; a solid red button would be a second thing shouting. */
+  .buttons .danger {
+    border-color: var(--colour-negative);
+    color: var(--colour-negative);
+  }
+
+  .veil {
+    position: fixed;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-5);
+    inset: 0;
+  }
+
+  .dialog {
+    max-width: var(--measure);
+    padding: var(--space-6);
+    border: var(--border-width) solid var(--colour-negative);
+    border-top: var(--card-edge-width) solid var(--colour-negative);
+    border-radius: var(--radius-md);
+    background-color: var(--colour-surface-raised);
+  }
+
+  .dialog h2 {
+    margin: 0 0 var(--space-4);
+    color: var(--colour-negative);
+  }
+
+  .dialog p {
+    max-width: var(--measure);
+    margin: 0 0 var(--space-4);
+  }
+
+  .dialog .buttons {
+    margin-bottom: 0;
   }
 
   .notes p {
