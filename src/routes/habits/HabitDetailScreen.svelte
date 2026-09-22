@@ -30,9 +30,11 @@
     id: string;
     /** How to get back to the list, which is where every route into this screen came from. */
     onBack: () => void;
+    /** How to open the form on this habit. */
+    onEdit: () => void;
   }
 
-  const { id, onBack }: Props = $props();
+  const { id, onBack, onEdit }: Props = $props();
 
   const section = sectionOf('habits');
 
@@ -210,7 +212,12 @@
 
     <section class="actions">
       <h2>Este hábito</h2>
-      <p class="pending">Editar, archivar y borrar llegan en los siguientes pasos de esta fase.</p>
+
+      <div class="buttons">
+        <button type="button" class="primary" onclick={onEdit}>Editar</button>
+      </div>
+
+      <p class="pending">Archivar y borrar llegan en el siguiente paso de esta fase.</p>
       <Badge tone={section.tone} text="En desarrollo" />
     </section>
   {/snippet}
@@ -307,6 +314,29 @@
   .arrows button:disabled {
     border-color: var(--colour-border);
     color: var(--colour-text-faint);
+  }
+
+  .buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  /* One accent per screen, and on this one it is the way into the form. */
+  .buttons .primary {
+    padding: var(--space-3) var(--space-4);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background-color: var(--colour-accent);
+    color: var(--colour-accent-contrast);
+    font: inherit;
+    font-weight: var(--weight-semibold);
+    transition: background-color var(--duration-fast) var(--easing);
+  }
+
+  .buttons .primary:hover {
+    background-color: var(--colour-accent-strong);
   }
 
   .notes p {

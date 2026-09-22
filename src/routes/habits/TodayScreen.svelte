@@ -38,9 +38,11 @@
   interface Props {
     /** How to open one habit, which is the only route into its own screen. */
     onOpen: (id: string) => void;
+    /** How to start describing a habit that does not exist yet. */
+    onCreate: () => void;
   }
 
-  const { onOpen }: Props = $props();
+  const { onOpen, onCreate }: Props = $props();
 
   const section = sectionOf('habits');
 
@@ -185,7 +187,7 @@
       {section}
       sentence="Hoy no hay nada que marcar. Cuando crees un hábito, aparecerá aquí el día que toque."
       action="Añadir hábito"
-      note="El formulario llega en el siguiente paso de esta fase. La lista y el marcado ya funcionan."
+      onAction={onCreate}
     />
   {/snippet}
 
@@ -251,6 +253,17 @@
         </li>
       {/each}
     </ul>
+
+    <!-- After the list rather than above it: the reason somebody opened this screen is the
+         list, and the way to add one more is what they look for when they are done with it. -->
+    <p class="add">
+      <button
+        type="button"
+        onclick={() => {
+          onCreate();
+        }}>Añadir hábito</button
+      >
+    </p>
   {/snippet}
 </AsyncView>
 
@@ -329,6 +342,25 @@
     color: var(--colour-text-muted);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
+  }
+
+  .add {
+    margin: var(--space-5) 0 0;
+  }
+
+  .add button {
+    padding: var(--space-3) var(--space-4);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background-color: var(--colour-accent);
+    color: var(--colour-accent-contrast);
+    font: inherit;
+    font-weight: var(--weight-semibold);
+    transition: background-color var(--duration-fast) var(--easing);
+  }
+
+  .add button:hover {
+    background-color: var(--colour-accent-strong);
   }
 
   /* Bordered, not accented: there is one accent per screen and it is not this. */

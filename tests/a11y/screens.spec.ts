@@ -155,6 +155,67 @@ test('the habits list with nothing in it', async ({ page }) => {
   await expectNoViolations(page, 'the habits list, empty');
 });
 
+test('the form for a habit that does not exist yet', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Añadir hábito' }).click();
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Nuevo hábito' })).toBeVisible();
+  // Every control has a label of its own, and the fields that only belong to a habit
+  // counting a quantity are absent rather than disabled.
+  await expect(page.getByLabel('Nombre')).toBeVisible();
+  await expect(page.getByLabel('Objetivo por período')).toHaveCount(0);
+  await expectNoViolations(page, 'the new habit form');
+});
+
+test('the form with the quantity fields on it', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Añadir hábito' }).click();
+
+  // Naming a unit is what brings the other two out. They appear rather than un-dim.
+  await page.getByLabel('Unidad').fill('ml');
+
+  await expect(page.getByLabel('Objetivo por período')).toBeVisible();
+  await expectNoViolations(page, 'the new habit form, counting a quantity');
+});
+
+test('the form on a habit that already exists', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Editar' }).click();
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Editar hábito' })).toBeVisible();
+  await expect(page.getByLabel('Nombre')).toHaveValue('Meditar');
+  await expectNoViolations(page, 'the edit habit form');
+});
+
+test('the warning that says what changing a habit would mean', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Editar' }).click();
+  await expect(page.getByLabel('Nombre')).toHaveValue('Meditar');
+
+  // Turning the habit round is exactly the change that alters what the run means.
+  await page.getByLabel('Quiero evitarlo, como mucho').check();
+  await page.getByRole('button', { name: 'Guardar los cambios' }).click();
+
+  const warning = page.getByRole('dialog');
+  await expect(warning).toBeVisible();
+  await expect(warning.getByText(/No se ha guardado nada todavía/)).toBeVisible();
+  await expectNoViolations(page, 'the warning before saving');
+
+  // Escape is the same as cancelling, which is the promise a dialog makes.
+  await page.keyboard.press('Escape');
+  await expect(warning).toHaveCount(0);
+});
+
 test('the passwords search, switched off with its reason', async ({ page }) => {
   await open(page);
   await createVault(page);
