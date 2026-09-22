@@ -313,8 +313,14 @@
   {/snippet}
 
   {#snippet ready(habits: readonly HabitSummary[])}
+    <!-- Once, above the loop, and never inside it. `rows` walks the whole list, so calling it
+         from the body of the `{#each}` costs a walk per row: a hundred habits is ten thousand
+         steps and ten thousand is a hundred million, which is a window that stops answering.
+         Measured before and after in the pull request. -->
+    {@const visible = rows(habits)}
+    {@const last = visible.length - 1}
     <ul class="rows">
-      {#each rows(habits) as habit, at (habit.id)}
+      {#each visible as habit, at (habit.id)}
         <li class="row" class:met={isMet(habit.today)}>
           <button
             type="button"
@@ -366,7 +372,7 @@
               type="button"
               class="open"
               aria-label={`Bajar ${habit.name}`}
-              disabled={at === rows(habits).length - 1}
+              disabled={at === last}
               onclick={() => void reorder(habit, 1)}>Bajar</button
             >
             <button

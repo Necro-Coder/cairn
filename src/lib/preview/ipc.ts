@@ -702,22 +702,87 @@ function seedHabits(): PreviewHabit[] {
 }
 
 /**
+ * What was asked for in the address, if anything.
+ *
+ * Two switches, and both exist because the screen they show cannot be reached by pressing
+ * anything. Read once, at load, so nothing changes under a screen already drawn, and guarded
+ * because this module is imported by `node --test` as well as by a browser, and a test runner
+ * has no address bar.
+ */
+const ASKED =
+  typeof globalThis.location === 'undefined'
+    ? new URLSearchParams()
+    : new URLSearchParams(globalThis.location.search);
+
+/**
  * Whether this preview was opened asking to see the screens with nothing on them.
  *
- * `?sin-habitos` in the address, and it is the one switch this file has. The first day of a
- * list is a real screen that somebody has to be able to look at, and it is otherwise reached
- * only by deleting every habit, which the interface cannot do until the screen that archives
- * and deletes exists. Read once, at load, so nothing changes under a screen already drawn.
- *
- * Guarded because this module is imported by `node --test` as well as by a browser, and a
- * test runner has no address bar.
+ * `?sin-habitos` in the address. The first day of a list is a real screen that somebody has to
+ * be able to look at, and it is otherwise reached only by deleting every habit, which the
+ * interface cannot do until the screen that archives and deletes exists.
  */
-const ASKED_FOR_EMPTY =
-  typeof globalThis.location !== 'undefined' &&
-  new URLSearchParams(globalThis.location.search).has('sin-habitos');
+const ASKED_FOR_EMPTY = ASKED.has('sin-habitos');
+
+/**
+ * The largest list this stand-in will invent, whatever the address says.
+ *
+ * The number comes from an address bar, which is the same kind of input as anything else that
+ * arrives from outside: a missing ceiling here is a tab that allocates until it dies, and a
+ * preview that dies is indistinguishable from the fault this ceiling exists to let anybody
+ * reproduce. Chosen to sit just above the ten thousand rows per table that the core's own
+ * seeding command will write, so the worst list the diagnostics screen can actually produce is
+ * one this can still be pointed at.
+ */
+const MAX_INVENTED = 12_000;
+
+/**
+ * How many habits to invent, from `?muchos=N` in the address, or none.
+ *
+ * A long list is the one thing the fixtures cannot show and the one thing that broke: a screen
+ * that walks its whole list once per row is fast on the five habits below and unusable on a
+ * thousand, and neither this file nor a unit test can tell the difference. Anything that is not
+ * a whole number above zero is read as nothing asked for, rather than as an error, because an
+ * address typed by hand is not a contract.
+ */
+const ASKED_FOR_MANY = ((): number => {
+  const asked = Number(ASKED.get('muchos'));
+  if (!Number.isInteger(asked) || asked <= 0) {
+    return 0;
+  }
+  return Math.min(asked, MAX_INVENTED);
+})();
+
+/**
+ * That many copies of the first fixture, each with its own identifier, name and place.
+ *
+ * Copies of one habit rather than a spread of the five: what a long list is for is the cost of
+ * drawing it, and a habit that is a copy costs exactly what the original costs.
+ */
+function manyHabits(count: number): PreviewHabit[] {
+  const [first] = seedHabits();
+  if (first === undefined) {
+    return [];
+  }
+
+  return Array.from({ length: count }, (_nothing, at) =>
+    makeHabit(
+      {
+        ...first.detail,
+        id: `00000000-0000-4000-8000-c${String(at).padStart(11, '0')}`,
+        name: `Hábito de prueba ${String(at)}`,
+      },
+      at,
+      { marks: first.marks },
+    ),
+  );
+}
 
 /** Everything the stand-in pretends is in a database. Reloading the page brings it back. */
-const habits: PreviewHabit[] = ASKED_FOR_EMPTY ? [] : seedHabits();
+const habits: PreviewHabit[] = ASKED_FOR_EMPTY
+  ? []
+  : ASKED_FOR_MANY > 0
+    ? manyHabits(ASKED_FOR_MANY)
+    : seedHabits();
 
 /** How many habits this stand-in has invented, so each new one gets its own identifier. */
 let inventedHabits = 0;
