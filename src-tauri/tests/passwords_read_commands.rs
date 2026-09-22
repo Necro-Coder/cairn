@@ -458,7 +458,7 @@ fn the_history_is_a_list_of_moments_and_carries_no_password() {
                 at(100 + step),
                 NOW_US + i64::try_from(step).unwrap_or(0),
                 id,
-                &format!("cairn-canary-password-{step}"),
+                Some(&format!("cairn-canary-password-{step}")),
             )?;
         }
         Ok(())

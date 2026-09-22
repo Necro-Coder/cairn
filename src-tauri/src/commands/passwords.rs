@@ -22,17 +22,24 @@
 
 use core::fmt::Write as _;
 
+use cairn_crypto::constant_time_eq;
 use cairn_db::codec::FieldCodec;
 use cairn_db::repositories::settings;
-use cairn_db::repositories::vault::{self as repository, Entry, MAX_PAGE};
-use cairn_db::search::Matched;
+use cairn_db::repositories::vault::{
+    self as repository, Entry, HistoryScope, MAX_PAGE, NewEntry, NewField,
+};
+use cairn_db::search::{Matched, Searchable};
 use cairn_db::{Connection, DbError};
 use cairn_domain::Hlc;
-use cairn_domain::vault::{EntryKind, TrashState};
+use cairn_domain::vault::{
+    DraftField, EntryDraft, EntryKind, FieldError, FieldKind, Problem, TrashState, ValidEntry,
+    validate_folder_name,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
-use crate::clock::now_us;
+use crate::clock::{now_ms, now_us};
 use crate::state::AppState;
 use crate::storage::Storage;
 
@@ -123,6 +130,14 @@ impl EntryKindDto {
         match kind {
             EntryKind::Account => Self::Account,
             EntryKind::Note => Self::Note,
+        }
+    }
+
+    /// What the domain calls what the bridge sent.
+    const fn kind(self) -> EntryKind {
+        match self {
+            Self::Account => EntryKind::Account,
+            Self::Note => EntryKind::Note,
         }
     }
 }
@@ -307,6 +322,75 @@ pub struct PasswordsSettings {
     pub screen_hardened: bool,
 }
 
+/// An entry as it arrives from the form.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryDraftDto {
+    /// Whether it is an account or a note.
+    pub kind: EntryKindDto,
+    /// What to call it.
+    pub title: String,
+    /// The user name, if there is one.
+    pub username: Option<String>,
+    /// `None` means "leave the password as it is". An empty string means "remove it".
+    ///
+    /// The distinction is the whole reason this field is an `Option` of a `String` and not a
+    /// `String`: the edit form never receives the current password, so it cannot send it back,
+    /// and a missing field has to mean "unchanged" or every save would wipe it.
+    pub password: Option<String>,
+    /// The notes, if there are any.
+    pub notes: Option<String>,
+    /// Every address, in the order the form drew them.
+    pub urls: Vec<String>,
+    /// Every custom field, in the order the form drew them.
+    pub fields: Vec<DraftFieldDto>,
+    /// The folder it goes in, or nothing for the root.
+    pub folder_id: Option<String>,
+    /// Whether somebody marked it.
+    pub favorite: bool,
+}
+
+/// One custom field as it arrives.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftFieldDto {
+    /// What names it.
+    pub label: String,
+    /// `None` on a secret field means "leave it as it was", for the same reason as above.
+    pub value: Option<String>,
+    /// Whether its value is hidden until somebody asks for it.
+    pub secret: bool,
+}
+
+/// What deleting a folder did to what was in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderDeleted {
+    /// How many entries came out of it and now sit in the root.
+    pub entries: u32,
+}
+
+/// What emptying a history did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cleared {
+    /// How many old passwords stopped existing.
+    pub rows: u32,
+}
+
+/// Whose history to empty.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HistoryScopeDto {
+    /// One entry's.
+    Entry {
+        /// Which one.
+        id: String,
+    },
+    /// Every entry's, which is the button in the settings screen.
+    All,
+}
+
 /// Every entry a filter admits, one page at a time.
 ///
 /// # Errors
@@ -483,6 +567,237 @@ pub fn settings(state: &AppState) -> Result<PasswordsSettings, PasswordsError> {
     })
 }
 
+/// Writes a new entry down whole, with its addresses and its custom fields.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::Invalid`] carrying every
+/// problem the draft has, [`PasswordsError::Storage`] if the database refuses. Nothing is written
+/// unless all of it is.
+pub fn create(
+    state: &AppState,
+    draft: &EntryDraftDto,
+    now: i64,
+) -> Result<EntryDetail, PasswordsError> {
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        // Nothing to carry over: there is no entry yet, so a secret field with no value is a
+        // secret field somebody left empty rather than one they did not retype.
+        let valid = validated(draft, &[])?;
+        let inner = valid.draft();
+
+        let written = repository::create_entry(
+            connection,
+            codec,
+            storage.device(),
+            storage.next_hlc(millis),
+            now,
+            NewEntry {
+                title: &inner.title,
+                username: inner.username.as_deref(),
+                password: inner.password.as_deref(),
+                notes: inner.notes.as_deref(),
+                folder_id: inner.folder_id,
+                favorite: inner.favorite,
+            },
+            inner.kind,
+        )?;
+
+        write_children(connection, codec, storage, millis, now, written.id, inner)?;
+
+        Ok((
+            detail_of(connection, codec, written.id)?,
+            Some((written.id, Some(searchable_of(written.id, inner)))),
+        ))
+    })
+}
+
+/// Saves a whole draft over an entry that already exists.
+///
+/// The order is the contract: read what is there, judge the draft, write the row, write the
+/// addresses, write the custom fields, and the password last of all. The password is last because
+/// it is the one write that pushes to the history, and pushing an old password into the history
+/// for a save that then failed would record a change that never happened.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if there is no
+/// such entry or it is in the bin, [`PasswordsError::Invalid`] carrying every problem the draft
+/// has, [`PasswordsError::Storage`] if the database refuses.
+pub fn update(
+    state: &AppState,
+    id: &str,
+    draft: &EntryDraftDto,
+    now: i64,
+) -> Result<EntryDetail, PasswordsError> {
+    let id = parsed(id)?;
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        // Through the reader that leaves the bin out, so editing something somebody threw away is
+        // the same answer as editing something that was never there.
+        let existing = repository::entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+        let existing_fields = repository::fields(connection, codec, id)?;
+
+        let valid = validated(draft, &existing_fields)?;
+        let inner = valid.draft();
+
+        // What the entry has now. The row is written with it, because the password is a write of
+        // its own further down and this one must not change it either way.
+        let current = existing.password.as_deref().map(String::as_str);
+
+        repository::update_entry(
+            connection,
+            codec,
+            storage.device(),
+            storage.next_hlc(millis),
+            now,
+            id,
+            NewEntry {
+                title: &inner.title,
+                username: inner.username.as_deref(),
+                password: current,
+                notes: inner.notes.as_deref(),
+                folder_id: inner.folder_id,
+                favorite: inner.favorite,
+            },
+            inner.kind,
+        )?;
+
+        write_children(connection, codec, storage, millis, now, id, inner)?;
+
+        // A form that never received the password cannot send it back, so a missing field is the
+        // password staying as it was, and staying as it was is not a change to record.
+        let wanted = if draft.password.is_none() {
+            current
+        } else {
+            inner.password.as_deref()
+        };
+        if password_changed(current, wanted) {
+            repository::replace_password(
+                connection,
+                codec,
+                storage.device(),
+                storage.next_hlc(millis),
+                now,
+                id,
+                wanted,
+            )?;
+        }
+
+        Ok((
+            detail_of(connection, codec, id)?,
+            Some((id, Some(searchable_of(id, inner)))),
+        ))
+    })
+}
+
+/// Creates a folder, or renames the one that identifier names.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if the folder
+/// to rename is not there, [`PasswordsError::Invalid`] if the name is not acceptable,
+/// [`PasswordsError::Storage`] if the database refuses.
+pub fn folder_save(
+    state: &AppState,
+    id: Option<&str>,
+    name: &str,
+    now: i64,
+) -> Result<FolderDto, PasswordsError> {
+    let id = id.map(parsed).transpose()?;
+    let millis = now_ms();
+
+    // Judged here rather than left to the repository, because a refusal has to arrive as the list
+    // of problems every other refusal in this module arrives as.
+    let name = validate_folder_name(name).map_err(|problem| PasswordsError::Invalid {
+        problems: vec![field_problem(&problem)],
+    })?;
+
+    writing(state, |storage, codec, connection| {
+        let folder = repository::save_folder(
+            connection,
+            codec,
+            storage.device(),
+            storage.next_hlc(millis),
+            now,
+            id,
+            &name,
+        )?;
+
+        Ok((folder_dto(&folder), None))
+    })
+}
+
+/// Removes a folder and leaves what was in it at the root.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if there is no
+/// such folder, [`PasswordsError::Storage`] if the database refuses.
+pub fn folder_delete(
+    state: &AppState,
+    id: &str,
+    now: i64,
+) -> Result<FolderDeleted, PasswordsError> {
+    let id = parsed(id)?;
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        let moved =
+            repository::delete_folder(connection, codec, storage.next_hlc(millis), now, id)?;
+
+        Ok((FolderDeleted { entries: moved }, None))
+    })
+}
+
+/// Puts the folders in the order they arrive in.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::IncompleteOrder`] if the
+/// list is not exactly the set of folders there are, [`PasswordsError::NotFound`] if one of them
+/// is not an identifier, [`PasswordsError::Storage`] if the database refuses.
+pub fn folders_reorder(state: &AppState, ids: &[String], now: i64) -> Result<(), PasswordsError> {
+    let ids = ids
+        .iter()
+        .map(|one| parsed(one))
+        .collect::<Result<Vec<Uuid>, PasswordsError>>()?;
+    let millis = now_ms();
+
+    writing(state, |storage, codec, connection| {
+        repository::reorder_folders(connection, codec, storage.next_hlc(millis), now, &ids)?;
+
+        Ok(((), None))
+    })
+}
+
+/// Empties the history of one entry, or of every entry.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if the scope
+/// names something that is not an identifier, [`PasswordsError::Storage`] if the database
+/// refuses.
+pub fn history_clear(
+    state: &AppState,
+    scope: &HistoryScopeDto,
+    now: i64,
+) -> Result<Cleared, PasswordsError> {
+    let scope = match scope {
+        HistoryScopeDto::Entry { id } => HistoryScope::Entry(parsed(id)?),
+        HistoryScopeDto::All => HistoryScope::All,
+    };
+    let millis = now_ms();
+
+    writing(state, |storage, _codec, connection| {
+        let rows = repository::clear_history(connection, storage.next_hlc(millis), now, scope)?;
+
+        Ok((Cleared { rows }, None))
+    })
+}
+
 /// Every entry a filter admits, one page at a time.
 ///
 /// # Errors
@@ -583,6 +898,323 @@ pub fn passwords_settings(
     state: tauri::State<'_, AppState>,
 ) -> Result<PasswordsSettings, PasswordsError> {
     settings(&state)
+}
+
+/// Writes a new entry down whole.
+///
+/// # Errors
+///
+/// See [`create`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_create(
+    state: tauri::State<'_, AppState>,
+    draft: EntryDraftDto,
+) -> Result<EntryDetail, PasswordsError> {
+    create(&state, &draft, now_us())
+}
+
+/// Saves a whole draft over an entry that already exists.
+///
+/// # Errors
+///
+/// See [`update`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_update(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    draft: EntryDraftDto,
+) -> Result<EntryDetail, PasswordsError> {
+    update(&state, &id, &draft, now_us())
+}
+
+/// Creates or renames a folder.
+///
+/// # Errors
+///
+/// See [`folder_save`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_folder_save(
+    state: tauri::State<'_, AppState>,
+    id: Option<String>,
+    name: String,
+) -> Result<FolderDto, PasswordsError> {
+    folder_save(&state, id.as_deref(), &name, now_us())
+}
+
+/// Removes a folder, leaving what was in it at the root.
+///
+/// # Errors
+///
+/// See [`folder_delete`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_folder_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<FolderDeleted, PasswordsError> {
+    folder_delete(&state, &id, now_us())
+}
+
+/// Puts the folders in the order they arrive in.
+///
+/// # Errors
+///
+/// See [`folders_reorder`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_folders_reorder(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), PasswordsError> {
+    folders_reorder(&state, &ids, now_us())
+}
+
+/// Empties a history.
+///
+/// # Errors
+///
+/// See [`history_clear`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_history_clear(
+    state: tauri::State<'_, AppState>,
+    scope: HistoryScopeDto,
+) -> Result<Cleared, PasswordsError> {
+    history_clear(&state, &scope, now_us())
+}
+
+/// What the search index has to be told after a write, once it is certain the write happened.
+type IndexUpdate = Option<(Uuid, Option<Searchable>)>;
+
+/// Runs a write inside one transaction, and tells the index about it only after it committed.
+///
+/// Two things this does that [`in_storage`] does not, and both are the reason it exists. The work
+/// runs inside a transaction, so an entry never exists with half its addresses: every refusal,
+/// including a draft the domain would not accept, leaves the file exactly as it was. And the
+/// index is updated after the commit rather than inside it, because an index taught about a write
+/// that then rolled back would find an entry that is not there.
+///
+/// The refusal is carried out past the transaction by hand. The transaction only knows how to
+/// roll back on a [`DbError`], and the errors this module refuses with do not all have one, so
+/// the real refusal is set aside and a sentinel is returned to make the rollback happen.
+fn writing<T>(
+    state: &AppState,
+    work: impl FnOnce(
+        &Storage,
+        &FieldCodec<'_>,
+        &Connection,
+    ) -> Result<(T, IndexUpdate), PasswordsError>,
+) -> Result<T, PasswordsError> {
+    state
+        .session()
+        .with_open(|vault, storage| {
+            let codec = storage.codec(vault);
+            let mut refused: Option<PasswordsError> = None;
+
+            let committed = storage.database().in_transaction(|transaction| {
+                match work(storage, &codec, transaction) {
+                    Ok(produced) => Ok(produced),
+                    Err(problem) => {
+                        refused = Some(problem);
+                        // Any error rolls the transaction back, and this one is never seen: the
+                        // refusal set aside just above is what the caller is answered with.
+                        Err(DbError::NotFound)
+                    }
+                }
+            });
+
+            match committed {
+                Ok((produced, update)) => {
+                    if let Some((id, entry)) = update {
+                        storage.note_entry(id, entry);
+                    }
+                    Ok(produced)
+                }
+                Err(cause) => Err(refused.unwrap_or_else(|| PasswordsError::from(cause))),
+            }
+        })
+        .unwrap_or(Err(PasswordsError::Locked))
+}
+
+/// Writes the addresses and the custom fields of an entry, in that order.
+fn write_children(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    storage: &Storage,
+    millis: u64,
+    now: i64,
+    id: Uuid,
+    draft: &EntryDraft,
+) -> Result<(), PasswordsError> {
+    let urls: Vec<&str> = draft.urls.iter().map(String::as_str).collect();
+    repository::replace_urls(
+        connection,
+        codec,
+        storage.device(),
+        storage.next_hlc(millis),
+        now,
+        id,
+        &urls,
+    )?;
+
+    let fields: Vec<NewField<'_>> = draft
+        .fields
+        .iter()
+        .map(|field| NewField {
+            label: &field.label,
+            value: &field.value,
+            secret: matches!(field.kind, FieldKind::Secret),
+        })
+        .collect();
+    repository::replace_fields(
+        connection,
+        codec,
+        storage.device(),
+        storage.next_hlc(millis),
+        now,
+        id,
+        &fields,
+    )?;
+
+    Ok(())
+}
+
+/// Turns what arrived from the form into something the repository may be handed.
+///
+/// Two substitutions happen before the judging, and both exist because [`get`] deliberately did
+/// not send the value back. A secret field whose value is absent keeps the one it had, paired by
+/// position exactly as `replace_fields` pairs them. The password is not substituted here: it is
+/// carried verbatim by [`update`], so that a save which does not touch it cannot alter it by
+/// being trimmed on the way past.
+fn validated(
+    draft: &EntryDraftDto,
+    existing_fields: &[repository::Field],
+) -> Result<ValidEntry, PasswordsError> {
+    let folder_id = match draft.folder_id.as_deref() {
+        Some(text) => {
+            Some(
+                Uuid::parse_str(text).map_err(|_not_a_uuid| PasswordsError::Invalid {
+                    problems: vec![FieldProblem {
+                        field: "folderId".to_owned(),
+                        index: None,
+                        code: "unknown".to_owned(),
+                        limit: None,
+                    }],
+                })?,
+            )
+        }
+        None => None,
+    };
+
+    let fields = draft
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(at, field)| DraftField {
+            label: field.label.clone(),
+            value: kept_value(field, existing_fields.get(at)),
+            kind: if field.secret {
+                FieldKind::Secret
+            } else {
+                FieldKind::Text
+            },
+        })
+        .collect();
+
+    EntryDraft {
+        kind: draft.kind.kind(),
+        title: draft.title.clone(),
+        username: draft.username.clone(),
+        password: draft.password.clone(),
+        notes: draft.notes.clone(),
+        urls: draft.urls.clone(),
+        fields,
+        folder_id,
+        favorite: draft.favorite,
+    }
+    .validate()
+    .map_err(|problems| PasswordsError::Invalid {
+        problems: problems.iter().map(field_problem).collect(),
+    })
+}
+
+/// The value a custom field is saved with, which may be the one it already had.
+///
+/// Absent only means "as it was" on a secret field, and only where the field in that position was
+/// also secret. Anywhere else there is nothing to keep: the form was sent the value, so a value
+/// it did not send back is a box somebody emptied.
+fn kept_value(field: &DraftFieldDto, previous: Option<&repository::Field>) -> String {
+    match field.value.as_deref() {
+        Some(value) => value.to_owned(),
+        None => match previous {
+            Some(previous) if field.secret && previous.secret => previous.value.to_string(),
+            _nothing_to_keep => String::new(),
+        },
+    }
+}
+
+/// Whether the password of an entry is about to become a different one.
+///
+/// Compared in constant time, because this runs on every save and a comparison that returns
+/// sooner for a password that shares a prefix is a comparison that says how long the prefix is.
+fn password_changed(current: Option<&str>, wanted: Option<&str>) -> bool {
+    match (current, wanted) {
+        (None, None) => false,
+        (Some(_), None) | (None, Some(_)) => true,
+        (Some(current), Some(wanted)) => !constant_time_eq(current.as_bytes(), wanted.as_bytes()),
+    }
+}
+
+/// What the index needs to know about an entry that was just written.
+fn searchable_of(id: Uuid, draft: &EntryDraft) -> Searchable {
+    Searchable {
+        id,
+        title: Zeroizing::new(draft.title.clone()),
+        username: draft.username.clone().map(Zeroizing::new),
+        urls: draft
+            .urls
+            .iter()
+            .map(|url| Zeroizing::new(url.clone()))
+            .collect(),
+    }
+}
+
+/// One problem from the domain, as the form names it.
+fn field_problem(error: &FieldError) -> FieldProblem {
+    let (code, limit) = match error.problem {
+        Problem::Missing => ("missing", None),
+        Problem::TooLong { limit, .. } => ("tooLong", Some(limit)),
+        Problem::TooMany { limit, .. } => ("tooMany", Some(limit)),
+        Problem::Control => ("control", None),
+    };
+
+    FieldProblem {
+        field: error.field.to_owned(),
+        index: error.index.map(|at| u32::try_from(at).unwrap_or(u32::MAX)),
+        code: code.to_owned(),
+        limit: limit.map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+    }
 }
 
 /// Runs something that needs the keys and the open database, collapsing the two error types.

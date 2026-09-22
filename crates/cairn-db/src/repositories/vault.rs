@@ -403,12 +403,109 @@ fn searchable_urls(
     Ok(grouped)
 }
 
+/// Saves a whole draft over an entry that already exists.
+///
+/// Reseals every sealed column at the new revision, because sealing one would leave the others
+/// authenticated under the old one. Does **not** touch `trashed_at`, `deleted` or the history:
+/// the history is [`replace_password`]'s business and the bin is [`set_trashed`]'s.
+///
+/// Runs inside whatever transaction the caller has open, for the same reason as everything else
+/// that writes an entry: a row saved without its addresses is a state no screen can draw.
+///
+/// # Errors
+///
+/// Returns [`DbError::NotFound`] if there is no live entry with that identifier or it is in the
+/// bin, [`DbError::TooMany`] if the title is empty or a value is longer than [`MAX_VALUE_BYTES`],
+/// [`DbError::Sealed`] if a value cannot be encrypted, and [`DbError::Sqlite`] if the statement
+/// fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one more than `create_entry`, which is the row being written over; grouping them would invent a type whose only purpose is to be taken apart again on the next line"
+)]
+pub fn update_entry(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    device: DeviceId,
+    hlc: Hlc,
+    now_us: i64,
+    id: Uuid,
+    entry: NewEntry<'_>,
+    kind: EntryKind,
+) -> Result<(), DbError> {
+    check_value("the title of an entry", Some(entry.title))?;
+    check_value("the user name of an entry", entry.username)?;
+    check_value("the password of an entry", entry.password)?;
+    check_value("the notes of an entry", entry.notes)?;
+    if entry.title.is_empty() {
+        return Err(DbError::TooMany {
+            what: "the length of an entry title",
+            value: 0,
+            max: MAX_VALUE_BYTES as u64,
+        });
+    }
+
+    // Through the reader that leaves the bin out, so that editing something somebody threw away
+    // is the same answer as editing something that was never there.
+    if entry_stamp_outside_the_bin(connection, id)?.is_none() {
+        return Err(DbError::NotFound);
+    }
+    let Some(stored) = read_entry_stamp(connection, id)? else {
+        return Err(DbError::NotFound);
+    };
+    let revised = stored.revised(hlc, now_us);
+
+    let sealed = codec.seal_row(
+        RowKey {
+            table: ENTRIES_TABLE,
+            row_id: revised.id,
+            rev: revised.rev,
+        },
+        ENTRIES_SEALED,
+        &[
+            ("title", Some(entry.title.as_bytes())),
+            ("username", entry.username.map(str::as_bytes)),
+            ("password", entry.password.map(str::as_bytes)),
+            ("notes", entry.notes.map(str::as_bytes)),
+        ],
+    )?;
+
+    connection
+        .prepare_cached(
+            "UPDATE vault_entries
+                SET updated_at = ?2, device_id = ?3, hlc = ?4, rev = ?5,
+                    title = ?6, username = ?7, password = ?8, notes = ?9,
+                    folder_id = ?10, favorite = ?11, kind = ?12
+              WHERE id = ?1",
+        )?
+        .execute(params![
+            revised.id.as_bytes().as_slice(),
+            revised.updated_at,
+            device.as_bytes().as_slice(),
+            revised.hlc_as_stored().as_slice(),
+            revised.rev_as_stored(),
+            sealed.first().and_then(Option::as_ref),
+            sealed.get(1).and_then(Option::as_ref),
+            sealed.get(2).and_then(Option::as_ref),
+            sealed.get(3).and_then(Option::as_ref),
+            entry.folder_id.map(|folder| folder.as_bytes().to_vec()),
+            i64::from(entry.favorite),
+            kind_as_stored(kind),
+        ])?;
+
+    Ok(())
+}
+
 /// Replaces the password of an entry, keeping the old one in the history.
 ///
 /// Three writes in one call, and they belong together: the entry is revised, the password it had
 /// is written to the history, and the history is trimmed. A caller that did the first without the
 /// second would lose a password with no way to get it back, which is the failure the history
 /// exists for.
+///
+/// `None` is an entry that has no password from now on. Taking one away is changing it, so the
+/// one it had goes to the history exactly as a replacement does; what the column holds afterwards
+/// is a literal null rather than an encrypted empty string, because "no password" and "a password
+/// with nothing in it" must not be two different rows that draw the same.
 ///
 /// Runs inside whatever transaction the caller has open. It does not start one, because the
 /// caller usually has more to do and two transactions around one change is a change that can be
@@ -427,9 +524,9 @@ pub fn replace_password(
     hlc: Hlc,
     now_us: i64,
     id: Uuid,
-    password: &str,
+    password: Option<&str>,
 ) -> Result<(), DbError> {
-    check_value("the password of an entry", Some(password))?;
+    check_value("the password of an entry", password)?;
 
     let Some(existing) = entry(connection, codec, id)? else {
         return Err(DbError::NotFound);
@@ -444,7 +541,7 @@ pub fn replace_password(
         codec,
         &revised,
         &Entry {
-            password: Some(Zeroizing::new(password.to_owned())),
+            password: password.map(|text| Zeroizing::new(text.to_owned())),
             ..existing.clone()
         },
     )?;
@@ -1855,6 +1952,23 @@ fn open_optional(
         .transpose()
 }
 
+/// Answers with the identifier only if it names a live entry that is not in the bin.
+///
+/// A row and nothing else: the question is whether the entry may be written to, and reading its
+/// sealed columns to find out would decrypt four values in order to throw them away.
+fn entry_stamp_outside_the_bin(connection: &Connection, id: Uuid) -> Result<Option<Uuid>, DbError> {
+    let found: Option<Vec<u8>> = connection
+        .prepare_cached(&format!(
+            "SELECT id FROM vault_entries WHERE id = ?1 AND deleted = 0 {NOT_IN_THE_BIN} LIMIT 1"
+        ))?
+        .query_row([id.as_bytes().as_slice()], |row| row.get(0))
+        .optional()?;
+
+    found
+        .map(|bytes| Ok(Uuid::from_bytes(sixteen(&bytes)?)))
+        .transpose()
+}
+
 /// Reads the common columns of a live entry.
 fn read_entry_stamp(connection: &Connection, id: Uuid) -> Result<Option<RowStamp>, DbError> {
     let found = connection
@@ -2028,7 +2142,7 @@ mod tests {
         HistoryScope, MAX_HISTORY, NewEntry, NewField, Sweep, clear_history, create_entry,
         delete_entry, delete_folder, empty_bin, entries, entry, fields, folders, history_len,
         history_moments, history_password, reorder_folders, replace_fields, replace_password,
-        replace_urls, save_folder, searchable, set_trashed, trashed, urls,
+        replace_urls, save_folder, searchable, set_trashed, trashed, update_entry, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -2196,7 +2310,7 @@ mod tests {
                     at(2),
                     NOW_US + 1,
                     written.id,
-                    "contraseña-dos",
+                    Some("contraseña-dos"),
                 )?;
 
                 // The whole row is resealed, so the three columns that did not change have to
@@ -2248,7 +2362,7 @@ mod tests {
                         at(step),
                         NOW_US + i64::try_from(step).unwrap_or(0),
                         written.id,
-                        &format!("contraseña-{step}"),
+                        Some(&format!("contraseña-{step}")),
                     )?;
                 }
 
@@ -2303,7 +2417,7 @@ mod tests {
                     at(2),
                     NOW_US + 1,
                     written.id,
-                    "la primera",
+                    Some("la primera"),
                 )?;
 
                 assert_eq!(
@@ -2337,7 +2451,7 @@ mod tests {
                     at(2),
                     NOW_US + 1,
                     written.id,
-                    "contraseña-dos",
+                    Some("contraseña-dos"),
                 )?;
 
                 delete_entry(connection, at(3), NOW_US + 2, written.id)?;
@@ -3088,7 +3202,7 @@ mod tests {
                 at(step + 1),
                 NOW_US + i64::try_from(step).unwrap_or(0),
                 written.id,
-                &format!("contraseña-{step}"),
+                Some(&format!("contraseña-{step}")),
             )?;
         }
 
@@ -3721,7 +3835,7 @@ mod tests {
             at(4),
             NOW_US + 1,
             written.id,
-            "contraseña-dos",
+            Some("contraseña-dos"),
         )?;
 
         Ok(written.id)
@@ -4091,6 +4205,125 @@ mod tests {
                 Ok(())
             })
             .expect("a hundred round trips change nothing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn saving_a_whole_draft_over_an_entry_replaces_every_column_and_keeps_the_history() {
+        let bench = Bench::new("vault-update-entry");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                let before = history_len(connection, id)?;
+
+                update_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(50),
+                    NOW_US + 1,
+                    id,
+                    NewEntry {
+                        title: "Caja",
+                        username: None,
+                        password: Some("contraseña-uno"),
+                        notes: Some("otra nota"),
+                        folder_id: None,
+                        favorite: true,
+                    },
+                    EntryKind::Note,
+                )?;
+
+                // Read through the ordinary reader, which decrypts every column: a row resealed at
+                // the new revision that had one column left at the old one would fail right here.
+                let read = entry(connection, &codec, id)?.expect("it is still there");
+                assert_eq!(read.title.as_str(), "Caja");
+                assert_eq!(read.username, None);
+                assert_eq!(read.notes.as_deref().map(String::as_str), Some("otra nota"));
+                assert!(read.favorite);
+                assert_eq!(read.kind, EntryKind::Note);
+
+                // Untouched, both of them: the history belongs to `replace_password` and the bin
+                // to `set_trashed`.
+                assert_eq!(history_len(connection, id)?, before);
+                assert_eq!(read.trashed_at, None);
+
+                Ok(())
+            })
+            .expect("a whole draft can be saved over an entry");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn saving_over_something_in_the_bin_is_refused() {
+        let bench = Bench::new("vault-update-binned");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                set_trashed(connection, &codec, at(60), NOW_US + 1, id, true)?;
+
+                let refused = update_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(61),
+                    NOW_US + 2,
+                    id,
+                    an_entry("Otro nombre"),
+                    EntryKind::Account,
+                );
+
+                assert!(matches!(refused, Err(DbError::NotFound)));
+                Ok(())
+            })
+            .expect("the refusal is the answer, not a failure");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn taking_the_password_away_keeps_the_one_it_had() {
+        let bench = Bench::new("vault-password-removed");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                let before = history_len(connection, id)?;
+
+                replace_password(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(70),
+                    NOW_US + 1,
+                    id,
+                    None,
+                )?;
+
+                let read = entry(connection, &codec, id)?.expect("it is still there");
+                assert_eq!(
+                    read.password, None,
+                    "an entry with no password must hold a null, not an encrypted empty string"
+                );
+                assert_eq!(
+                    history_len(connection, id)?,
+                    before + 1,
+                    "taking a password away is changing it, and the old one was not kept"
+                );
+
+                Ok(())
+            })
+            .expect("a password can be taken away");
 
         database.close().expect("the connection closes");
     }

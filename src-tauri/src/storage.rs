@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use cairn_crypto::UnlockedVault;
 use cairn_db::backup::swap;
 use cairn_db::codec::FieldCodec;
-use cairn_db::search::{Results, SearchIndex};
+use cairn_db::search::{Results, SearchIndex, Searchable};
 use cairn_db::{
     DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
 };
@@ -119,6 +119,15 @@ impl Storage {
             self.database
                 .with(|connection| index.build(connection, &codec))
         })
+    }
+
+    /// Tells the index what one entry now is, or that it is no longer there.
+    ///
+    /// Called after a write has committed, never before: an index taught about a write that then
+    /// rolled back would find an entry that does not exist, and the person would be looking at a
+    /// result they cannot open.
+    pub fn note_entry(&self, id: uuid::Uuid, entry: Option<Searchable>) {
+        self.with_titles(|index| index.upsert(id, entry));
     }
 
     /// How many titles the index holds, and whether it holds all of them.
