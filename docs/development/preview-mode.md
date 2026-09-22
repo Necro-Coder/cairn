@@ -16,6 +16,12 @@ The obvious case is a phone. The application is eventually meant to run inside W
 
 The less obvious case is simply being able to look at two versions of a screen side by side, in tabs, with the browser's own developer tools, without restarting a desktop application.
 
+## Opening it on an empty list
+
+Add `?sin-habitos` to the address and the stand-in starts with no habits at all.
+
+The first day of a list is a real screen rather than a placeholder, so somebody has to be able to look at it, and the only other way to reach it is to delete every habit one by one. It is read once, when the page loads, so nothing changes under a screen that is already drawn, and it is the one switch that module has: everything else it answers is fixed.
+
 ## What it is not for
 
 **It validates nothing about the core.** There is no Rust behind a browser tab. No encryption happens, no database is opened, no command crosses any boundary. A screen that looks right here can still be broken in the real application, and the reverse is also true.

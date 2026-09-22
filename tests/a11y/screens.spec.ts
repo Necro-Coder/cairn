@@ -76,7 +76,9 @@ for (const [section, title] of [
 }
 
 for (const [section, action, said] of [
-  ['Hábitos', 'Añadir hábito', /Crear y marcar hábitos llega/],
+  // Habits is not in this list any more. The module works, so nothing on its screen is drawn
+  // before it does anything, and the badge that says so came off with the mock-up.
+  //
   // Named one by one rather than matched loosely: the passwords screen says the same thing
   // twice, once about the search field and once about the list, and a pattern that caught
   // both would be a test that passed while the button did nothing.
@@ -96,17 +98,172 @@ for (const [section, action, said] of [
   });
 }
 
-test('the habits year, drawn with nothing in it', async ({ page }) => {
+test('the habits list, with what today asks for on it', async ({ page }) => {
   await open(page);
   await createVault(page);
   await openSection(page, 'Hábitos');
 
-  // The grid itself is hidden from assistive technology, so what has to be reachable is
-  // the sentence that says what it is. A grid nobody can have described to them, with no
-  // caption, would be three hundred squares of nothing.
-  await expect(page.getByRole('heading', { level: 2, name: 'Tu año' })).toBeVisible();
-  await expect(page.getByText(/Un cuadro por día/)).toBeVisible();
-  await expectNoViolations(page, 'the habits year');
+  // Every row is a control with a name that says what pressing it does, which is the half
+  // of this screen a mouse never exercises.
+  await expect(page.getByRole('button', { name: 'Marcar hoy en Meditar' })).toBeVisible();
+  await expectNoViolations(page, 'the habits list');
+});
+
+test('one habit opened, with its year and its numbers', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+
+  // The year is a figure with a caption rather than a grid announced cell by cell, and the
+  // arrows are the half of it that has to be reachable from the keyboard.
+  await expect(page.getByRole('heading', { level: 1, name: 'Meditar' })).toBeVisible();
+  await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
+  await expectNoViolations(page, 'one habit opened');
+});
+
+test('stepping back a year, which asks for one more calendar and nothing else', async ({
+  page,
+}) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  // The habit that was put away is the one whose marks reach the year before. On the active
+  // ones the arrow is unavailable, and rightly so: there is nothing behind it to draw.
+  await page.getByRole('button', { name: 'Archivados', exact: true }).click();
+  await page.getByRole('button', { name: 'Abrir Leer antes de dormir' }).click();
+  await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
+
+  // The year is read off the arrow instead of worked out here. The one on screen is the
+  // core's, and a test that decided for itself what year it is would disagree with it on the
+  // thirty-first of December. Only the arrow that leads somewhere carries this title, and on
+  // the year in progress the other one is unavailable, so this names exactly one button.
+  const back = page.getByTitle(/^Ir a /);
+  const before = ((await back.textContent()) ?? '').trim();
+  await back.click();
+
+  await expect(page.getByRole('heading', { level: 2, name: `El año ${before}` })).toBeVisible();
+  await expect(page.getByText(new RegExp(`cada día de ${before}`))).toBeVisible();
+  await expectNoViolations(page, 'one habit, a year back');
+});
+
+test('the habits list with nothing in it', async ({ page }) => {
+  // The first day of a list is a real screen, and until the screen that deletes a habit
+  // exists there is no way to reach it from inside the interface. The preview opens on it
+  // when the address asks, which is the one switch that file has.
+  await page.goto('/?sin-habitos');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  await expect(page.getByText(/Hoy no hay nada que marcar/)).toBeVisible();
+  await expectNoViolations(page, 'the habits list, empty');
+});
+
+test('the form for a habit that does not exist yet', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Añadir hábito' }).click();
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Nuevo hábito' })).toBeVisible();
+  // Every control has a label of its own, and the fields that only belong to a habit
+  // counting a quantity are absent rather than disabled.
+  await expect(page.getByLabel('Nombre')).toBeVisible();
+  await expect(page.getByLabel('Objetivo por período')).toHaveCount(0);
+  await expectNoViolations(page, 'the new habit form');
+});
+
+test('the form with the quantity fields on it', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Añadir hábito' }).click();
+
+  // Naming a unit is what brings the other two out. They appear rather than un-dim.
+  await page.getByLabel('Unidad').fill('ml');
+
+  await expect(page.getByLabel('Objetivo por período')).toBeVisible();
+  await expectNoViolations(page, 'the new habit form, counting a quantity');
+});
+
+test('the form on a habit that already exists', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Editar' }).click();
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Editar hábito' })).toBeVisible();
+  await expect(page.getByLabel('Nombre')).toHaveValue('Meditar');
+  await expectNoViolations(page, 'the edit habit form');
+});
+
+test('the warning that says what changing a habit would mean', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Editar' }).click();
+  await expect(page.getByLabel('Nombre')).toHaveValue('Meditar');
+
+  // Turning the habit round is exactly the change that alters what the run means.
+  await page.getByLabel('Quiero evitarlo, como mucho').check();
+  await page.getByRole('button', { name: 'Guardar los cambios' }).click();
+
+  const warning = page.getByRole('dialog');
+  await expect(warning).toBeVisible();
+  await expect(warning.getByText(/No se ha guardado nada todavía/)).toBeVisible();
+  await expectNoViolations(page, 'the warning before saving');
+
+  // Escape is the same as cancelling, which is the promise a dialog makes.
+  await page.keyboard.press('Escape');
+  await expect(warning).toHaveCount(0);
+});
+
+test('the list of habits that have been put away', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  // Exact, because every row carries a button called «Guardar <hábito> en archivados» and a
+  // loose match reaches all of them as well as the filter.
+  await page.getByRole('button', { name: 'Archivados', exact: true }).click();
+
+  // An archived habit keeps its whole history, so the row still reads as a habit and the one
+  // control it gains is the way back.
+  await expect(page.getByRole('button', { name: /^Devolver .* a la lista de hoy$/ })).toBeVisible();
+  await expectNoViolations(page, 'the archived habits');
+});
+
+test('putting a habit away from the list, and the line that says so', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  await page.getByRole('button', { name: 'Guardar Meditar en archivados' }).click();
+
+  // The row goes and nothing on screen points at where it went, so it is said.
+  await expect(page.getByText(/Meditar se ha guardado/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Marcar hoy en Meditar' })).toHaveCount(0);
+  await expectNoViolations(page, 'a habit put away');
+});
+
+test('the confirmation before deleting, which names what is lost', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await page.getByRole('button', { name: 'Borrar', exact: true }).click();
+
+  const asking = page.getByRole('dialog');
+  await expect(asking).toBeVisible();
+  // A confirmation that does not name what is lost is a confirmation nobody read.
+  await expect(asking.getByText(/todos los días que marcaste/)).toBeVisible();
+  await expectNoViolations(page, 'the confirmation before deleting');
+
+  await page.keyboard.press('Escape');
+  await expect(asking).toHaveCount(0);
 });
 
 test('the passwords search, switched off with its reason', async ({ page }) => {
