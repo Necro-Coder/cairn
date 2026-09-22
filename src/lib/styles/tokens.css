@@ -109,6 +109,31 @@
    */
   --brand-glyph: #c4380a;
 
+  /* ---------------------------------------------------------------- habits calendar */
+  /*
+   * The five squares a year of one habit is drawn with.
+   *
+   * Their own family rather than four references to the status colours, and the reason is
+   * that they are not statuses: a missed day is not an error, and a day the habit never
+   * asked about is not a warning. Naming them after what they are is what stops somebody
+   * reading a red calendar as a broken application.
+   *
+   * Every one of them is held to 3:1 against both surfaces, because a square carries its
+   * meaning through colour and is the one place in this system where that is true. `quiet`
+   * is text-faint rather than a border colour for exactly that reason: the border greys
+   * measure about 2:1 on paper, which is fine for a rule between rows and not fine for the
+   * only thing telling somebody a day was not asked for.
+   *
+   * They are also drawn as five different shapes — filled, filled with a hole, outlined, a
+   * dot on its own, and a dashed outline — so that the five stay apart in greyscale. That is
+   * not belt and braces; it is the rule that status colour is never the only signal, applied
+   * to a grid with no room for a word beside each square.
+   */
+  --colour-heatmap-done: #2c7a44;
+  --colour-heatmap-missed: #b8272c;
+  --colour-heatmap-extra: #1b4fd8;
+  --colour-heatmap-quiet: #6b665d;
+
   /* ------------------------------------------------------------------------ space */
   /* A four pixel grid. Nothing in between, ever. */
   --space-1: 0.25rem;
@@ -230,6 +255,12 @@
   --habit-row-min: 15rem;
   /* Four digits and their spinner, which is every quantity this product counts in a day. */
   --habit-amount-width: 7rem;
+  /* The dot that stands for a day the habit never asked about, and the hole in the middle of
+   * a day that went beyond what was asked. Small enough to read as a mark and not a square. */
+  --heatmap-dot-size: 0.3125rem;
+  /* The narrowest the whole year may get before it scrolls sideways instead of squashing.
+   * Fifty-three columns and a gap each: below this a square stops being a square. */
+  --heatmap-min-width: 24rem;
   --field-max-width: 28rem;
   --form-max-width-narrow: 30rem;
   --form-max-width: 34rem;
@@ -285,6 +316,11 @@
     --mark-ink: #f2efe9;
 
     --brand-glyph: #ff5a1f;
+
+    --colour-heatmap-done: #63c281;
+    --colour-heatmap-missed: #f2696d;
+    --colour-heatmap-extra: #5b8cff;
+    --colour-heatmap-quiet: #8a8781;
   }
 }
 
@@ -329,6 +365,11 @@
   --mark-ink: #f2efe9;
 
   --brand-glyph: #ff5a1f;
+
+  --colour-heatmap-done: #63c281;
+  --colour-heatmap-missed: #f2696d;
+  --colour-heatmap-extra: #5b8cff;
+  --colour-heatmap-quiet: #8a8781;
 }
 
 /*
