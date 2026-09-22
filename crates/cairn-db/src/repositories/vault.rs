@@ -23,7 +23,8 @@
 //! them, because the module they were for is not one this product has.
 
 use cairn_domain::vault::{
-    MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS,
+    EntryKind, MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS,
+    TrashState, trash,
 };
 use cairn_domain::{Hlc, Rev, tree};
 use rusqlite::{Connection, OptionalExtension as _, params};
@@ -106,6 +107,13 @@ pub struct Entry {
     pub favorite: bool,
     /// When it was last used, in microseconds since the epoch, or `None` if it never has been.
     pub last_used_at: Option<i64>,
+    /// Whether it is an account or a note.
+    pub kind: EntryKind,
+    /// When it was thrown away, or `None` for one that is not in the bin.
+    ///
+    /// A state before [`Entry::deleted`] rather than a shade of it: a row in the bin keeps every
+    /// byte of its ciphertext, and a deleted one has lost all of it.
+    pub trashed_at: Option<i64>,
     /// Whether it is a tombstone.
     pub deleted: bool,
     /// The clock reading of the last write, which is also where the next page starts.
@@ -143,6 +151,7 @@ pub fn create_entry(
     hlc: Hlc,
     now_us: i64,
     entry: NewEntry<'_>,
+    kind: EntryKind,
 ) -> Result<Entry, DbError> {
     check_value("the title of an entry", Some(entry.title))?;
     check_value("the user name of an entry", entry.username)?;
@@ -176,8 +185,9 @@ pub fn create_entry(
         .prepare_cached(
             "INSERT INTO vault_entries
                  (id, created_at, updated_at, device_id, deleted, hlc, rev,
-                  title, username, password, notes, folder_id, favorite, last_used_at)
-             VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)",
+                  title, username, password, notes, folder_id, favorite, last_used_at,
+                  kind, trashed_at)
+             VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, NULL)",
         )?
         .execute(params![
             stamp.id.as_bytes().as_slice(),
@@ -191,6 +201,7 @@ pub fn create_entry(
             sealed.get(3).and_then(Option::as_ref),
             entry.folder_id.map(|id| id.as_bytes().to_vec()),
             i64::from(entry.favorite),
+            kind_as_stored(kind),
         ])?;
 
     Ok(Entry {
@@ -202,6 +213,8 @@ pub fn create_entry(
         folder_id: entry.folder_id,
         favorite: entry.favorite,
         last_used_at: None,
+        kind,
+        trashed_at: None,
         deleted: false,
         hlc: stamp.hlc,
     })
@@ -220,7 +233,7 @@ pub fn entry(
 ) -> Result<Option<Entry>, DbError> {
     let found = connection
         .prepare_cached(&format!(
-            "{ENTRY_PROJECTION} WHERE id = ?1 AND deleted = 0 LIMIT 1"
+            "{ENTRY_PROJECTION} WHERE id = ?1 AND deleted = 0 {NOT_IN_THE_BIN} LIMIT 1"
         ))?
         .query_row([id.as_bytes().as_slice()], read_entry)
         .optional()?;
@@ -250,7 +263,7 @@ pub fn entries(
 
     let start = after.map_or([0_u8; 16], Hlc::to_bytes);
     let mut statement = connection.prepare_cached(&format!(
-        "{ENTRY_PROJECTION} WHERE deleted = 0 AND hlc > ?1 ORDER BY hlc LIMIT ?2"
+        "{ENTRY_PROJECTION} WHERE deleted = 0 {NOT_IN_THE_BIN} AND hlc > ?1 ORDER BY hlc LIMIT ?2"
     ))?;
 
     let rows = statement
@@ -298,9 +311,11 @@ pub const MAX_TITLES: usize = 100_000;
 /// Returns [`DbError::Sealed`] if a title does not open, and [`DbError::Sqlite`] if the
 /// statement fails.
 pub fn titles(connection: &Connection, codec: &FieldCodec<'_>) -> Result<Titles, DbError> {
-    let mut statement = connection.prepare_cached(
-        "SELECT id, rev, title FROM vault_entries WHERE deleted = 0 ORDER BY hlc LIMIT ?1",
-    )?;
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT id, rev, title FROM vault_entries
+              WHERE deleted = 0 {NOT_IN_THE_BIN}
+              ORDER BY hlc LIMIT ?1"
+    ))?;
 
     // One more than the ceiling, so the answer to "was there more" comes from the same read
     // rather than from a second count that could disagree with it.
@@ -371,25 +386,14 @@ pub fn replace_password(
     };
     let revised = stored.revised(hlc, now_us);
 
-    // The whole row is resealed at the new revision, not just the column that changed. Sealing
-    // one column would leave the other three authenticated under the old revision, and the next
-    // read of them would fail with an error that says a value did not decrypt and nothing else.
-    let sealed = codec.seal_row(
-        RowKey {
-            table: ENTRIES_TABLE,
-            row_id: revised.id,
-            rev: revised.rev,
+    // The whole row is resealed at the new revision, not just the column that changed.
+    let sealed = reseal_entry(
+        codec,
+        &revised,
+        &Entry {
+            password: Some(Zeroizing::new(password.to_owned())),
+            ..existing.clone()
         },
-        ENTRIES_SEALED,
-        &[
-            ("title", Some(existing.title.as_bytes())),
-            (
-                "username",
-                existing.username.as_deref().map(String::as_bytes),
-            ),
-            ("password", Some(password.as_bytes())),
-            ("notes", existing.notes.as_deref().map(String::as_bytes)),
-        ],
     )?;
 
     connection
@@ -958,6 +962,194 @@ pub fn create_folder(
     Ok(stamp.id)
 }
 
+/// One entry in the bin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trashed {
+    /// The row's identifier.
+    pub id: Uuid,
+    /// What the entry is called, which is all the bin screen draws of it.
+    pub title: Zeroizing<String>,
+    /// Whether it is an account or a note.
+    pub kind: EntryKind,
+    /// Where it stands, which is what the screen prints beside it.
+    pub state: TrashState,
+}
+
+/// How much of the bin to empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sweep {
+    /// Only what is past its thirty days.
+    Expired,
+    /// The lot.
+    All,
+}
+
+/// Throws an entry away, or takes it back out.
+///
+/// The bin is not the deletion. [`delete_entry`] empties every encrypted column of the row, so
+/// there is no coming back from it; this only writes a moment into a column that is otherwise
+/// null, and the row keeps every byte it had. That is what makes restoring possible at all.
+///
+/// Idempotent in both directions: throwing away something already in the bin leaves the moment
+/// it went in, rather than resetting the thirty days every time somebody clicks twice.
+///
+/// Takes the codec because a write here is a revision like any other, and every encrypted column
+/// of the row is authenticated against the revision it was written at. Raising the revision
+/// without resealing them would leave a row whose title stops opening the next time anybody
+/// looks at it.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if there is no live entry with that identifier, [`DbError::Sealed`] if
+/// a value does not open or cannot be sealed again, [`DbError::Sqlite`].
+pub fn set_trashed(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    hlc: Hlc,
+    now_us: i64,
+    id: Uuid,
+    trashed: bool,
+) -> Result<(), DbError> {
+    let Some(stored) = read_entry_stamp(connection, id)? else {
+        return Err(DbError::NotFound);
+    };
+    let Some(existing) = read_any_entry(connection, codec, id)? else {
+        return Err(DbError::NotFound);
+    };
+
+    let revised = stored.revised(hlc, now_us);
+    let sealed = reseal_entry(codec, &revised, &existing)?;
+
+    // `coalesce` is what makes the second click do nothing. Clearing is the other direction and
+    // says so with a literal null rather than by leaving the column alone.
+    let moment = if trashed {
+        Some(now_us)
+    } else {
+        Option::<i64>::None
+    };
+
+    connection
+        .prepare_cached(
+            "UPDATE vault_entries
+                SET updated_at = ?2, hlc = ?3, rev = ?4,
+                    title = ?5, username = ?6, password = ?7, notes = ?8,
+                    trashed_at = CASE WHEN ?9 IS NULL THEN NULL
+                                      ELSE coalesce(trashed_at, ?9) END
+              WHERE id = ?1",
+        )?
+        .execute(params![
+            revised.id.as_bytes().as_slice(),
+            revised.updated_at,
+            revised.hlc_as_stored().as_slice(),
+            revised.rev_as_stored(),
+            sealed.first().and_then(Option::as_ref),
+            sealed.get(1).and_then(Option::as_ref),
+            sealed.get(2).and_then(Option::as_ref),
+            sealed.get(3).and_then(Option::as_ref),
+            moment,
+        ])?;
+
+    Ok(())
+}
+
+/// The entries in the bin, newest first, with how long each has left.
+///
+/// Opens the title and nothing else. The bin draws a name and a countdown, so the password of
+/// something somebody threw away has no reason to be read at all.
+///
+/// # Errors
+///
+/// [`DbError::TooMany`] if more than [`MAX_PAGE`] rows are asked for, [`DbError::Sealed`] if a
+/// row does not open, [`DbError::Sqlite`].
+pub fn trashed(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    now_us: i64,
+    limit: usize,
+) -> Result<Vec<Trashed>, DbError> {
+    check_count("the size of a page of the bin", limit, MAX_PAGE)?;
+
+    let mut statement = connection.prepare_cached(
+        "SELECT id, rev, title, kind, trashed_at FROM vault_entries
+          WHERE deleted = 0 AND trashed_at IS NOT NULL
+          ORDER BY trashed_at DESC, id DESC
+          LIMIT ?1",
+    )?;
+
+    let rows = statement
+        .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut bin = Vec::with_capacity(rows.len());
+    for (id, rev, title, kind, trashed_at) in rows {
+        let row = child_row(ENTRIES_TABLE, &id, rev)?;
+        bin.push(Trashed {
+            id: row.row_id,
+            title: open_optional(codec, row, "title", title)?.ok_or_else(damaged)?,
+            kind: read_kind(kind)?,
+            state: trash::state(now_us, Some(trashed_at), false),
+        });
+    }
+
+    Ok(bin)
+}
+
+/// Destroys everything in the bin that has been there longer than it may be, or all of it.
+///
+/// Called with [`Sweep::Expired`] when the vault opens and with [`Sweep::All`] when somebody
+/// presses the button. Each entry destroyed goes through [`delete_entry`], so there is exactly
+/// one place in this application where a row loses its contents, and adding a column to the
+/// schema cannot leave a second copy of that statement behind still emptying the old six.
+///
+/// Runs inside whatever transaction the caller has open.
+///
+/// # Errors
+///
+/// [`DbError::Sqlite`].
+pub fn empty_bin(
+    connection: &Connection,
+    hlc: Hlc,
+    now_us: i64,
+    sweep: Sweep,
+) -> Result<u32, DbError> {
+    // The cutoff comes from the domain, so the thirty days is written once, where the difference
+    // between it and the hundred and eighty is explained.
+    let cutoff = match sweep {
+        Sweep::Expired => trash::bin_cutoff_us(now_us),
+        Sweep::All => i64::MAX,
+    };
+
+    let doomed: Vec<Uuid> = {
+        let mut statement = connection.prepare_cached(
+            "SELECT id FROM vault_entries
+              WHERE deleted = 0 AND trashed_at IS NOT NULL AND trashed_at <= ?1",
+        )?;
+        let rows = statement
+            .query_map(params![cutoff], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        rows.iter()
+            .map(|id| sixteen(id).map(Uuid::from_bytes))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut destroyed = 0_u32;
+    for id in doomed {
+        delete_entry(connection, hlc, now_us, id)?;
+        destroyed = destroyed.saturating_add(1);
+    }
+
+    Ok(destroyed)
+}
+
 /// Marks an entry as deleted and empties every encrypted column it has.
 ///
 /// All four, the title included. Decision nine says every encrypted column of the row, without an
@@ -1010,12 +1202,47 @@ pub fn delete_entry(
             gone.hlc_as_stored().as_slice(),
         ])?;
 
+    // The addresses and the custom fields go the same way. An entry whose skeleton survives
+    // holding the address of the bank and the label "PIN de la tarjeta" has had its title deleted
+    // and everything the title was hiding left in place.
+    connection
+        .prepare_cached(
+            "UPDATE vault_urls
+                SET deleted = 1, updated_at = ?2, hlc = ?3, rev = rev + 1, value = NULL
+              WHERE entry_id = ?1 AND deleted = 0",
+        )?
+        .execute(params![
+            gone.id.as_bytes().as_slice(),
+            gone.updated_at,
+            gone.hlc_as_stored().as_slice(),
+        ])?;
+
+    connection
+        .prepare_cached(
+            "UPDATE vault_fields
+                SET deleted = 1, updated_at = ?2, hlc = ?3, rev = rev + 1,
+                    label = NULL, value = NULL
+              WHERE entry_id = ?1 AND deleted = 0",
+        )?
+        .execute(params![
+            gone.id.as_bytes().as_slice(),
+            gone.updated_at,
+            gone.hlc_as_stored().as_slice(),
+        ])?;
+
     Ok(())
 }
 
 /// The columns every entry query reads, in the order [`read_entry`] expects them.
 const ENTRY_PROJECTION: &str = "SELECT id, hlc, rev, deleted, title, username, password, notes, \
-                                folder_id, favorite, last_used_at FROM vault_entries";
+                                folder_id, favorite, last_used_at, kind, trashed_at \
+                                FROM vault_entries";
+
+/// What every query of this module adds so that the bin stays out of every list but its own.
+///
+/// Written once and pasted into each statement, because an entry somebody threw away that still
+/// turns up in a list is a bin that does nothing.
+const NOT_IN_THE_BIN: &str = "AND trashed_at IS NULL";
 
 /// One entry exactly as the projection hands it back.
 type StoredEntry = (
@@ -1028,6 +1255,8 @@ type StoredEntry = (
     Option<Vec<u8>>,
     Option<Vec<u8>>,
     Option<Vec<u8>>,
+    i64,
+    Option<i64>,
     i64,
     Option<i64>,
 );
@@ -1046,13 +1275,48 @@ fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEntry> {
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
     ))
+}
+
+/// What the `kind` column holds.
+///
+/// A value the schema's check makes impossible is reported the way a value that does not open is:
+/// the row was written by something that is not this program, and from here the two are the same.
+fn read_kind(stored: i64) -> Result<EntryKind, DbError> {
+    match stored {
+        0 => Ok(EntryKind::Account),
+        1 => Ok(EntryKind::Note),
+        _other => Err(damaged()),
+    }
+}
+
+/// What the `kind` column takes.
+const fn kind_as_stored(kind: EntryKind) -> i64 {
+    match kind {
+        EntryKind::Account => 0,
+        EntryKind::Note => 1,
+    }
 }
 
 /// Checks a stored entry and opens its four encrypted columns.
 fn decode_entry(codec: &FieldCodec<'_>, stored: StoredEntry) -> Result<Entry, DbError> {
-    let (id, hlc, rev, deleted, title, username, password, notes, folder, favorite, last_used) =
-        stored;
+    let (
+        id,
+        hlc,
+        rev,
+        deleted,
+        title,
+        username,
+        password,
+        notes,
+        folder,
+        favorite,
+        last_used,
+        kind,
+        trashed_at,
+    ) = stored;
 
     let id = Uuid::from_bytes(sixteen(&id)?);
     let rev = Rev::from_number(u64::try_from(rev).map_err(|_negative| damaged())?);
@@ -1076,9 +1340,57 @@ fn decode_entry(codec: &FieldCodec<'_>, stored: StoredEntry) -> Result<Entry, Db
             .transpose()?,
         favorite: favorite != 0,
         last_used_at: last_used,
+        kind: read_kind(kind)?,
+        trashed_at,
         deleted: deleted != 0,
         hlc: Hlc::from_bytes(sixteen(&hlc)?),
     })
+}
+
+/// Reads one entry whether or not it is in the bin.
+///
+/// For the two callers that have to see what is in there: the one that takes something back out,
+/// and the one that reseals a row on its way in. Every other read of this module goes through
+/// [`entry`], which does not.
+fn read_any_entry(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    id: Uuid,
+) -> Result<Option<Entry>, DbError> {
+    let found = connection
+        .prepare_cached(&format!(
+            "{ENTRY_PROJECTION} WHERE id = ?1 AND deleted = 0 LIMIT 1"
+        ))?
+        .query_row([id.as_bytes().as_slice()], read_entry)
+        .optional()?;
+
+    found.map(|stored| decode_entry(codec, stored)).transpose()
+}
+
+/// Seals all four encrypted columns of an entry at the revision it is being written at.
+///
+/// All four, every time, and never one of them. Sealing the column that changed would leave the
+/// other three authenticated under the revision before it, and the next read of any of them fails
+/// with an error that says a value did not decrypt and nothing else.
+fn reseal_entry(
+    codec: &FieldCodec<'_>,
+    stamp: &RowStamp,
+    entry: &Entry,
+) -> Result<Vec<Option<Vec<u8>>>, DbError> {
+    codec.seal_row(
+        RowKey {
+            table: ENTRIES_TABLE,
+            row_id: stamp.id,
+            rev: stamp.rev,
+        },
+        ENTRIES_SEALED,
+        &[
+            ("title", Some(entry.title.as_bytes())),
+            ("username", entry.username.as_deref().map(String::as_bytes)),
+            ("password", entry.password.as_deref().map(String::as_bytes)),
+            ("notes", entry.notes.as_deref().map(String::as_bytes)),
+        ],
+    )
 }
 
 /// Opens a column that may be absent, keeping absent and empty apart.
@@ -1293,13 +1605,14 @@ fn damaged() -> DbError {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
-    use cairn_domain::vault::{MAX_FIELDS, MAX_URL_CHARS, MAX_URLS};
+    use cairn_domain::vault::{EntryKind, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS, TrashState};
     use cairn_domain::{Hlc, tree};
     use uuid::Uuid;
 
     use super::{
-        MAX_HISTORY, NewEntry, NewField, create_entry, create_folder, delete_entry, entries, entry,
-        fields, history, history_len, replace_fields, replace_password, replace_urls, urls,
+        Entry, MAX_HISTORY, NewEntry, NewField, Sweep, create_entry, create_folder, delete_entry,
+        empty_bin, entries, entry, fields, history, history_len, replace_fields, replace_password,
+        replace_urls, set_trashed, titles, trashed, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -1329,6 +1642,29 @@ mod tests {
         Hlc::new(step, 0, [1; 6])
     }
 
+    /// Writes an ordinary account, which is what all but one of these tests are about.
+    ///
+    /// The kind is the one argument none of them vary, so it is fixed here rather than repeated
+    /// forty times in a position where a reader would have to check it every time.
+    fn an_account(
+        connection: &rusqlite::Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+        hlc: Hlc,
+        now_us: i64,
+        entry: NewEntry<'_>,
+    ) -> Result<Entry, DbError> {
+        create_entry(
+            connection,
+            codec,
+            device,
+            hlc,
+            now_us,
+            entry,
+            EntryKind::Account,
+        )
+    }
+
     fn an_entry(title: &str) -> NewEntry<'_> {
         NewEntry {
             title,
@@ -1349,7 +1685,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     DeviceId::generate()?,
@@ -1390,7 +1726,7 @@ mod tests {
 
         database
             .with(|connection| {
-                create_entry(
+                an_account(
                     connection,
                     &codec,
                     DeviceId::generate()?,
@@ -1435,7 +1771,7 @@ mod tests {
         database
             .with(|connection| {
                 let written =
-                    create_entry(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
+                    an_account(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
 
                 replace_password(
                     connection,
@@ -1482,7 +1818,7 @@ mod tests {
         database
             .with(|connection| {
                 let written =
-                    create_entry(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
+                    an_account(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
 
                 for step in 2..=20_u64 {
                     replace_password(
@@ -1524,7 +1860,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     device,
@@ -1573,7 +1909,7 @@ mod tests {
         database
             .with(|connection| {
                 let written =
-                    create_entry(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
+                    an_account(connection, &codec, device, at(1), NOW_US, an_entry("Banco"))?;
                 replace_password(
                     connection,
                     &codec,
@@ -1677,7 +2013,7 @@ mod tests {
         database
             .with(|connection| {
                 for step in 1..=7_u64 {
-                    create_entry(
+                    an_account(
                         connection,
                         &codec,
                         device,
@@ -1755,7 +2091,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -1802,7 +2138,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -1859,7 +2195,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -1905,7 +2241,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -1968,7 +2304,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2020,7 +2356,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2083,7 +2419,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let one = create_entry(
+                let one = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2091,7 +2427,7 @@ mod tests {
                     NOW_US,
                     an_entry("Uno"),
                 )?;
-                let two = create_entry(
+                let two = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2163,7 +2499,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2245,7 +2581,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2304,7 +2640,7 @@ mod tests {
 
         database
             .with(|connection| {
-                let written = create_entry(
+                let written = an_account(
                     connection,
                     &codec,
                     bench.device,
@@ -2353,6 +2689,420 @@ mod tests {
                 Ok(())
             })
             .expect("nothing is rewritten on the way through");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// Twenty-four hours in microseconds, for a bin measured in days.
+    const A_DAY_US: i64 = 24 * 60 * 60 * 1_000_000;
+
+    /// One entry with an address, a custom field and a replaced password behind it.
+    fn a_furnished_entry(
+        connection: &rusqlite::Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+        title: &str,
+    ) -> Result<Uuid, DbError> {
+        let written = an_account(connection, codec, device, at(1), NOW_US, an_entry(title))?;
+        replace_urls(
+            connection,
+            codec,
+            device,
+            at(2),
+            NOW_US,
+            written.id,
+            &["banco.es", "banco.example"],
+        )?;
+        replace_fields(
+            connection,
+            codec,
+            device,
+            at(3),
+            NOW_US,
+            written.id,
+            &[NewField {
+                label: "PIN",
+                value: "1234",
+                secret: true,
+            }],
+        )?;
+        replace_password(
+            connection,
+            codec,
+            device,
+            at(4),
+            NOW_US + 1,
+            written.id,
+            "contraseña-dos",
+        )?;
+
+        Ok(written.id)
+    }
+
+    /// Everything about an entry that a round trip through the bin has to leave untouched.
+    ///
+    /// The contents, and not the stamp. The clock reading and the revision are supposed to move:
+    /// throwing something away and taking it back are two writes the other device has to see.
+    /// What must come back byte for byte is what somebody typed.
+    fn readable(
+        connection: &rusqlite::Connection,
+        codec: &FieldCodec<'_>,
+        id: Uuid,
+    ) -> Result<Option<Contents>, DbError> {
+        let Some(found) = entry(connection, codec, id)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(Contents {
+            entry: format!(
+                "{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}",
+                found.title.as_str(),
+                found.username.as_deref(),
+                found.password.as_deref(),
+                found.notes.as_deref(),
+                found.folder_id,
+                found.favorite,
+                found.kind
+            ),
+            urls: urls(connection, codec, id)?
+                .iter()
+                .map(|url| url.value.to_string())
+                .collect(),
+            fields: fields(connection, codec, id)?
+                .iter()
+                .map(|field| format!("{}={}", field.label.as_str(), field.value.as_str()))
+                .collect(),
+        }))
+    }
+
+    /// What an entry holds, flattened to text so that one comparison covers all of it.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Contents {
+        entry: String,
+        urls: Vec<String>,
+        fields: Vec<String>,
+    }
+
+    #[test]
+    fn something_thrown_away_leaves_every_list_and_comes_back_whole() {
+        // The property the whole two-step deletion exists for. `delete_entry` empties every
+        // encrypted column of the row, so a bin built on it could hand back a blank entry and
+        // call it a restore.
+        let bench = Bench::new("vault-trash-round-trip");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                let before = readable(connection, &codec, id)?;
+
+                set_trashed(connection, &codec, at(5), NOW_US + 2, id, true)?;
+
+                assert_eq!(entry(connection, &codec, id)?, None, "it is still on show");
+                assert!(entries(connection, &codec, None, 10)?.is_empty());
+                assert!(titles(connection, &codec)?.entries.is_empty());
+
+                let bin = trashed(connection, &codec, NOW_US + 2, 10)?;
+                assert_eq!(bin.len(), 1);
+                assert_eq!(
+                    bin.first().map(|one| one.title.to_string()),
+                    Some("Banco".to_owned())
+                );
+                assert_eq!(bin.first().map(|one| one.kind), Some(EntryKind::Account));
+
+                set_trashed(connection, &codec, at(6), NOW_US + 3, id, false)?;
+
+                assert_eq!(
+                    readable(connection, &codec, id)?,
+                    before,
+                    "something came back from the bin changed"
+                );
+                Ok(())
+            })
+            .expect("the round trip works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn throwing_the_same_thing_away_twice_does_not_restart_its_thirty_days() {
+        let bench = Bench::new("vault-trash-idempotent");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+
+                set_trashed(connection, &codec, at(5), NOW_US, id, true)?;
+                let (first, rev_after_one): (i64, i64) = connection.query_row(
+                    "SELECT trashed_at, rev FROM vault_entries WHERE id = ?1",
+                    [id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+
+                set_trashed(connection, &codec, at(6), NOW_US + A_DAY_US, id, true)?;
+                let (second, rev_after_two): (i64, i64) = connection.query_row(
+                    "SELECT trashed_at, rev FROM vault_entries WHERE id = ?1",
+                    [id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+
+                assert_eq!(second, first, "the second click reset the countdown");
+                assert!(
+                    rev_after_two > rev_after_one,
+                    "the second write is invisible to a merge"
+                );
+                Ok(())
+            })
+            .expect("throwing twice is throwing once");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn throwing_away_something_that_is_not_there_is_refused() {
+        let bench = Bench::new("vault-trash-missing");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let absent = set_trashed(
+                    connection,
+                    &codec,
+                    at(5),
+                    NOW_US,
+                    Uuid::from_bytes([3; 16]),
+                    true,
+                )
+                .expect_err("something that does not exist was thrown away");
+                assert!(matches!(absent, DbError::NotFound));
+
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                delete_entry(connection, at(5), NOW_US, id)?;
+
+                let destroyed = set_trashed(connection, &codec, at(6), NOW_US + 1, id, true)
+                    .expect_err("a skeleton was thrown away");
+                assert!(matches!(destroyed, DbError::NotFound));
+                Ok(())
+            })
+            .expect("both refusals are the same answer");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn emptying_the_bin_destroys_what_is_in_it_and_nothing_else() {
+        let bench = Bench::new("vault-bin-all");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let mut binned = Vec::new();
+                for number in 0..3 {
+                    let id =
+                        a_furnished_entry(connection, &codec, bench.device, &format!("En bin {number}"))?;
+                    set_trashed(connection, &codec, at(5), NOW_US, id, true)?;
+                    binned.push(id);
+                }
+                let kept = [
+                    a_furnished_entry(connection, &codec, bench.device, "Fuera uno")?,
+                    a_furnished_entry(connection, &codec, bench.device, "Fuera dos")?,
+                ];
+
+                assert_eq!(empty_bin(connection, at(6), NOW_US + 1, Sweep::All)?, 3);
+
+                for id in kept {
+                    assert!(entry(connection, &codec, id)?.is_some(), "an entry outside the bin was destroyed");
+                    assert_eq!(urls(connection, &codec, id)?.len(), 2);
+                }
+
+                for id in binned {
+                    let (sealed, deleted): (i64, i64) = connection.query_row(
+                        "SELECT count(title) + count(username) + count(password) + count(notes),
+                                deleted
+                           FROM vault_entries WHERE id = ?1",
+                        [id.as_bytes().as_slice()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    assert_eq!(deleted, 1);
+                    assert_eq!(sealed, 0, "a destroyed entry kept one of its columns");
+
+                    let (urls_left, fields_left, history_left): (i64, i64, i64) = connection.query_row(
+                        "SELECT (SELECT count(value) FROM vault_urls WHERE entry_id = ?1),
+                                (SELECT count(label) + count(value) FROM vault_fields WHERE entry_id = ?1),
+                                (SELECT count(password) FROM vault_password_history WHERE entry_id = ?1)",
+                        [id.as_bytes().as_slice()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )?;
+                    assert_eq!(
+                        (urls_left, fields_left, history_left),
+                        (0, 0, 0),
+                        "a destroyed entry kept its addresses, its fields or its history"
+                    );
+                }
+                Ok(())
+            })
+            .expect("emptying the bin works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_sweep_takes_what_has_run_out_and_leaves_what_has_not() {
+        let bench = Bench::new("vault-bin-expired");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let recent = a_furnished_entry(connection, &codec, bench.device, "Hace 29")?;
+                let old = a_furnished_entry(connection, &codec, bench.device, "Hace 31")?;
+
+                let now = NOW_US + 40 * A_DAY_US;
+                set_trashed(connection, &codec, at(5), now - 29 * A_DAY_US, recent, true)?;
+                set_trashed(connection, &codec, at(6), now - 31 * A_DAY_US, old, true)?;
+
+                assert_eq!(empty_bin(connection, at(7), now, Sweep::Expired)?, 1);
+
+                let left = trashed(connection, &codec, now, 10)?;
+                assert_eq!(left.len(), 1);
+                assert_eq!(left.first().map(|one| one.id), Some(recent));
+                assert_eq!(
+                    left.first().map(|one| one.state),
+                    Some(TrashState::InBin {
+                        days: 29,
+                        days_left: 1
+                    })
+                );
+                Ok(())
+            })
+            .expect("the sweep is selective");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn sweeping_an_empty_bin_destroys_nothing_and_does_not_fail() {
+        let bench = Bench::new("vault-bin-empty");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+
+                assert_eq!(empty_bin(connection, at(6), NOW_US, Sweep::All)?, 0);
+                assert_eq!(empty_bin(connection, at(7), NOW_US, Sweep::Expired)?, 0);
+                Ok(())
+            })
+            .expect("an empty bin is not a problem");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn something_thrown_away_by_a_clock_that_ran_ahead_still_comes_back() {
+        let bench = Bench::new("vault-trash-future");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let id = a_furnished_entry(connection, &codec, bench.device, "Banco")?;
+                let before = readable(connection, &codec, id)?;
+
+                set_trashed(connection, &codec, at(5), NOW_US + 5 * A_DAY_US, id, true)?;
+                assert_eq!(
+                    trashed(connection, &codec, NOW_US, 10)?
+                        .first()
+                        .map(|one| one.state),
+                    Some(TrashState::InBin {
+                        days: 0,
+                        days_left: 30
+                    })
+                );
+
+                set_trashed(connection, &codec, at(6), NOW_US, id, false)?;
+                assert_eq!(readable(connection, &codec, id)?, before);
+                Ok(())
+            })
+            .expect("a moment from the future is restorable");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_hundred_entries_survive_a_round_trip_through_the_bin_unchanged() {
+        // A property rather than an example, written as a loop rather than with a generator, so
+        // the crate does not gain a dependency to say "for all of these".
+        let bench = Bench::new("vault-trash-property");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                for number in 0_u64..100 {
+                    let title = format!("Entrada ñ{number}·🔑");
+                    let written = an_account(
+                        connection,
+                        &codec,
+                        bench.device,
+                        at(number * 10 + 1),
+                        NOW_US,
+                        NewEntry {
+                            title: &title,
+                            username: (number % 2 == 0).then_some("alguien@ejemplo"),
+                            password: (number % 3 == 0).then_some("contraseña"),
+                            notes: (number % 5 == 0).then_some("una nota\ncon dos líneas"),
+                            folder_id: None,
+                            favorite: number % 7 == 0,
+                        },
+                    )?;
+                    let addresses: Vec<String> = (0..(number % 4))
+                        .map(|which| format!("sitio{number}-{which}.es"))
+                        .collect();
+                    let borrowed: Vec<&str> = addresses.iter().map(String::as_str).collect();
+                    replace_urls(
+                        connection,
+                        &codec,
+                        bench.device,
+                        at(number * 10 + 2),
+                        NOW_US,
+                        written.id,
+                        &borrowed,
+                    )?;
+
+                    let before = readable(connection, &codec, written.id)?;
+                    set_trashed(
+                        connection,
+                        &codec,
+                        at(number * 10 + 3),
+                        NOW_US + 1,
+                        written.id,
+                        true,
+                    )?;
+                    set_trashed(
+                        connection,
+                        &codec,
+                        at(number * 10 + 4),
+                        NOW_US + 2,
+                        written.id,
+                        false,
+                    )?;
+
+                    assert_eq!(
+                        readable(connection, &codec, written.id)?,
+                        before,
+                        "entry {number} came back from the bin changed"
+                    );
+                }
+                Ok(())
+            })
+            .expect("a hundred round trips change nothing");
 
         database.close().expect("the connection closes");
     }

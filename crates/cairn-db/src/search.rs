@@ -236,6 +236,7 @@ mod tests {
                         folder_id: None,
                         favorite: false,
                     },
+                    cairn_domain::vault::EntryKind::Account,
                 )
                 .map(|_written| ())
             })
