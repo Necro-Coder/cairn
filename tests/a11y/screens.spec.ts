@@ -128,19 +128,22 @@ test('stepping back a year, which asks for one more calendar and nothing else', 
   await open(page);
   await createVault(page);
   await openSection(page, 'Hábitos');
-  // Correr rather than Meditar: this is the only seeded habit whose marks reach the year
-  // before, and the arrow is correctly unavailable on one whose history starts this year.
-  await page.getByRole('button', { name: 'Abrir Correr' }).click();
+  // The habit that was put away is the one whose marks reach the year before. On the active
+  // ones the arrow is unavailable, and rightly so: there is nothing behind it to draw.
+  await page.getByRole('button', { name: 'Archivados', exact: true }).click();
+  await page.getByRole('button', { name: 'Abrir Leer antes de dormir' }).click();
   await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
 
-  const year = new Date().getUTCFullYear();
-  const before = year - 1;
-  await page.getByRole('button', { name: String(before) }).click();
+  // The year is read off the arrow instead of worked out here. The one on screen is the
+  // core's, and a test that decided for itself what year it is would disagree with it on the
+  // thirty-first of December. Only the arrow that leads somewhere carries this title, and on
+  // the year in progress the other one is unavailable, so this names exactly one button.
+  const back = page.getByTitle(/^Ir a /);
+  const before = ((await back.textContent()) ?? '').trim();
+  await back.click();
 
-  await expect(
-    page.getByRole('heading', { level: 2, name: `El año ${String(before)}` }),
-  ).toBeVisible();
-  await expect(page.getByText(new RegExp(`cada día de ${String(before)}`))).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: `El año ${before}` })).toBeVisible();
+  await expect(page.getByText(new RegExp(`cada día de ${before}`))).toBeVisible();
   await expectNoViolations(page, 'one habit, a year back');
 });
 
