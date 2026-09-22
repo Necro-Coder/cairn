@@ -128,7 +128,9 @@ test('stepping back a year, which asks for one more calendar and nothing else', 
   await open(page);
   await createVault(page);
   await openSection(page, 'Hábitos');
-  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  // Correr rather than Meditar: this is the only seeded habit whose marks reach the year
+  // before, and the arrow is correctly unavailable on one whose history starts this year.
+  await page.getByRole('button', { name: 'Abrir Correr' }).click();
   await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
 
   const year = new Date().getUTCFullYear();
@@ -221,7 +223,9 @@ test('the list of habits that have been put away', async ({ page }) => {
   await createVault(page);
   await openSection(page, 'Hábitos');
 
-  await page.getByRole('button', { name: 'Archivados' }).click();
+  // Exact, because every row carries a button called «Guardar <hábito> en archivados» and a
+  // loose match reaches all of them as well as the filter.
+  await page.getByRole('button', { name: 'Archivados', exact: true }).click();
 
   // An archived habit keeps its whole history, so the row still reads as a habit and the one
   // control it gains is the way back.
