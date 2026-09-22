@@ -23,10 +23,10 @@
 //! them, because the module they were for is not one this product has.
 
 use cairn_domain::vault::{
-    EntryKind, MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS,
-    TrashState, trash,
+    EntryKind, MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_FOLDER_NAME_CHARS,
+    MAX_URL_CHARS, MAX_URLS, TrashState, trash, validate_folder_name,
 };
-use cairn_domain::{Hlc, Rev, tree};
+use cairn_domain::{Hlc, Rev};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 use crate::codec::{FieldCodec, RowKey, SealedColumns};
 use crate::device::DeviceId;
 use crate::error::DbError;
-use crate::row::{RowStamp, sixteen};
+use crate::row::{RowStamp, StoredStamp, sixteen};
 
 /// The table entries live in.
 pub const ENTRIES_TABLE: &str = "vault_entries";
@@ -992,33 +992,105 @@ fn write_field(
     Ok(())
 }
 
-/// Writes a folder down, refusing a placement that would break the depth rule.
+/// One folder, with how many entries are in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folder {
+    /// The row's identifier.
+    pub id: Uuid,
+    /// What it is called.
+    pub name: Zeroizing<String>,
+    /// Where it sits in the list somebody arranged.
+    pub position: i64,
+    /// Live entries inside it, not counting what is in the bin.
+    pub entries: u32,
+}
+
+/// Every folder, in the order somebody arranged them.
 ///
-/// The depth is checked by following the parent column, which is why that column is one of the
-/// few things in this module that is not sealed. The rule itself lives in the domain crate, over
-/// identifiers, where it can be checked against generated shapes rather than remembered ones.
+/// The count beside each one leaves out what is in the bin. A folder that says three and opens
+/// on one is worse than a folder that says one, because the first is a bug somebody has to go
+/// looking for and the second is the truth.
 ///
 /// # Errors
 ///
-/// Returns [`DbError::TooMany`] if the placement is too deep or the folders loop,
-/// [`DbError::Sealed`] if the name cannot be encrypted, and [`DbError::Sqlite`] if the statement
-/// fails.
-pub fn create_folder(
+/// [`DbError::Sealed`] if a name does not open, [`DbError::Sqlite`].
+pub fn folders(connection: &Connection, codec: &FieldCodec<'_>) -> Result<Vec<Folder>, DbError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT f.id, f.rev, f.name, f.position,
+                (SELECT count(*) FROM vault_entries e
+                  WHERE e.folder_id = f.id AND e.deleted = 0 AND e.trashed_at IS NULL)
+           FROM vault_folders f
+          WHERE f.deleted = 0
+          ORDER BY f.position, f.id",
+    )?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut listed = Vec::with_capacity(rows.len());
+    for (id, rev, name, position, entries) in rows {
+        let row = child_row(FOLDERS_TABLE, &id, rev)?;
+        listed.push(Folder {
+            id: row.row_id,
+            name: open_optional(codec, row, "name", name)?.ok_or_else(damaged)?,
+            position,
+            entries: u32::try_from(entries).unwrap_or(u32::MAX),
+        });
+    }
+
+    Ok(listed)
+}
+
+/// Creates a folder, or renames one.
+///
+/// `id` names the folder to rename; `None` creates one at the end of the list.
+///
+/// `parent_id` is written null and there is no way to ask for anything else. The column stays
+/// because migration 0003 created it and removing it would be a migration that buys nothing, but
+/// this module's folders are a flat list: that is what the phase decided, and a repository that
+/// merely happened never to write a parent would be one nesting could creep back into.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if the folder to rename is not there, [`DbError::TooMany`] if the name
+/// is empty or too long, [`DbError::Sealed`], [`DbError::Sqlite`].
+pub fn save_folder(
     connection: &Connection,
     codec: &FieldCodec<'_>,
     device: DeviceId,
     hlc: Hlc,
     now_us: i64,
+    id: Option<Uuid>,
     name: &str,
-    parent_id: Option<Uuid>,
-) -> Result<Uuid, DbError> {
-    check_value("the name of a folder", Some(name))?;
+) -> Result<Folder, DbError> {
+    let name = validate_folder_name(name).map_err(|problem| refused_name(&problem))?;
 
-    let parents = |folder: u128| parent_of(connection, Uuid::from_u128(folder));
-    tree::may_place_under(parent_id.map(|folder| folder.as_u128()), &parents)
-        .map_err(placement_refused)?;
+    let (stamp, position, entries) = match id {
+        Some(id) => {
+            let Some(stored) = read_folder(connection, id)? else {
+                return Err(DbError::NotFound);
+            };
+            // Renaming leaves a folder exactly where it was. Moving it is `reorder_folders`, and
+            // a rename that also reshuffled the list would be a folder changing place because
+            // somebody fixed a typo in it.
+            (stored.0.revised(hlc, now_us), stored.1, stored.2)
+        }
+        None => (
+            RowStamp::new(device, hlc, now_us)?,
+            next_position(connection)?,
+            0,
+        ),
+    };
 
-    let stamp = RowStamp::new(device, hlc, now_us)?;
     let sealed = codec.seal_row(
         RowKey {
             table: FOLDERS_TABLE,
@@ -1029,23 +1101,253 @@ pub fn create_folder(
         &[("name", Some(name.as_bytes()))],
     )?;
 
+    if id.is_some() {
+        connection
+            .prepare_cached(
+                "UPDATE vault_folders
+                    SET updated_at = ?2, hlc = ?3, rev = ?4, name = ?5
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                stamp.id.as_bytes().as_slice(),
+                stamp.updated_at,
+                stamp.hlc_as_stored().as_slice(),
+                stamp.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+            ])?;
+    } else {
+        connection
+            .prepare_cached(
+                "INSERT INTO vault_folders
+                     (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                      name, parent_id, position)
+                 VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, NULL, ?7)",
+            )?
+            .execute(params![
+                stamp.id.as_bytes().as_slice(),
+                stamp.created_at,
+                stamp.device.as_bytes().as_slice(),
+                stamp.hlc_as_stored().as_slice(),
+                stamp.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+                position,
+            ])?;
+    }
+
+    Ok(Folder {
+        id: stamp.id,
+        name: Zeroizing::new(name),
+        position,
+        entries,
+    })
+}
+
+/// Removes a folder and leaves its entries at the root.
+///
+/// Never touches an entry beyond its `folder_id`. Deleting a folder is filing, not destroying,
+/// and a folder that took thirty passwords with it would be the worst button in the application.
+///
+/// Takes the codec for the reason [`set_trashed`] does: moving an entry to the root is a write on
+/// that entry, a write raises its revision, and every encrypted column of a row is authenticated
+/// against the revision it was written at.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`], [`DbError::Sealed`], [`DbError::Sqlite`].
+pub fn delete_folder(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    hlc: Hlc,
+    now_us: i64,
+    id: Uuid,
+) -> Result<u32, DbError> {
+    let Some((stamp, _position, _entries)) = read_folder(connection, id)? else {
+        return Err(DbError::NotFound);
+    };
+    let gone = stamp.tombstoned(hlc, now_us);
+
     connection
         .prepare_cached(
-            "INSERT INTO vault_folders
-                 (id, created_at, updated_at, device_id, deleted, hlc, rev, name, parent_id, position)
-             VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, ?7, 0)",
+            "UPDATE vault_folders
+                SET deleted = 1, updated_at = ?2, hlc = ?3, rev = ?4, name = NULL
+              WHERE id = ?1",
         )?
         .execute(params![
-            stamp.id.as_bytes().as_slice(),
-            stamp.created_at,
-            stamp.device.as_bytes().as_slice(),
-            stamp.hlc_as_stored().as_slice(),
-            stamp.rev_as_stored(),
-            sealed.first().and_then(Option::as_ref),
-            parent_id.map(|id| id.as_bytes().to_vec()),
+            gone.id.as_bytes().as_slice(),
+            gone.updated_at,
+            gone.hlc_as_stored().as_slice(),
+            gone.rev_as_stored(),
         ])?;
 
-    Ok(stamp.id)
+    let inside: Vec<Uuid> = {
+        let mut statement = connection
+            .prepare_cached("SELECT id FROM vault_entries WHERE folder_id = ?1 AND deleted = 0")?;
+        let rows = statement
+            .query_map([id.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        rows.iter()
+            .map(|bytes| sixteen(bytes).map(Uuid::from_bytes))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut moved = 0_u32;
+    for entry_id in inside {
+        let (Some(stored), Some(existing)) = (
+            read_entry_stamp(connection, entry_id)?,
+            read_any_entry(connection, codec, entry_id)?,
+        ) else {
+            continue;
+        };
+        let revised = stored.revised(hlc, now_us);
+        let sealed = reseal_entry(codec, &revised, &existing)?;
+
+        connection
+            .prepare_cached(
+                "UPDATE vault_entries
+                    SET updated_at = ?2, hlc = ?3, rev = ?4, folder_id = NULL,
+                        title = ?5, username = ?6, password = ?7, notes = ?8
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                revised.id.as_bytes().as_slice(),
+                revised.updated_at,
+                revised.hlc_as_stored().as_slice(),
+                revised.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+                sealed.get(1).and_then(Option::as_ref),
+                sealed.get(2).and_then(Option::as_ref),
+                sealed.get(3).and_then(Option::as_ref),
+            ])?;
+        moved = moved.saturating_add(1);
+    }
+
+    Ok(moved)
+}
+
+/// Writes the whole order at once.
+///
+/// Refuses a list that is not exactly the set of live folders, which is how a list missing one is
+/// caught instead of silently leaving it wherever it was. Nothing is written until the whole list
+/// has been checked, so a refused order leaves the arrangement exactly as it was.
+///
+/// Takes the codec for the reason [`delete_folder`] does.
+///
+/// # Errors
+///
+/// [`DbError::IncompleteOrder`] if the list is not the whole set, [`DbError::Sealed`],
+/// [`DbError::Sqlite`].
+pub fn reorder_folders(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    hlc: Hlc,
+    now_us: i64,
+    ids: &[Uuid],
+) -> Result<(), DbError> {
+    let live = folders(connection, codec)?;
+    if ids.len() != live.len() {
+        return Err(DbError::IncompleteOrder);
+    }
+
+    // A repeated identifier passes the length check and leaves one folder unmentioned, which is
+    // the same mistake as a missing one and gets the same answer.
+    let mut named: Vec<Uuid> = ids.to_vec();
+    named.sort_unstable();
+    named.dedup();
+    let mut known: Vec<Uuid> = live.iter().map(|folder| folder.id).collect();
+    known.sort_unstable();
+    if named != known {
+        return Err(DbError::IncompleteOrder);
+    }
+
+    for (index, id) in ids.iter().enumerate() {
+        let position = i64::try_from(index).unwrap_or(i64::MAX);
+        let Some((stored, _position, _entries)) = read_folder(connection, *id)? else {
+            return Err(DbError::IncompleteOrder);
+        };
+        let Some(folder) = live.iter().find(|folder| folder.id == *id) else {
+            return Err(DbError::IncompleteOrder);
+        };
+
+        let revised = stored.revised(hlc, now_us);
+        let sealed = codec.seal_row(
+            RowKey {
+                table: FOLDERS_TABLE,
+                row_id: revised.id,
+                rev: revised.rev,
+            },
+            FOLDERS_SEALED,
+            &[("name", Some(folder.name.as_bytes()))],
+        )?;
+
+        connection
+            .prepare_cached(
+                "UPDATE vault_folders
+                    SET updated_at = ?2, hlc = ?3, rev = ?4, name = ?5, position = ?6
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                revised.id.as_bytes().as_slice(),
+                revised.updated_at,
+                revised.hlc_as_stored().as_slice(),
+                revised.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+                position,
+            ])?;
+    }
+
+    Ok(())
+}
+
+/// The stamp, the position and the entry count of one live folder.
+fn read_folder(connection: &Connection, id: Uuid) -> Result<Option<(RowStamp, i64, u32)>, DbError> {
+    let found: Option<(StoredStamp, i64, i64)> = connection
+        .prepare_cached(
+            "SELECT f.id, f.created_at, f.updated_at, f.device_id, f.deleted, f.hlc, f.rev,
+                    f.position,
+                    (SELECT count(*) FROM vault_entries e
+                      WHERE e.folder_id = f.id AND e.deleted = 0 AND e.trashed_at IS NULL)
+               FROM vault_folders f
+              WHERE f.id = ?1 AND f.deleted = 0
+              LIMIT 1",
+        )?
+        .query_row([id.as_bytes().as_slice()], |row| {
+            Ok((RowStamp::read_common(row)?, row.get(7)?, row.get(8)?))
+        })
+        .optional()?;
+
+    found
+        .map(|(stamp, position, entries)| {
+            Ok((
+                RowStamp::from_stored(stamp)?,
+                position,
+                u32::try_from(entries).unwrap_or(u32::MAX),
+            ))
+        })
+        .transpose()
+}
+
+/// Where the next folder goes, which is after every one there is.
+fn next_position(connection: &Connection) -> Result<i64, DbError> {
+    let highest: Option<i64> = connection
+        .prepare_cached("SELECT max(position) FROM vault_folders WHERE deleted = 0")?
+        .query_row([], |row| row.get(0))?;
+
+    Ok(highest.map_or(0, |last| last.saturating_add(1)))
+}
+
+/// Turns a refused folder name into the error this crate reports.
+fn refused_name(problem: &cairn_domain::vault::FieldError) -> DbError {
+    let (value, max) = match problem.problem {
+        cairn_domain::vault::Problem::TooLong { limit, actual } => (actual as u64, limit as u64),
+        _empty_or_control => (0, MAX_FOLDER_NAME_CHARS as u64),
+    };
+
+    DbError::TooMany {
+        what: "the name of a folder",
+        value,
+        max,
+    }
 }
 
 /// One entry in the bin.
@@ -1506,23 +1808,6 @@ fn read_entry_stamp(connection: &Connection, id: Uuid) -> Result<Option<RowStamp
     found.map(RowStamp::from_stored).transpose()
 }
 
-/// Reads the parent of a folder, for the depth check.
-///
-/// Answers `None` both for a folder at the root and for one that is not there. The two are the
-/// same for this purpose: a chain that runs out is a chain that ends.
-fn parent_of(connection: &Connection, folder: Uuid) -> Option<u128> {
-    connection
-        .prepare_cached("SELECT parent_id FROM vault_folders WHERE id = ?1 AND deleted = 0")
-        .ok()?
-        .query_row([folder.as_bytes().as_slice()], |row| {
-            row.get::<_, Option<Vec<u8>>>(0)
-        })
-        .ok()
-        .flatten()
-        .and_then(|bytes| sixteen(&bytes).ok())
-        .map(|bytes| Uuid::from_bytes(bytes).as_u128())
-}
-
 /// Writes one old password into the history.
 fn record_previous(
     connection: &Connection,
@@ -1663,26 +1948,6 @@ fn check_value(what: &'static str, value: Option<&str>) -> Result<(), DbError> {
     Ok(())
 }
 
-/// Turns a refused placement into the error this crate reports.
-///
-/// One `match` producing both halves, and a `_` arm because [`tree::TreeError`] is
-/// `#[non_exhaustive]`: a variant added there later arrives here rather than stopping the build
-/// in this crate, and is reported as a placement nobody can name, which is the honest answer
-/// for a rule this module does not yet know about.
-fn placement_refused(problem: tree::TreeError) -> DbError {
-    let (what, value) = match problem {
-        tree::TreeError::TooDeep { depth } => ("the depth of a folder", depth as u64),
-        tree::TreeError::Cycle => ("the depth of a folder whose parents form a loop", u64::MAX),
-        _ => ("the placement of a folder", u64::MAX),
-    };
-
-    DbError::TooMany {
-        what,
-        value,
-        max: tree::MAX_DEPTH as u64,
-    }
-}
-
 /// What a row this application did not write is reported as.
 fn damaged() -> DbError {
     DbError::Sealed(cairn_crypto::CryptoError::Open)
@@ -1691,15 +1956,17 @@ fn damaged() -> DbError {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
-    use cairn_domain::vault::{EntryKind, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS, TrashState};
-    use cairn_domain::{Hlc, tree};
+    use cairn_domain::Hlc;
+    use cairn_domain::vault::{
+        EntryKind, MAX_FIELDS, MAX_FOLDER_NAME_CHARS, MAX_URL_CHARS, MAX_URLS, TrashState,
+    };
     use uuid::Uuid;
 
     use super::{
         HistoryScope, MAX_HISTORY, NewEntry, NewField, Sweep, clear_history, create_entry,
-        create_folder, delete_entry, empty_bin, entries, entry, fields, history_len,
-        history_moments, history_password, replace_fields, replace_password, replace_urls,
-        set_trashed, titles, trashed, urls,
+        delete_entry, delete_folder, empty_bin, entries, entry, fields, folders, history_len,
+        history_moments, history_password, reorder_folders, replace_fields, replace_password,
+        replace_urls, save_folder, set_trashed, titles, trashed, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -2047,48 +2314,6 @@ mod tests {
                 Ok(())
             })
             .expect("the deletion works");
-
-        database.close().expect("the connection closes");
-    }
-
-    #[test]
-    fn a_folder_deeper_than_the_rule_allows_is_refused() {
-        let scratch = Scratch::new("vault-folders");
-        let vault = an_open_vault();
-        let database = a_database(&scratch, &vault);
-        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
-        let device = DeviceId::generate().unwrap();
-
-        database
-            .with(|connection| {
-                let mut parent: Option<Uuid> = None;
-                for level in 1..=tree::MAX_DEPTH {
-                    let step = u64::try_from(level).unwrap_or(0);
-                    parent = Some(create_folder(
-                        connection,
-                        &codec,
-                        device,
-                        at(step),
-                        NOW_US,
-                        &format!("Nivel {level}"),
-                        parent,
-                    )?);
-                }
-
-                let refused = create_folder(
-                    connection,
-                    &codec,
-                    device,
-                    at(99),
-                    NOW_US,
-                    "Uno de más",
-                    parent,
-                )
-                .expect_err("a folder past the limit was accepted");
-                assert!(matches!(refused, DbError::TooMany { .. }));
-                Ok(())
-            })
-            .expect("the limit holds");
 
         database.close().expect("the connection closes");
     }
@@ -2993,6 +3218,403 @@ mod tests {
                 Ok(())
             })
             .expect("the history empties");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// Three folders, named in the order they were created.
+    fn three_folders(
+        connection: &rusqlite::Connection,
+        codec: &FieldCodec<'_>,
+        device: DeviceId,
+    ) -> Result<Vec<Uuid>, DbError> {
+        ["Bancos", "Trabajo", "Casa"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let step = u64::try_from(index).unwrap_or(0) + 1;
+                save_folder(connection, codec, device, at(step), NOW_US, None, name)
+                    .map(|folder| folder.id)
+            })
+            .collect()
+    }
+
+    /// How many folder rows carry a parent, which must be none of them, ever.
+    fn nested(connection: &rusqlite::Connection) -> i64 {
+        connection
+            .query_row("SELECT count(parent_id) FROM vault_folders", [], |row| {
+                row.get(0)
+            })
+            .expect("the parents can be counted")
+    }
+
+    #[test]
+    fn folders_are_created_at_the_end_and_renamed_in_place() {
+        let bench = Bench::new("vault-folders-create");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let made = three_folders(connection, &codec, bench.device)?;
+                let listed = folders(connection, &codec)?;
+                assert_eq!(
+                    listed
+                        .iter()
+                        .map(|folder| folder.position)
+                        .collect::<Vec<_>>(),
+                    vec![0, 1, 2]
+                );
+                assert_eq!(
+                    listed
+                        .iter()
+                        .map(|folder| folder.name.to_string())
+                        .collect::<Vec<_>>(),
+                    vec!["Bancos", "Trabajo", "Casa"]
+                );
+
+                let second = made.get(1).copied().expect("three folders");
+                let before: i64 = connection.query_row(
+                    "SELECT rev FROM vault_folders WHERE id = ?1",
+                    [second.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+
+                let renamed = save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(10),
+                    NOW_US + 1,
+                    Some(second),
+                    "  Trabajo nuevo  ",
+                )?;
+                assert_eq!(renamed.id, second);
+                assert_eq!(renamed.position, 1);
+                assert_eq!(renamed.name.as_str(), "Trabajo nuevo");
+
+                let after: i64 = connection.query_row(
+                    "SELECT rev FROM vault_folders WHERE id = ?1",
+                    [second.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                assert!(after > before, "a rename is invisible to a merge");
+                assert_eq!(nested(connection), 0);
+                Ok(())
+            })
+            .expect("folders are created and renamed");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_folder_with_no_name_or_too_long_a_one_is_refused_and_writes_nothing() {
+        let bench = Bench::new("vault-folders-name");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let long: String = std::iter::repeat_n('a', MAX_FOLDER_NAME_CHARS + 1).collect();
+                for name in ["   ", long.as_str()] {
+                    let refused =
+                        save_folder(connection, &codec, bench.device, at(1), NOW_US, None, name)
+                            .expect_err("an unacceptable folder name was written");
+                    assert!(matches!(refused, DbError::TooMany { .. }));
+                }
+
+                assert!(folders(connection, &codec)?.is_empty());
+
+                let missing = save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    Some(Uuid::from_bytes([4; 16])),
+                    "Existe",
+                )
+                .expect_err("a folder that is not there was renamed");
+                assert!(matches!(missing, DbError::NotFound));
+                Ok(())
+            })
+            .expect("bad names change nothing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn there_is_no_way_to_put_one_folder_inside_another() {
+        // The schema still has the column, because removing it would be a migration that buys
+        // nothing. What is gone is every path that could write anything into it. The assertion is
+        // over the rows rather than over a refusal, because there is no call left to refuse.
+        let bench = Bench::new("vault-folders-flat");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let made = three_folders(connection, &codec, bench.device)?;
+                let first = made.first().copied().expect("three folders");
+                save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(10),
+                    NOW_US,
+                    Some(first),
+                    "Bancos otra vez",
+                )?;
+                reorder_folders(connection, &codec, at(11), NOW_US, &made)?;
+                delete_folder(connection, &codec, at(12), NOW_US, first)?;
+
+                assert_eq!(
+                    nested(connection),
+                    0,
+                    "something wrote a parent into a flat list of folders"
+                );
+                Ok(())
+            })
+            .expect("no path writes a parent");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_folder_counts_what_is_in_it_and_not_what_is_in_the_bin() {
+        let bench = Bench::new("vault-folders-count");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let folder = save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    None,
+                    "Bancos",
+                )?;
+
+                let mut inside = Vec::new();
+                for number in 0..4_u64 {
+                    let written = an_account(
+                        connection,
+                        &codec,
+                        bench.device,
+                        at(number + 2),
+                        NOW_US,
+                        NewEntry {
+                            title: "Una cuenta",
+                            username: None,
+                            password: None,
+                            notes: None,
+                            folder_id: Some(folder.id),
+                            favorite: false,
+                        },
+                    )?;
+                    inside.push(written.id);
+                }
+
+                let binned = inside.last().copied().expect("four entries");
+                set_trashed(connection, &codec, at(20), NOW_US + 1, binned, true)?;
+
+                assert_eq!(
+                    folders(connection, &codec)?.first().map(|one| one.entries),
+                    Some(3),
+                    "the count included what is in the bin"
+                );
+                Ok(())
+            })
+            .expect("the count is what the screen will open on");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn deleting_a_folder_files_its_entries_at_the_root_and_keeps_every_one_of_them() {
+        let bench = Bench::new("vault-folders-delete");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let folder = save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    None,
+                    "Bancos",
+                )?;
+                let empty = save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    None,
+                    "Vacía",
+                )?;
+
+                let mut inside = Vec::new();
+                for number in 0..5_u64 {
+                    inside.push(
+                        an_account(
+                            connection,
+                            &codec,
+                            bench.device,
+                            at(number + 3),
+                            NOW_US,
+                            NewEntry {
+                                title: "Una cuenta",
+                                username: Some("alguien@ejemplo"),
+                                password: Some("contraseña"),
+                                notes: None,
+                                folder_id: Some(folder.id),
+                                favorite: false,
+                            },
+                        )?
+                        .id,
+                    );
+                }
+
+                assert_eq!(
+                    delete_folder(connection, &codec, at(20), NOW_US + 1, folder.id)?,
+                    5
+                );
+
+                for id in inside {
+                    let found = entry(connection, &codec, id)?.expect("an entry was destroyed");
+                    assert_eq!(found.folder_id, None);
+                    // The row still opens, which is what a revision raised without resealing
+                    // would have broken.
+                    assert_eq!(found.title.as_str(), "Una cuenta");
+                    assert_eq!(
+                        found.password.as_deref().map(String::as_str),
+                        Some("contraseña")
+                    );
+                }
+
+                assert_eq!(
+                    delete_folder(connection, &codec, at(21), NOW_US + 2, empty.id)?,
+                    0
+                );
+                assert!(folders(connection, &codec)?.is_empty());
+
+                let missing = delete_folder(
+                    connection,
+                    &codec,
+                    at(22),
+                    NOW_US + 3,
+                    Uuid::from_bytes([5; 16]),
+                )
+                .expect_err("a folder that is not there was deleted");
+                assert!(matches!(missing, DbError::NotFound));
+                Ok(())
+            })
+            .expect("deleting a folder is filing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn an_order_that_is_not_the_whole_set_is_refused_and_moves_nothing() {
+        let bench = Bench::new("vault-folders-reorder");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let made = three_folders(connection, &codec, bench.device)?;
+                let (first, second, third) = (
+                    made.first().copied().expect("three"),
+                    made.get(1).copied().expect("three"),
+                    made.get(2).copied().expect("three"),
+                );
+
+                let wanted = vec![third, first, second];
+                reorder_folders(connection, &codec, at(10), NOW_US + 1, &wanted)?;
+                assert_eq!(
+                    folders(connection, &codec)?
+                        .iter()
+                        .map(|folder| folder.id)
+                        .collect::<Vec<_>>(),
+                    wanted
+                );
+                // And the names still open at their new revision.
+                assert_eq!(
+                    folders(connection, &codec)?
+                        .iter()
+                        .map(|folder| folder.name.to_string())
+                        .collect::<Vec<_>>(),
+                    vec!["Casa", "Bancos", "Trabajo"]
+                );
+
+                // Idempotent: the same list twice leaves the same arrangement.
+                reorder_folders(connection, &codec, at(11), NOW_US + 2, &wanted)?;
+                assert_eq!(
+                    folders(connection, &codec)?
+                        .iter()
+                        .map(|folder| folder.id)
+                        .collect::<Vec<_>>(),
+                    wanted
+                );
+
+                for offered in [
+                    vec![first, second],
+                    vec![first, first, second],
+                    vec![first, second, Uuid::from_bytes([6; 16])],
+                ] {
+                    let refused = reorder_folders(connection, &codec, at(12), NOW_US + 3, &offered)
+                        .expect_err("a partial order was applied");
+                    assert!(matches!(refused, DbError::IncompleteOrder));
+                    assert_eq!(
+                        folders(connection, &codec)?
+                            .iter()
+                            .map(|folder| folder.id)
+                            .collect::<Vec<_>>(),
+                        wanted,
+                        "a refused order moved something anyway"
+                    );
+                }
+                Ok(())
+            })
+            .expect("the order is all or nothing");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_folder_name_with_accents_and_an_emoji_comes_back_byte_for_byte() {
+        let bench = Bench::new("vault-folders-unicode");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                save_folder(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    None,
+                    "Año fiscal 📁 ñ",
+                )?;
+
+                assert_eq!(
+                    folders(connection, &codec)?
+                        .first()
+                        .map(|folder| folder.name.to_string()),
+                    Some("Año fiscal 📁 ñ".to_owned())
+                );
+                Ok(())
+            })
+            .expect("nothing is rewritten on the way through");
 
         database.close().expect("the connection closes");
     }
