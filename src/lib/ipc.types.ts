@@ -255,6 +255,195 @@ export interface BackupProgress {
   readonly done: number;
 }
 
+/* ---------------------------------------------------------------------------------------
+ * Habits.
+ *
+ * Every type below is one of the Rust types in `commands/habits.rs`, written again in the
+ * vocabulary `serde` produces: `camelCase` fields, a tagged union where Rust has an enum
+ * with data, and a plain string where Rust carries an enumeration it spells out itself.
+ * Not a field more, not a field fewer. A shape that drifts from the Rust one does not fail
+ * anywhere; it draws a screen from a value that never arrives.
+ *
+ * Numbers that look like dates are `YYYYMMDD` as one integer, which is how a day travels
+ * everywhere on this boundary. A streak, a percentage and a week's progress are worked out
+ * in the core and carried, never computed here: a second rounding rule is free to disagree
+ * with the first one about the same two numbers.
+ * ------------------------------------------------------------------------------------ */
+
+/** Which habits a listing asks for. */
+export type HabitFilter = 'active' | 'archived';
+
+/** How often a habit is judged. Monthly does not exist: the schema makes it impossible. */
+export type HabitPeriod = 'daily' | 'weekly';
+
+/** Which way a target is read. */
+export type HabitDirection = 'atLeast' | 'atMost';
+
+/** How the marks of one period combine into the amount the target is judged against. */
+export type HabitAggregation = 'sum' | 'highest';
+
+/**
+ * What one square of the calendar says.
+ *
+ * Five variants rather than a boolean and some flags, because they are drawn five ways and
+ * three of them carry the numbers the tooltip shows. `notScheduled` carries an amount even
+ * so: a day off that somebody marked anyway is dimmed, not blank.
+ */
+export type DayState =
+  | { readonly state: 'done'; readonly amount: number; readonly target: number }
+  | { readonly state: 'missed'; readonly amount: number; readonly target: number }
+  | { readonly state: 'notScheduled'; readonly amount: number }
+  | { readonly state: 'extra'; readonly amount: number; readonly target: number }
+  | { readonly state: 'noData' };
+
+/** How the week in progress is going, for a habit judged by the week. */
+export interface WeekProgress {
+  readonly done: number;
+  readonly target: number;
+}
+
+/**
+ * The run as it stands.
+ *
+ * `atRisk` is the core's judgement, not a comparison the interface makes: today is still
+ * open, the run is alive, and nothing has been marked yet.
+ */
+export interface Streak {
+  readonly days: number;
+  readonly atRisk: boolean;
+  readonly weekProgress: WeekProgress | null;
+}
+
+/** A part over a whole, with the percentage the core rounded. */
+export interface Ratio {
+  readonly done: number;
+  readonly of: number;
+  readonly percent: number;
+}
+
+/** One thing wrong with a draft, named by the field it is wrong about. */
+export interface FieldProblem {
+  readonly field: string;
+  readonly code: string;
+}
+
+/**
+ * Why a habits command did not do what it was asked.
+ *
+ * Tagged on `kind`, like every other error on this boundary. `invalid` is the only one that
+ * carries anything, and it carries every problem rather than the first, so a form can mark
+ * all of its fields in one round trip.
+ */
+export type HabitsError =
+  | { readonly kind: 'locked' }
+  | { readonly kind: 'notFound' }
+  | { readonly kind: 'invalid'; readonly problems: readonly FieldProblem[] }
+  | { readonly kind: 'dayInFuture' }
+  | { readonly kind: 'dayTooOld' }
+  | { readonly kind: 'incompleteOrder' }
+  | { readonly kind: 'noZone' }
+  | { readonly kind: 'storage' };
+
+/**
+ * One habit, as the list shows it.
+ *
+ * No note. It is the only sealed column of this module and it travels in {@link
+ * IpcSurface.getHabit} alone, so that the screen opened most often does not carry sealed
+ * content across the boundary on every paint.
+ */
+export interface HabitSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly icon: string | null;
+  readonly color: string | null;
+  readonly period: HabitPeriod;
+  readonly unit: string | null;
+  readonly target: number | null;
+  readonly direction: HabitDirection;
+  /** Seven bits, one per weekday, Monday lowest. Never zero: the core reads zero as all seven. */
+  readonly scheduleMask: number;
+  readonly position: number;
+  readonly archived: boolean;
+  readonly today: DayState;
+  readonly streak: Streak;
+}
+
+/** One habit in full, note included. */
+export interface HabitDetail extends HabitSummary {
+  readonly notes: string | null;
+  /** The first day it is judged on, as `YYYYMMDD`. */
+  readonly startedOn: number;
+  readonly aggregation: HabitAggregation;
+}
+
+/**
+ * What the form sends.
+ *
+ * Sent as it was typed. Nothing here is checked on this side: the core owns what a habit
+ * may be, and a second set of rules in TypeScript is a second set of rules to keep in step.
+ */
+export interface HabitDraft {
+  readonly name: string;
+  readonly notes: string | null;
+  readonly icon: string | null;
+  readonly color: string | null;
+  readonly period: HabitPeriod;
+  readonly unit: string | null;
+  readonly target: number | null;
+  readonly aggregation: HabitAggregation;
+  readonly direction: HabitDirection;
+  /** Seven bits, Monday lowest. Zero is accepted and means every day. */
+  readonly scheduleMask: number;
+  /** The first day it is judged on, as `YYYYMMDD`. */
+  readonly startedOn: number;
+}
+
+/** What an edit changed, and whether the streak now means something different. */
+export interface HabitUpdateOutcome {
+  readonly habit: HabitDetail;
+  readonly streakMeaningChanged: boolean;
+}
+
+/**
+ * What saving a draft would do, without saving it.
+ *
+ * Exists because the warning has to appear before the write, and the alternative is working
+ * a streak out in JavaScript, which this module never does anywhere.
+ */
+export interface UpdateImpact {
+  readonly streakMeaningChanged: boolean;
+  readonly currentStreakBefore: number;
+  readonly currentStreakAfter: number;
+  readonly entriesOutsideNewSchedule: number;
+}
+
+/** One square of the year, ready to draw. */
+export interface DayCell {
+  /** Which square, as `YYYYMMDD`. */
+  readonly day: number;
+  readonly state: DayState;
+}
+
+/** A whole year, and how far back the arrows may go. */
+export interface Heatmap {
+  readonly year: number;
+  /** Every day of the year, oldest first and with no gaps. */
+  readonly days: readonly DayCell[];
+  readonly firstYearWithData: number | null;
+}
+
+/** Everything the detail screen shows in numbers. */
+export interface HabitStats {
+  readonly current: Streak;
+  readonly longest: number;
+  readonly monthCompletion: Ratio;
+  readonly totalEntries: number;
+  /** The first day ever marked, as `YYYYMMDD`. */
+  readonly firstDay: number | null;
+  /** The last day ever marked, as `YYYYMMDD`. */
+  readonly lastDay: number | null;
+}
+
 /**
  * Everything the interface may ask of whatever is on the other side of the boundary.
  *
@@ -443,6 +632,67 @@ export interface IpcSurface {
    * first would tear down the WebView with a key still live in the process.
    */
   readonly closeWindow: () => Promise<void>;
+
+  /* -------------------------------------------------------------------------------------
+   * Habits.
+   *
+   * Eleven functions, named here the way this side reads and named in the core the way a
+   * Rust command is named. The two sets differ on purpose and are not unified: the core's
+   * names are grouped by module because they live in one flat namespace, and this side's
+   * are verbs because they are read inside a screen.
+   *
+   * Every one of them rejects with a {@link HabitsError}.
+   * ---------------------------------------------------------------------------------- */
+
+  /** Reads every habit of one kind, with today's square and the run so far, in the person's order. */
+  readonly listHabits: (filter: HabitFilter) => Promise<readonly HabitSummary[]>;
+
+  /** Reads one habit in full, note included. */
+  readonly getHabit: (id: string) => Promise<HabitDetail>;
+
+  /** Creates a habit from a draft and hands back what it became. */
+  readonly createHabit: (draft: HabitDraft) => Promise<HabitDetail>;
+
+  /**
+   * Saves a draft over an existing habit.
+   *
+   * Answers whether the run on the screen is now counted by different rules, so the screen
+   * can say so rather than silently showing a different number than it did a moment ago.
+   */
+  readonly updateHabit: (id: string, draft: HabitDraft) => Promise<HabitUpdateOutcome>;
+
+  /** Works out what saving that draft would do, without saving it. */
+  readonly previewHabitUpdate: (id: string, draft: HabitDraft) => Promise<UpdateImpact>;
+
+  /** Puts a habit away, or takes it back out, and hands back how it now stands. */
+  readonly archiveHabit: (id: string, archived: boolean) => Promise<HabitSummary>;
+
+  /** Removes a habit and every day ever marked on it. */
+  readonly deleteHabit: (id: string) => Promise<void>;
+
+  /**
+   * Sets the person's whole order at once.
+   *
+   * The whole set, not a pair to swap. A partial order is rejected by the core rather than
+   * applied to whatever happens to be there, which is what makes two screens open at once
+   * unable to interleave into an order neither of them asked for.
+   */
+  readonly reorderHabits: (ids: readonly string[]) => Promise<void>;
+
+  /**
+   * Marks or unmarks one day, and answers what that square now says.
+   *
+   * `amount` is `null` for a habit that is simply done or not. The answer is the square as
+   * the core judges it, so the calendar redraws from the core's verdict and not from what
+   * the press was assumed to mean.
+   */
+  readonly toggleHabitDay: (id: string, day: number, amount: number | null) => Promise<DayState>;
+
+  /** Reads one whole year of one habit, every day of it, with no gaps. */
+  readonly habitHeatmap: (id: string, year: number) => Promise<Heatmap>;
+
+  /** Reads everything the detail screen shows in numbers. */
+  readonly habitStats: (id: string) => Promise<HabitStats>;
 }
 
 /**
