@@ -35,6 +35,13 @@
     todayText,
   } from './today';
 
+  interface Props {
+    /** How to open one habit, which is the only route into its own screen. */
+    onOpen: (id: string) => void;
+  }
+
+  const { onOpen }: Props = $props();
+
   const section = sectionOf('habits');
 
   let view = $state<Async<readonly HabitSummary[]>>(loading());
@@ -207,6 +214,20 @@
             <Badge tone={section.tone} text="En riesgo" />
           {/if}
 
+          <!-- A second control rather than the whole row, so the space bar keeps meaning
+               «marca esto». A row that opened on the same key would make marking the one
+               gesture somebody cannot do without looking. -->
+          <button
+            type="button"
+            class="open"
+            aria-label={`Abrir ${habit.name}`}
+            onclick={() => {
+              onOpen(habit.id);
+            }}
+          >
+            Ver
+          </button>
+
           {#if editing === habit.id}
             <form class="amount" onsubmit={() => void commitAmount(habit)}>
               <label for={`amount-${habit.id}`}>
@@ -308,6 +329,18 @@
     color: var(--colour-text-muted);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Bordered, not accented: there is one accent per screen and it is not this. */
+  .open {
+    flex: none;
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-width) solid var(--colour-border-strong);
+    border-radius: var(--radius-sm);
+    background-color: var(--colour-surface-raised);
+    color: var(--colour-text);
+    font: inherit;
+    font-size: var(--text-sm);
   }
 
   /* In place, under the row it belongs to. Nothing on this screen opens over anything. */

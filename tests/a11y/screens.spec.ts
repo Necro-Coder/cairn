@@ -109,6 +109,39 @@ test('the habits list, with what today asks for on it', async ({ page }) => {
   await expectNoViolations(page, 'the habits list');
 });
 
+test('one habit opened, with its year and its numbers', async ({ page }) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+
+  // The year is a figure with a caption rather than a grid announced cell by cell, and the
+  // arrows are the half of it that has to be reachable from the keyboard.
+  await expect(page.getByRole('heading', { level: 1, name: 'Meditar' })).toBeVisible();
+  await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
+  await expectNoViolations(page, 'one habit opened');
+});
+
+test('stepping back a year, which asks for one more calendar and nothing else', async ({
+  page,
+}) => {
+  await open(page);
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+  await page.getByRole('button', { name: 'Abrir Meditar' }).click();
+  await expect(page.getByText(/Un cuadro por cada día de/)).toBeVisible();
+
+  const year = new Date().getUTCFullYear();
+  const before = year - 1;
+  await page.getByRole('button', { name: String(before) }).click();
+
+  await expect(
+    page.getByRole('heading', { level: 2, name: `El año ${String(before)}` }),
+  ).toBeVisible();
+  await expect(page.getByText(new RegExp(`cada día de ${String(before)}`))).toBeVisible();
+  await expectNoViolations(page, 'one habit, a year back');
+});
+
 test('the habits list with nothing in it', async ({ page }) => {
   // The first day of a list is a real screen, and until the screen that deletes a habit
   // exists there is no way to reach it from inside the interface. The preview opens on it
