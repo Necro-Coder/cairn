@@ -245,6 +245,20 @@ pub struct StoredEntry {
     pub target_snapshot: Option<i64>,
 }
 
+/// How far one habit's live history reaches, and how much of it there is.
+///
+/// Three numbers from one statement, because all three are aggregates over the same condition
+/// the partial index covers, and asking for them one at a time would walk it three times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistorySpan {
+    /// The earliest day this habit is marked on, if it is marked at all.
+    pub first: Option<CivilDay>,
+    /// The latest day this habit is marked on, if it is marked at all.
+    pub last: Option<CivilDay>,
+    /// How many live marks there are.
+    pub entries: u32,
+}
+
 /// Writes a habit down.
 ///
 /// # Errors
@@ -1002,6 +1016,41 @@ pub fn first_year_with_data(
         .transpose()
 }
 
+/// How far one habit's live history reaches, and how many days it holds.
+///
+/// What the statistics screen needs to say when somebody started and how much there is, without
+/// reading a single row of the history to find out. The two extremes and the count are three
+/// aggregates over one index-covered condition, so they come back together or not at all.
+///
+/// # Errors
+///
+/// [`DbError::Sqlite`] if the statement fails, and [`DbError::Sealed`] if a stored day is not a
+/// day this application can name.
+pub fn history_span(connection: &Connection, habit_id: Uuid) -> Result<HistorySpan, DbError> {
+    // Aggregates over an empty set are one row holding nulls rather than no rows at all, so a
+    // habit nobody has marked arrives as two absent columns and a count of zero.
+    let (first, last, entries): (Option<u32>, Option<u32>, i64) = connection
+        .prepare_cached(HISTORY_SPAN)?
+        .query_row(params![habit_id.as_bytes().as_slice()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+
+    Ok(HistorySpan {
+        first: day_of(first)?,
+        last: day_of(last)?,
+        // `count(*)` is never negative, so the conversion always has an answer. Saturating
+        // rather than panicking, as everywhere else in this file that narrows.
+        entries: u32::try_from(entries).unwrap_or(u32::MAX),
+    })
+}
+
+/// The day a stored number names, when there is one.
+fn day_of(stored: Option<u32>) -> Result<Option<CivilDay>, DbError> {
+    stored
+        .map(|day| CivilDay::from_number(day).map_err(|_not_a_day| damaged()))
+        .transpose()
+}
+
 /// The one statement that reads the marks of a habit between two days.
 ///
 /// A constant rather than a copy in each caller, because the shape of this condition is the shape
@@ -1015,6 +1064,14 @@ const ENTRIES_BETWEEN: &str = "SELECT day, amount, target_snapshot
 /// The statement behind [`first_year_with_data`], kept here for the same reason.
 const FIRST_LIVE_DAY: &str =
     "SELECT MIN(day) FROM habit_entries WHERE habit_id = ?1 AND deleted = 0";
+
+/// The statement behind [`history_span`], kept here for the same reason.
+///
+/// The same condition as the two above it, deliberately: three aggregates over one index scan
+/// rather than three statements that each have to find the habit again.
+const HISTORY_SPAN: &str = "SELECT MIN(day), MAX(day), count(*)
+           FROM habit_entries
+          WHERE habit_id = ?1 AND deleted = 0";
 
 /// Runs [`ENTRIES_BETWEEN`] with both ends already in the form the column holds.
 ///
@@ -1224,10 +1281,10 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        ENTRIES_BETWEEN, FIRST_LIVE_DAY, Habit, MAX_COLOR_LEN, MAX_ICON_LEN, MAX_NAME_LEN,
-        MAX_PAGE, MAX_UNIT_LEN, MAX_WINDOW_DAYS, Mark, NewHabit, StoredEntry, archive, count_live,
-        create, delete, first_year_with_data, get, is_marked, mark, page, reorder, unmark, update,
-        window, year_entries,
+        ENTRIES_BETWEEN, FIRST_LIVE_DAY, Habit, HistorySpan, MAX_COLOR_LEN, MAX_ICON_LEN,
+        MAX_NAME_LEN, MAX_PAGE, MAX_UNIT_LEN, MAX_WINDOW_DAYS, Mark, NewHabit, StoredEntry,
+        archive, count_live, create, delete, first_year_with_data, get, history_span, is_marked,
+        mark, page, reorder, unmark, update, window, year_entries,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -3320,6 +3377,72 @@ mod tests {
                 Ok(())
             })
             .expect("the earliest year comes back");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_habit_with_no_days_has_a_span_of_nothing_rather_than_no_answer() {
+        let scratch = Scratch::new("habits-span-none");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                let habit = a_habit_marked_on(connection, &codec, device, "Nadar", &[])?;
+
+                // Aggregates over an empty set are one row of nulls, not zero rows, so this is
+                // an answer about a habit with no history and never a missing row.
+                assert_eq!(
+                    history_span(connection, habit.id)?,
+                    HistorySpan {
+                        first: None,
+                        last: None,
+                        entries: 0,
+                    }
+                );
+                Ok(())
+            })
+            .expect("an empty history is still a history");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_span_reaches_the_two_extremes_and_counts_only_the_live_days() {
+        let scratch = Scratch::new("habits-span-extremes");
+        let vault = an_open_vault();
+        let database = a_database(&scratch, &vault);
+        let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
+        let device = DeviceId::generate().unwrap();
+
+        database
+            .with(|connection| {
+                // Written out of order on purpose: the two ends are the smallest and the
+                // largest day, not the first and the last row inserted.
+                let habit = a_habit_marked_on(
+                    connection,
+                    &codec,
+                    device,
+                    "Leer",
+                    &[day_in(2022, 7, 4), day_in(2019, 11, 30), day_in(2026, 4, 1)],
+                )?;
+                unmark(connection, at(50), NOW_US + 1, habit.id, day_in(2026, 4, 1))?;
+
+                assert_eq!(
+                    history_span(connection, habit.id)?,
+                    HistorySpan {
+                        first: Some(day_in(2019, 11, 30)),
+                        last: Some(day_in(2022, 7, 4)),
+                        entries: 2,
+                    },
+                    "a tombstone still counted towards the span"
+                );
+                Ok(())
+            })
+            .expect("the span follows the live days");
 
         database.close().expect("the connection closes");
     }
