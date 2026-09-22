@@ -373,7 +373,7 @@ function daysOfYear(year: number): DayNumber[] {
 }
 
 /** What a habit is, minus the four fields worked out rather than stored. */
-type HabitSeed = Omit<HabitDetail, 'today' | 'streak' | 'archived' | 'position'>;
+type HabitSeed = Omit<HabitDetail, 'today' | 'todayDay' | 'streak' | 'archived' | 'position'>;
 
 /**
  * One habit as this file remembers it: what the boundary carries, and the marks.
@@ -389,41 +389,64 @@ interface PreviewHabit {
 }
 
 /**
- * What one mark has to reach for that day to count.
+ * Whether a habit counts a quantity, which is what naming a unit makes it do.
  *
- * A habit judged by the week asks nothing of a single day: its target is how many days of
- * the week it wants, not how much of anything one of them wants, so a day of it is simply
- * done or not. A habit with no target at all is done at one.
+ * The same question the core asks, asked the same way: the unit is what decides, not the
+ * target. A weekly habit with no unit has a target too, and that target is how many days of
+ * the week it wants rather than how much any one of them wants.
  */
-function dayTarget(habit: PreviewHabit): number {
-  return habit.detail.period === 'weekly' ? 1 : (habit.detail.target ?? 1);
+function countsQuantity(habit: PreviewHabit): boolean {
+  return habit.detail.unit !== null;
 }
 
-/** Whether an amount meets the habit's target, the way its direction reads it. */
-function meets(habit: PreviewHabit, amount: number): boolean {
+/**
+ * What one day asked for.
+ *
+ * A habit that counts a quantity asks for its target. A habit that is simply done or not
+ * still has a number behind it, and which number depends on which way it is read: one thing
+ * done, or nothing done at all.
+ */
+function dayTarget(habit: PreviewHabit): number {
+  if (countsQuantity(habit)) {
+    return habit.detail.target ?? 1;
+  }
+  return habit.detail.direction === 'atLeast' ? 1 : 0;
+}
+
+/**
+ * Whether the day did what was asked of it.
+ *
+ * The two directions are not mirror images, and the asymmetry is the whole point. A habit
+ * being built needs a mark to have been met: an absent row means nothing happened. A habit
+ * being cut down is met by the absence itself, which is what "did not smoke today" is.
+ */
+function meets(habit: PreviewHabit, amount: number, marked: boolean): boolean {
   return habit.detail.direction === 'atLeast'
-    ? amount >= dayTarget(habit)
+    ? marked && amount >= dayTarget(habit)
     : amount <= dayTarget(habit);
 }
 
 /**
  * What one square says.
  *
- * A day with no mark at all is not met, whichever way the target reads. That is this file's
- * own simplification, and it is why a habit to be avoided shows its clean days only once
- * somebody says the day was clean, which is what makes the mark worth pressing.
+ * The five variants and the order they are decided in, mirroring the core's own. Only a
+ * habit somebody is building can be overshot on a day off: not smoking on a day the habit
+ * never asked about is an ordinary day, and calling it extra would hand out credit for
+ * doing nothing at all.
  */
 function judge(habit: PreviewHabit, day: DayNumber): DayState {
   if (day < habit.detail.startedOn || day > today()) {
     return { state: 'noData' };
   }
   const amount = habit.marks.get(day) ?? 0;
-  const met = habit.marks.has(day) && meets(habit, amount);
+  const met = meets(habit, amount, habit.marks.has(day));
   const target = dayTarget(habit);
-  if (!isScheduled(habit.detail.scheduleMask, day)) {
-    return met ? { state: 'extra', amount, target } : { state: 'notScheduled', amount };
+  if (isScheduled(habit.detail.scheduleMask, day)) {
+    return met ? { state: 'done', amount, target } : { state: 'missed', amount, target };
   }
-  return met ? { state: 'done', amount, target } : { state: 'missed', amount, target };
+  return met && habit.detail.direction === 'atLeast'
+    ? { state: 'extra', amount, target }
+    : { state: 'notScheduled', amount };
 }
 
 /** How many scheduled days in a row, walking back, were met. Today counts only if it was. */
@@ -488,6 +511,7 @@ function summaryOf(habit: PreviewHabit): HabitSummary {
     scheduleMask: habit.detail.scheduleMask === 0 ? EVERY_DAY : habit.detail.scheduleMask,
     position: habit.position,
     archived: habit.archived,
+    todayDay: today(),
     today: judge(habit, today()),
     streak: streakDtoOf(habit),
   };
@@ -607,8 +631,10 @@ function seedHabits(): PreviewHabit[] {
         aggregation: 'sum',
       },
       1,
-      // Today included, so the clean day is already counting.
-      { marks: runBackFrom(now, 6, EVERY_DAY, 0) },
+      // A habit to be avoided is read the other way round: the day nobody marked is the good
+      // one, and a mark is a slip. So what is seeded is two slips, far enough back that the
+      // run since the last one is worth showing, and nothing at all on today.
+      { marks: [[dayPlus(now, -7), 1] as const, [dayPlus(now, -31), 1] as const] },
     ),
     makeHabit(
       {
@@ -675,8 +701,23 @@ function seedHabits(): PreviewHabit[] {
   ];
 }
 
+/**
+ * Whether this preview was opened asking to see the screens with nothing on them.
+ *
+ * `?sin-habitos` in the address, and it is the one switch this file has. The first day of a
+ * list is a real screen that somebody has to be able to look at, and it is otherwise reached
+ * only by deleting every habit, which the interface cannot do until the screen that archives
+ * and deletes exists. Read once, at load, so nothing changes under a screen already drawn.
+ *
+ * Guarded because this module is imported by `node --test` as well as by a browser, and a
+ * test runner has no address bar.
+ */
+const ASKED_FOR_EMPTY =
+  typeof globalThis.location !== 'undefined' &&
+  new URLSearchParams(globalThis.location.search).has('sin-habitos');
+
 /** Everything the stand-in pretends is in a database. Reloading the page brings it back. */
-const habits: PreviewHabit[] = seedHabits();
+const habits: PreviewHabit[] = ASKED_FOR_EMPTY ? [] : seedHabits();
 
 /** How many habits this stand-in has invented, so each new one gets its own identifier. */
 let inventedHabits = 0;
@@ -1163,12 +1204,13 @@ export const ipc: IpcSurface = {
       return rejectHabits({ kind: 'dayTooOld' });
     }
     // A habit that counts a quantity is set to the amount it is given, and nothing means the
-    // mark goes away. A habit that is simply done or not is a switch.
-    if (habit.detail.unit === null) {
+    // mark goes away. A habit that is simply done or not is a switch, and what the switch
+    // records is one of the thing: one session done, or one slip had.
+    if (!countsQuantity(habit)) {
       if (habit.marks.has(day)) {
         habit.marks.delete(day);
       } else {
-        habit.marks.set(day, amount ?? dayTarget(habit));
+        habit.marks.set(day, 1);
       }
     } else if (amount === null) {
       habit.marks.delete(day);

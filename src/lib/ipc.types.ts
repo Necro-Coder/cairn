@@ -364,6 +364,19 @@ export interface HabitSummary {
   readonly scheduleMask: number;
   readonly position: number;
   readonly archived: boolean;
+  /**
+   * Which day that square is, as `YYYYMMDD`.
+   *
+   * The core's own answer to what day it is, which depends on the device's time zone and on
+   * how far from midnight this person's day starts. It travels with the square so that a
+   * screen marking today hands the day straight back to {@link IpcSurface.toggleHabitDay}
+   * rather than working one out from a clock in a WebView, which knows neither of those.
+   *
+   * It does not delegate any trust: the core derives today again inside the write and
+   * refuses a day in the future or further back than may be marked, exactly as it would for
+   * a day this side invented.
+   */
+  readonly todayDay: number;
   readonly today: DayState;
   readonly streak: Streak;
 }

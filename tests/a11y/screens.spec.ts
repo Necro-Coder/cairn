@@ -76,7 +76,9 @@ for (const [section, title] of [
 }
 
 for (const [section, action, said] of [
-  ['Hábitos', 'Añadir hábito', /Crear y marcar hábitos llega/],
+  // Habits is not in this list any more. The module works, so nothing on its screen is drawn
+  // before it does anything, and the badge that says so came off with the mock-up.
+  //
   // Named one by one rather than matched loosely: the passwords screen says the same thing
   // twice, once about the search field and once about the list, and a pattern that caught
   // both would be a test that passed while the button did nothing.
@@ -96,17 +98,28 @@ for (const [section, action, said] of [
   });
 }
 
-test('the habits year, drawn with nothing in it', async ({ page }) => {
+test('the habits list, with what today asks for on it', async ({ page }) => {
   await open(page);
   await createVault(page);
   await openSection(page, 'Hábitos');
 
-  // The grid itself is hidden from assistive technology, so what has to be reachable is
-  // the sentence that says what it is. A grid nobody can have described to them, with no
-  // caption, would be three hundred squares of nothing.
-  await expect(page.getByRole('heading', { level: 2, name: 'Tu año' })).toBeVisible();
-  await expect(page.getByText(/Un cuadro por día/)).toBeVisible();
-  await expectNoViolations(page, 'the habits year');
+  // Every row is a control with a name that says what pressing it does, which is the half
+  // of this screen a mouse never exercises.
+  await expect(page.getByRole('button', { name: 'Marcar hoy en Meditar' })).toBeVisible();
+  await expectNoViolations(page, 'the habits list');
+});
+
+test('the habits list with nothing in it', async ({ page }) => {
+  // The first day of a list is a real screen, and until the screen that deletes a habit
+  // exists there is no way to reach it from inside the interface. The preview opens on it
+  // when the address asks, which is the one switch that file has.
+  await page.goto('/?sin-habitos');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await createVault(page);
+  await openSection(page, 'Hábitos');
+
+  await expect(page.getByText(/Hoy no hay nada que marcar/)).toBeVisible();
+  await expectNoViolations(page, 'the habits list, empty');
 });
 
 test('the passwords search, switched off with its reason', async ({ page }) => {

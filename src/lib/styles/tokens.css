@@ -223,6 +223,13 @@
   --layer-width-palette: 38.75rem;
   --layer-width-picker: 35rem;
   --layer-max-height: 23.75rem;
+  /* The box that says whether a day is answered. Above the 24px touch floor on its own, so
+   * the row around it is comfort rather than the thing that makes it reachable. */
+  --habit-box-size: 1.5rem;
+  /* The narrowest a habit row gets before the badge beside it wraps to the next line. */
+  --habit-row-min: 15rem;
+  /* Four digits and their spinner, which is every quantity this product counts in a day. */
+  --habit-amount-width: 7rem;
   --field-max-width: 28rem;
   --form-max-width-narrow: 30rem;
   --form-max-width: 34rem;
