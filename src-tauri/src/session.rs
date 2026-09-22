@@ -20,11 +20,12 @@
 //! Those outlive the process and belong to the layer that owns the disk.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cairn_crypto::{CryptoError, UnlockedVault};
 use cairn_domain::session::{IdleDecision, InactivityTimeout, focus_grace_elapsed, idle_decision};
 
+use crate::clipboard::{Clipboard, ClipboardKeeper};
 use crate::storage::Storage;
 
 /// What an unlock did.
@@ -151,6 +152,12 @@ pub struct Session {
     /// derivation on another thread, and a thread of the runtime blocked on an ordinary lock
     /// is a thread that is not drawing the window.
     derivation: tokio::sync::Mutex<()>,
+    /// What this process last put on the clipboard, and the timer that will take it back.
+    ///
+    /// Here rather than beside the window because of one line in [`Session::lock`]: locking the
+    /// vault has to take the copied password back at once, and a timer that belonged to the
+    /// interface would keep counting down after the keys were gone.
+    clipboard: ClipboardKeeper,
 }
 
 impl Session {
@@ -167,7 +174,27 @@ impl Session {
                 import: None,
             }),
             derivation: tokio::sync::Mutex::new(()),
+            clipboard: ClipboardKeeper::system(),
         }
+    }
+
+    /// A locked session over a clipboard that is not this machine's, for the tests.
+    #[must_use]
+    pub fn with_clipboard(
+        timeout: InactivityTimeout,
+        now_us: i64,
+        clipboard: Arc<dyn Clipboard>,
+    ) -> Self {
+        Self {
+            clipboard: ClipboardKeeper::with(clipboard),
+            ..Self::new(timeout, now_us)
+        }
+    }
+
+    /// What this process put on the clipboard, and the one timer that will take it back.
+    #[must_use]
+    pub const fn clipboard(&self) -> &ClipboardKeeper {
+        &self.clipboard
     }
 
     /// Whether the vault is open.
@@ -274,6 +301,12 @@ impl Session {
     /// anywhere else in this process to clear separately. The focus countdown is cleared with
     /// it, so that opening the vault again does not inherit one from before.
     pub fn lock(&self) -> bool {
+        // Before the keys go, and whether or not there were any. Locking the vault has to mean
+        // something, and leaving a password sitting on the clipboard for another fourteen seconds
+        // after somebody deliberately shut their vault is what makes a lock decorative. Anything
+        // copied since is left alone: the check is the same one the timer would have made.
+        let _wiped = self.clipboard.wipe_now();
+
         let mut state = self.state();
         state.focus_lost_at_us = None;
 

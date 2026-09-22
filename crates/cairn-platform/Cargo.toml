@@ -11,6 +11,12 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# The digest the clipboard compares by. Already in this workspace, resolved to the same version
+# as the cryptographic crate: taking a secret back off the clipboard means checking that what is
+# on it is still what was put there, and checking with a digest means neither value has to be
+# held to do it. This crate cannot reach for the cryptographic crate instead, because that one
+# depends on this one.
+sha2 = "0.11"
 zeroize = { version = "1.9", features = ["alloc"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -19,7 +25,9 @@ zeroize = { version = "1.9", features = ["alloc"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }

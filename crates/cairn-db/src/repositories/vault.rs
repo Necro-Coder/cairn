@@ -650,6 +650,47 @@ pub fn history_moments(
         .collect()
 }
 
+/// One address, by the identifier a row carried, under the entry named.
+///
+/// Not a secret, and it already travels whole in [`entry`]'s children. It is here so that the
+/// command which puts one on the clipboard resolves it exactly the way it resolves a password:
+/// against the entry named, in the `WHERE`, and never from the bin.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if there is no live address with that identifier under a live entry that
+/// is not in the bin, [`DbError::Sealed`] if it does not open, [`DbError::Sqlite`].
+pub fn url_value(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    entry_id: Uuid,
+    url_id: Uuid,
+) -> Result<Zeroizing<String>, DbError> {
+    let found: Option<(i64, Option<Vec<u8>>)> = connection
+        .prepare_cached(
+            "SELECT u.rev, u.value FROM vault_urls AS u
+               JOIN vault_entries AS e ON e.id = u.entry_id
+              WHERE u.id = ?1 AND u.entry_id = ?2 AND u.deleted = 0
+                AND e.deleted = 0 AND e.trashed_at IS NULL
+              LIMIT 1",
+        )?
+        .query_row(
+            params![url_id.as_bytes().as_slice(), entry_id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    let (rev, Some(stored)) = found.ok_or(DbError::NotFound)? else {
+        return Err(DbError::NotFound);
+    };
+
+    codec.open_text(
+        child_row(URLS_TABLE, url_id.as_bytes(), rev)?,
+        "value",
+        &stored,
+    )
+}
+
 /// One custom field's value, by the identifier a field carried, under the entry named.
 ///
 /// Checks that the field belongs to that entry, and checks it in the `WHERE` rather than

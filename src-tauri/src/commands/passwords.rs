@@ -21,6 +21,7 @@
 //! interface is told the search is not available.
 
 use core::fmt::Write as _;
+use core::time::Duration;
 
 use cairn_crypto::constant_time_eq;
 use cairn_db::codec::FieldCodec;
@@ -86,6 +87,15 @@ pub enum PasswordsError {
     /// from a list straight to an irreversible deletion.
     #[error("that entry is not in the bin")]
     NotInTrash,
+
+    /// The clipboard would not take it.
+    ///
+    /// A variant of its own, and not a fall back to handing the value over for the interface to
+    /// copy. That would turn a clipboard that was busy for a tenth of a second into a secret in
+    /// the WebView, which is the one thing this module exists to prevent. A screen that gets this
+    /// says "it could not be copied, try again".
+    #[error("the clipboard would not take it")]
+    Clipboard,
 
     /// The order offered is not the set of folders there are.
     #[error("the order was not the whole set")]
@@ -384,6 +394,53 @@ pub struct Cleared {
     /// How many old passwords stopped existing.
     pub rows: u32,
 }
+
+/// Which value to put on the clipboard.
+///
+/// A closed enumeration for the same reason [`RevealTarget`] is one, with two more members. A
+/// user name and an address are not secrets of the same kind, and what changes for them is not
+/// whether they may be copied but whether they are taken back afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CopyTarget {
+    /// The entry's password.
+    Password,
+    /// Its user name.
+    Username,
+    /// One of its addresses.
+    Url {
+        /// Which one.
+        id: String,
+    },
+    /// One of its custom fields.
+    Field {
+        /// Which one.
+        id: String,
+    },
+}
+
+/// What happened, and when it will be taken back.
+///
+/// It carries no text and must never be given a field that does. The whole point of copying from
+/// the core is that the value does not come back across the bridge, and a "what was copied" field
+/// added here later would undo the entire module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Copied {
+    /// Seconds until it is wiped, or `None` for what is not wiped.
+    pub clears_in_s: Option<u16>,
+    /// **False until phase 08.** What the warning beside the button is drawn from.
+    pub hardened: bool,
+}
+
+/// The narrowest the wipe delay may be set to.
+///
+/// Below this there is not enough time to switch windows and paste, which turns the protection
+/// into a reason to copy the same password three times.
+pub const MIN_CLIPBOARD_SECONDS: u16 = 5;
+
+/// The widest the wipe delay may be set to.
+pub const MAX_CLIPBOARD_SECONDS: u16 = 60;
 
 /// Which single value is being asked for.
 ///
@@ -905,6 +962,127 @@ pub fn reveal(
     })
 }
 
+/// Puts one named value of one entry on the clipboard, and answers with no value at all.
+///
+/// The other half of [`reveal`], and the half that is easier to get right: the secret goes from
+/// the file to the system clipboard without passing through JavaScript at any point, so there is
+/// nothing to leak into a console, a crash report or a React state tree.
+///
+/// A password or a custom field is taken back after the configured number of seconds. A user name
+/// or an address is not: neither is a secret of the same kind, and wiping them would get in the
+/// way more often than it would protect anything.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if the entry or
+/// the value is not there or is in the bin, [`PasswordsError::Clipboard`] if the clipboard would
+/// not take it, [`PasswordsError::Storage`] if the database refuses.
+pub fn copy(
+    state: &AppState,
+    id: &str,
+    target: &CopyTarget,
+    now: i64,
+) -> Result<Copied, PasswordsError> {
+    let id = parsed(id)?;
+
+    // Read, written to the clipboard and armed inside the one closure that holds the keys, so the
+    // value never outlives it. What comes back out is how long the screen has to say it has.
+    in_storage(state, |_storage, codec, connection| {
+        let (value, wiped) = match target {
+            CopyTarget::Password => {
+                let found =
+                    repository::entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+                (found.password.ok_or(PasswordsError::NotFound)?, true)
+            }
+            CopyTarget::Username => {
+                let found =
+                    repository::entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+                (found.username.ok_or(PasswordsError::NotFound)?, false)
+            }
+            CopyTarget::Url { id: address } => (
+                repository::url_value(connection, codec, id, parsed(address)?)?,
+                false,
+            ),
+            CopyTarget::Field { id: field } => (
+                repository::field_value(connection, codec, id, parsed(field)?)?,
+                true,
+            ),
+        };
+
+        let seconds = wiped
+            .then(|| clipboard_seconds(connection, codec))
+            .transpose()?;
+        state
+            .session()
+            .clipboard()
+            .copy(&value, seconds.map(|s| Duration::from_secs(u64::from(s))))
+            .map_err(|_refused| PasswordsError::Clipboard)?;
+
+        // The same trace a reveal leaves, for the same reason: what a list ordered by use is
+        // ordered by. Copying an address or a user name counts, because both are somebody using
+        // the entry, which is the difference between this and looking at an old password.
+        repository::mark_used(connection, id, now)?;
+
+        Ok(Copied {
+            clears_in_s: seconds,
+            // Until the phase that marks the contents with the Windows exclusion formats, every
+            // password copied lands in the clipboard history in the clear and survives the vault
+            // being locked. The interface draws its warning from exactly this.
+            hardened: false,
+        })
+    })
+}
+
+/// Sets how long a copied secret stays on the clipboard.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::Invalid`] if the number is
+/// outside [`MIN_CLIPBOARD_SECONDS`] and [`MAX_CLIPBOARD_SECONDS`], [`PasswordsError::Storage`] if
+/// the database refuses.
+pub fn set_clipboard_seconds(
+    state: &AppState,
+    seconds: u16,
+    now: i64,
+) -> Result<PasswordsSettings, PasswordsError> {
+    if !(MIN_CLIPBOARD_SECONDS..=MAX_CLIPBOARD_SECONDS).contains(&seconds) {
+        return Err(PasswordsError::Invalid {
+            problems: vec![FieldProblem {
+                field: "clipboardClearS".to_owned(),
+                index: None,
+                code: if seconds < MIN_CLIPBOARD_SECONDS {
+                    "tooSmall"
+                } else {
+                    "tooLarge"
+                }
+                .to_owned(),
+                limit: Some(u32::from(if seconds < MIN_CLIPBOARD_SECONDS {
+                    MIN_CLIPBOARD_SECONDS
+                } else {
+                    MAX_CLIPBOARD_SECONDS
+                })),
+            }],
+        });
+    }
+
+    let millis = now_ms();
+    writing(state, |storage, codec, connection| {
+        settings::put(
+            connection,
+            codec,
+            storage.device(),
+            storage.next_hlc(millis),
+            now,
+            CLIPBOARD_SECONDS_KEY,
+            Some(seconds.to_string().as_bytes()),
+        )?;
+
+        Ok(((), None))
+    })?;
+
+    settings(state)
+}
+
 /// Throws an entry away, or takes it back out, and says what it now is.
 ///
 /// Idempotent in both directions. Throwing away something already in the bin leaves the moment it
@@ -1227,6 +1405,41 @@ pub fn passwords_reveal(
     target: RevealTarget,
 ) -> Result<Revealed, PasswordsError> {
     reveal(&state, &id, &target, now_us())
+}
+
+/// Puts one named value of one entry on the clipboard.
+///
+/// # Errors
+///
+/// See [`copy`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_copy(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    target: CopyTarget,
+) -> Result<Copied, PasswordsError> {
+    copy(&state, &id, &target, now_us())
+}
+
+/// Sets how long a copied secret stays on the clipboard.
+///
+/// # Errors
+///
+/// See [`set_clipboard_seconds`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_set_clipboard_seconds(
+    state: tauri::State<'_, AppState>,
+    seconds: u16,
+) -> Result<PasswordsSettings, PasswordsError> {
+    set_clipboard_seconds(&state, seconds, now_us())
 }
 
 /// Throws an entry away, or takes it back out.

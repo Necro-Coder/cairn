@@ -11,12 +11,13 @@
 //! count of attempts. The order everywhere is that permit, then the derivation inside the
 //! session, then the two ordinary locks; nothing takes them the other way round.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use cairn_domain::session::InactivityTimeout;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 
+use crate::clipboard::Clipboard;
 use crate::clock::now_us;
 use crate::session::Session;
 use crate::storage::DataDirectory;
@@ -50,6 +51,23 @@ impl AppState {
             vault: Mutex::new(vault),
             directory,
             operation: AsyncMutex::new(()),
+        }
+    }
+
+    /// The same, over a clipboard that is not this machine's.
+    ///
+    /// For the tests, and only for them. A clipboard is a single shared resource of the whole
+    /// desktop: a test that drove the real one would replace whatever the person running it had
+    /// copied, and would have nothing to drive at all on a build agent with no desktop.
+    #[must_use]
+    pub fn with_clipboard(
+        vault: Vault,
+        directory: DataDirectory,
+        clipboard: Arc<dyn Clipboard>,
+    ) -> Self {
+        Self {
+            session: Session::with_clipboard(InactivityTimeout::default(), now_us(), clipboard),
+            ..Self::new(vault, directory)
         }
     }
 

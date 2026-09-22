@@ -12,6 +12,7 @@
 //! defeat the purpose: the exception has to be argued once per call site, not once.
 // Deliberately no `#![forbid(unsafe_code)]` here. See the module documentation above.
 
+pub mod clipboard;
 pub mod memory;
 pub mod paths;
 pub mod replace;
