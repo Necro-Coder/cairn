@@ -16,11 +16,15 @@
 //! the skeleton survives so a merge can see that it went, and the content does not, because a
 //! password somebody replaced two years ago is not something this file should still be holding.
 //!
-//! What is not here yet: reading and writing URLs, custom fields and tags. The tables exist,
-//! because adding an empty table is the cheap kind of change and adding a column to one with
-//! data in it is the expensive kind, and the repository for them arrives with the screen that
-//! draws them.
+//! The addresses and the custom fields of an entry are written whole, every time. A list that
+//! arrives replaces the list that was there, matching the rows up by position, so moving an
+//! address is two updates rather than four writes in the synchronisation log. What is not here,
+//! and will not be, is tags: the tables exist from migration 0003 and nothing reads or writes
+//! them, because the module they were for is not one this product has.
 
+use cairn_domain::vault::{
+    MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_URL_CHARS, MAX_URLS,
+};
 use cairn_domain::{Hlc, Rev, tree};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use uuid::Uuid;
@@ -43,6 +47,18 @@ pub const FOLDERS_TABLE: &str = "vault_folders";
 
 /// The encrypted columns of a folder.
 pub const FOLDERS_SEALED: SealedColumns = SealedColumns::new(&["name"]);
+
+/// The table addresses live in.
+pub const URLS_TABLE: &str = "vault_urls";
+
+/// Its one encrypted column.
+pub const URLS_SEALED: SealedColumns = SealedColumns::new(&["value"]);
+
+/// The table custom fields live in.
+pub const FIELDS_TABLE: &str = "vault_fields";
+
+/// Both of its encrypted columns. The label says as much as the value beside it.
+pub const FIELDS_SEALED: SealedColumns = SealedColumns::new(&["label", "value"]);
 
 /// The table the old passwords live in.
 pub const HISTORY_TABLE: &str = "vault_password_history";
@@ -479,6 +495,413 @@ pub fn history(
     Ok(passwords)
 }
 
+/// One address of an entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Url {
+    /// The row's identifier.
+    pub id: Uuid,
+    /// The address itself, which clears itself when it is dropped.
+    pub value: Zeroizing<String>,
+    /// Where it sits in the entry's list, counting from zero.
+    pub position: i64,
+}
+
+/// One custom field of an entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    /// The row's identifier.
+    pub id: Uuid,
+    /// What the field is called.
+    pub label: Zeroizing<String>,
+    /// What it holds.
+    pub value: Zeroizing<String>,
+    /// Whether the interface hides it until somebody asks.
+    pub secret: bool,
+    /// Where it sits in the entry's list, counting from zero.
+    pub position: i64,
+}
+
+/// What is needed to write one custom field down.
+#[derive(Debug, Clone, Copy)]
+pub struct NewField<'a> {
+    /// What to call it.
+    pub label: &'a str,
+    /// What it holds.
+    pub value: &'a str,
+    /// Whether the interface hides it until somebody asks.
+    pub secret: bool,
+}
+
+/// The addresses of one entry, in the order somebody put them in.
+///
+/// # Errors
+///
+/// [`DbError::Sealed`] if a row does not open, [`DbError::Sqlite`] if the statement fails.
+pub fn urls(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    entry_id: Uuid,
+) -> Result<Vec<Url>, DbError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT id, rev, value, position FROM vault_urls
+          WHERE entry_id = ?1 AND deleted = 0
+          ORDER BY position, id",
+    )?;
+
+    let rows = statement
+        .query_map([entry_id.as_bytes().as_slice()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut addresses = Vec::with_capacity(rows.len());
+    for (id, rev, stored, position) in rows {
+        let row = child_row(URLS_TABLE, &id, rev)?;
+        addresses.push(Url {
+            id: row.row_id,
+            value: open_optional(codec, row, "value", stored)?.ok_or_else(damaged)?,
+            position,
+        });
+    }
+
+    Ok(addresses)
+}
+
+/// The custom fields of one entry, in order.
+///
+/// # Errors
+///
+/// As above.
+pub fn fields(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    entry_id: Uuid,
+) -> Result<Vec<Field>, DbError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT id, rev, label, value, secret, position FROM vault_fields
+          WHERE entry_id = ?1 AND deleted = 0
+          ORDER BY position, id",
+    )?;
+
+    let rows = statement
+        .query_map([entry_id.as_bytes().as_slice()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut custom = Vec::with_capacity(rows.len());
+    for (id, rev, label, value, secret, position) in rows {
+        let row = child_row(FIELDS_TABLE, &id, rev)?;
+        custom.push(Field {
+            id: row.row_id,
+            label: open_optional(codec, row, "label", label)?.ok_or_else(damaged)?,
+            value: open_optional(codec, row, "value", value)?.ok_or_else(damaged)?,
+            secret: secret != 0,
+            position,
+        });
+    }
+
+    Ok(custom)
+}
+
+/// Replaces every address of an entry with the list given, in one go.
+///
+/// Rows that are no longer in the list are tombstoned the way everything in this schema is:
+/// marked deleted and emptied of ciphertext. Rows that stay keep their identifier, so a merge
+/// does not see an address leave and a different one arrive when all that happened is that
+/// somebody moved it up.
+///
+/// Runs inside whatever transaction the caller has open, and starts none of its own: writing an
+/// entry and its children is one logical write, and an entry with half its addresses is a state
+/// no screen knows how to draw and the merge would carry to the other device.
+///
+/// # Errors
+///
+/// [`DbError::TooMany`] if there are more than [`cairn_domain::vault::MAX_URLS`] of them or one
+/// is longer than it may be, [`DbError::Sealed`], [`DbError::Sqlite`].
+pub fn replace_urls(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    device: DeviceId,
+    hlc: Hlc,
+    now_us: i64,
+    entry_id: Uuid,
+    values: &[&str],
+) -> Result<Vec<Url>, DbError> {
+    // Every one of them, before a single statement runs. A refusal halfway through would leave an
+    // entry holding the first nineteen addresses of a list that was never acceptable.
+    check_count(
+        "the number of addresses of an entry",
+        values.len(),
+        MAX_URLS,
+    )?;
+    for value in values {
+        check_chars("the length of an address", value, MAX_URL_CHARS)?;
+    }
+
+    let existing = live_children(
+        connection,
+        "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev FROM vault_urls
+          WHERE entry_id = ?1 AND deleted = 0
+          ORDER BY position, id",
+        entry_id,
+    )?;
+
+    let mut written = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        let position = i64::try_from(index).unwrap_or(i64::MAX);
+        let previous = existing.get(index);
+        let stamp = match previous {
+            Some(kept) => kept.revised(hlc, now_us),
+            None => RowStamp::new(device, hlc, now_us)?,
+        };
+        let sealed = codec.seal_row(
+            RowKey {
+                table: URLS_TABLE,
+                row_id: stamp.id,
+                rev: stamp.rev,
+            },
+            URLS_SEALED,
+            &[("value", Some(value.as_bytes()))],
+        )?;
+
+        if previous.is_some() {
+            connection
+                .prepare_cached(
+                    "UPDATE vault_urls
+                        SET updated_at = ?2, device_id = ?3, hlc = ?4, rev = ?5,
+                            value = ?6, position = ?7
+                      WHERE id = ?1",
+                )?
+                .execute(params![
+                    stamp.id.as_bytes().as_slice(),
+                    stamp.updated_at,
+                    stamp.device.as_bytes().as_slice(),
+                    stamp.hlc_as_stored().as_slice(),
+                    stamp.rev_as_stored(),
+                    sealed.first().and_then(Option::as_ref),
+                    position,
+                ])?;
+        } else {
+            connection
+                .prepare_cached(
+                    "INSERT INTO vault_urls
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          entry_id, value, position)
+                     VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8)",
+                )?
+                .execute(params![
+                    stamp.id.as_bytes().as_slice(),
+                    stamp.created_at,
+                    stamp.device.as_bytes().as_slice(),
+                    stamp.hlc_as_stored().as_slice(),
+                    stamp.rev_as_stored(),
+                    entry_id.as_bytes().as_slice(),
+                    sealed.first().and_then(Option::as_ref),
+                    position,
+                ])?;
+        }
+
+        written.push(Url {
+            id: stamp.id,
+            value: Zeroizing::new((*value).to_owned()),
+            position,
+        });
+    }
+
+    for spare in existing.iter().skip(values.len()) {
+        let gone = spare.tombstoned(hlc, now_us);
+        connection
+            .prepare_cached(
+                "UPDATE vault_urls
+                    SET deleted = 1, updated_at = ?2, hlc = ?3, rev = ?4, value = NULL
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                gone.id.as_bytes().as_slice(),
+                gone.updated_at,
+                gone.hlc_as_stored().as_slice(),
+                gone.rev_as_stored(),
+            ])?;
+    }
+
+    Ok(written)
+}
+
+/// Replaces every custom field of an entry, in one go. Same rules as above.
+///
+/// The `secret` flag is written in the clear beside the two sealed columns, on purpose: it
+/// decides how every row is drawn, and a flag that has to be decrypted to know how to draw a row
+/// is a decryption on every paint.
+///
+/// # Errors
+///
+/// As above, with [`cairn_domain::vault::MAX_FIELDS`].
+pub fn replace_fields(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    device: DeviceId,
+    hlc: Hlc,
+    now_us: i64,
+    entry_id: Uuid,
+    fields: &[NewField<'_>],
+) -> Result<Vec<Field>, DbError> {
+    check_count(
+        "the number of custom fields of an entry",
+        fields.len(),
+        MAX_FIELDS,
+    )?;
+    for field in fields {
+        check_chars(
+            "the length of the label of a custom field",
+            field.label,
+            MAX_FIELD_LABEL_CHARS,
+        )?;
+        check_count(
+            "the length of the value of a custom field",
+            field.value.len(),
+            MAX_FIELD_VALUE_BYTES,
+        )?;
+    }
+
+    let existing = live_children(
+        connection,
+        "SELECT id, created_at, updated_at, device_id, deleted, hlc, rev FROM vault_fields
+          WHERE entry_id = ?1 AND deleted = 0
+          ORDER BY position, id",
+        entry_id,
+    )?;
+
+    let mut written = Vec::with_capacity(fields.len());
+    for (index, field) in fields.iter().enumerate() {
+        let position = i64::try_from(index).unwrap_or(i64::MAX);
+        let previous = existing.get(index);
+        let stamp = match previous {
+            Some(kept) => kept.revised(hlc, now_us),
+            None => RowStamp::new(device, hlc, now_us)?,
+        };
+
+        write_field(
+            connection,
+            codec,
+            &stamp,
+            previous.is_some(),
+            entry_id,
+            field,
+            position,
+        )?;
+
+        written.push(Field {
+            id: stamp.id,
+            label: Zeroizing::new(field.label.to_owned()),
+            value: Zeroizing::new(field.value.to_owned()),
+            secret: field.secret,
+            position,
+        });
+    }
+
+    for spare in existing.iter().skip(fields.len()) {
+        let gone = spare.tombstoned(hlc, now_us);
+        connection
+            .prepare_cached(
+                "UPDATE vault_fields
+                    SET deleted = 1, updated_at = ?2, hlc = ?3, rev = ?4,
+                        label = NULL, value = NULL
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                gone.id.as_bytes().as_slice(),
+                gone.updated_at,
+                gone.hlc_as_stored().as_slice(),
+                gone.rev_as_stored(),
+            ])?;
+    }
+
+    Ok(written)
+}
+
+/// Seals one custom field and writes it, either over the row it is reusing or as a new one.
+///
+/// Both columns are sealed together at the same revision, because sealing one of the two would
+/// leave the other authenticated under the revision before it.
+fn write_field(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    stamp: &RowStamp,
+    reused: bool,
+    entry_id: Uuid,
+    field: &NewField<'_>,
+    position: i64,
+) -> Result<(), DbError> {
+    let sealed = codec.seal_row(
+        RowKey {
+            table: FIELDS_TABLE,
+            row_id: stamp.id,
+            rev: stamp.rev,
+        },
+        FIELDS_SEALED,
+        &[
+            ("label", Some(field.label.as_bytes())),
+            ("value", Some(field.value.as_bytes())),
+        ],
+    )?;
+
+    if reused {
+        connection
+            .prepare_cached(
+                "UPDATE vault_fields
+                    SET updated_at = ?2, device_id = ?3, hlc = ?4, rev = ?5,
+                        label = ?6, value = ?7, secret = ?8, position = ?9
+                  WHERE id = ?1",
+            )?
+            .execute(params![
+                stamp.id.as_bytes().as_slice(),
+                stamp.updated_at,
+                stamp.device.as_bytes().as_slice(),
+                stamp.hlc_as_stored().as_slice(),
+                stamp.rev_as_stored(),
+                sealed.first().and_then(Option::as_ref),
+                sealed.get(1).and_then(Option::as_ref),
+                i64::from(field.secret),
+                position,
+            ])?;
+    } else {
+        connection
+            .prepare_cached(
+                "INSERT INTO vault_fields
+                     (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                      entry_id, label, value, secret, position)
+                 VALUES (?1, ?2, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?
+            .execute(params![
+                stamp.id.as_bytes().as_slice(),
+                stamp.created_at,
+                stamp.device.as_bytes().as_slice(),
+                stamp.hlc_as_stored().as_slice(),
+                stamp.rev_as_stored(),
+                entry_id.as_bytes().as_slice(),
+                sealed.first().and_then(Option::as_ref),
+                sealed.get(1).and_then(Option::as_ref),
+                i64::from(field.secret),
+                position,
+            ])?;
+    }
+
+    Ok(())
+}
+
 /// Writes a folder down, refusing a placement that would break the depth rule.
 ///
 /// The depth is checked by following the parent column, which is why that column is one of the
@@ -775,6 +1198,57 @@ fn trim_history(
     Ok(())
 }
 
+/// The identity of one child row of an entry, checked on the way out of the file.
+///
+/// Both the identifier and the revision come from columns this program wrote, so a length that
+/// is not sixteen or a revision that is negative means the row was written by something else.
+fn child_row<'a>(table: &'a str, id: &[u8], rev: i64) -> Result<RowKey<'a>, DbError> {
+    Ok(RowKey {
+        table,
+        row_id: Uuid::from_bytes(sixteen(id)?),
+        rev: Rev::from_number(u64::try_from(rev).map_err(|_negative| damaged())?),
+    })
+}
+
+/// The stamps of the live child rows of an entry, in the order the statement asks for.
+///
+/// What the two replacements pair the incoming list against. The statement is a literal from this
+/// file, never text that came from anywhere else.
+fn live_children(
+    connection: &Connection,
+    statement: &str,
+    entry_id: Uuid,
+) -> Result<Vec<RowStamp>, DbError> {
+    let mut prepared = connection.prepare_cached(statement)?;
+    let rows = prepared
+        .query_map([entry_id.as_bytes().as_slice()], RowStamp::read_common)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    rows.into_iter().map(RowStamp::from_stored).collect()
+}
+
+/// Refuses a count larger than one call may carry.
+///
+/// The ceilings are the domain's, checked again here. That is not duplication with a different
+/// name: the domain protects whoever is typing from their own mistake, and this protects the file
+/// from a caller written two years from now that never went through a form at all.
+fn check_count(what: &'static str, value: usize, max: usize) -> Result<(), DbError> {
+    if value > max {
+        return Err(DbError::TooMany {
+            what,
+            value: value as u64,
+            max: max as u64,
+        });
+    }
+
+    Ok(())
+}
+
+/// Refuses a value longer than the number of characters it may be.
+fn check_chars(what: &'static str, value: &str, max: usize) -> Result<(), DbError> {
+    check_count(what, value.chars().count(), max)
+}
+
 /// Refuses a value larger than one row may hold.
 fn check_value(what: &'static str, value: Option<&str>) -> Result<(), DbError> {
     let Some(value) = value else {
@@ -819,12 +1293,13 @@ fn damaged() -> DbError {
 #[cfg(test)]
 mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
+    use cairn_domain::vault::{MAX_FIELDS, MAX_URL_CHARS, MAX_URLS};
     use cairn_domain::{Hlc, tree};
     use uuid::Uuid;
 
     use super::{
-        MAX_HISTORY, NewEntry, create_entry, create_folder, delete_entry, entries, entry, history,
-        history_len, replace_password,
+        MAX_HISTORY, NewEntry, NewField, create_entry, create_folder, delete_entry, entries, entry,
+        fields, history, history_len, replace_fields, replace_password, replace_urls, urls,
     };
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
@@ -1227,6 +1702,657 @@ mod tests {
                 Ok(())
             })
             .expect("the walk finishes");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// Everything one test of the address and field tables needs, set up the same way each time.
+    struct Bench {
+        scratch: Scratch,
+        vault: UnlockedVault,
+        device: DeviceId,
+    }
+
+    impl Bench {
+        fn new(label: &str) -> Self {
+            Self {
+                scratch: Scratch::new(label),
+                vault: an_open_vault(),
+                device: DeviceId::from_bytes([7; 16]),
+            }
+        }
+
+        fn database(&self) -> Database {
+            a_database(&self.scratch, &self.vault)
+        }
+
+        fn codec(&self) -> FieldCodec<'_> {
+            FieldCodec::new(self.vault.data_key(), *self.vault.key_id())
+        }
+    }
+
+    /// How many rows of a table belong to an entry, and how many of them still hold ciphertext.
+    fn counted(connection: &rusqlite::Connection, statement: &str, entry_id: Uuid) -> (i64, i64) {
+        connection
+            .query_row(statement, [entry_id.as_bytes().as_slice()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("the rows can be counted")
+    }
+
+    /// The rows of `vault_urls` for an entry: how many there are, and how many still hold a value.
+    const URL_CENSUS: &str = "SELECT count(*), count(value) FROM vault_urls WHERE entry_id = ?1";
+
+    /// The same for `vault_fields`, counting a row as holding something if either column does.
+    const FIELD_CENSUS: &str =
+        "SELECT count(*), count(label) + count(value) FROM vault_fields WHERE entry_id = ?1";
+
+    #[test]
+    fn the_addresses_of_an_entry_are_written_in_the_order_they_arrived() {
+        let bench = Bench::new("vault-urls-write");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                let addresses = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &["uno.es", "dos.es", "tres.es"],
+                )?;
+
+                assert_eq!(
+                    addresses.iter().map(|url| url.position).collect::<Vec<_>>(),
+                    vec![0, 1, 2]
+                );
+                assert_eq!(
+                    urls(connection, &codec, written.id)?
+                        .iter()
+                        .map(|url| url.value.to_string())
+                        .collect::<Vec<_>>(),
+                    vec!["uno.es", "dos.es", "tres.es"]
+                );
+                Ok(())
+            })
+            .expect("the addresses are written");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn rewriting_the_same_addresses_in_another_order_reuses_the_same_rows() {
+        // The reason the rows are paired up by position rather than replaced wholesale. Four
+        // writes in the synchronisation log where two would do is four rows two devices have to
+        // reconcile, for a change that was somebody dragging a line up a list.
+        let bench = Bench::new("vault-urls-reorder");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                let first = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &["uno.es", "dos.es", "tres.es"],
+                )?;
+                let second = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US + 1,
+                    written.id,
+                    &["tres.es", "uno.es", "dos.es"],
+                )?;
+
+                let before: Vec<Uuid> = first.iter().map(|url| url.id).collect();
+                let after: Vec<Uuid> = second.iter().map(|url| url.id).collect();
+                assert_eq!(
+                    before, after,
+                    "reordering created rows instead of moving them"
+                );
+
+                assert_eq!(
+                    urls(connection, &codec, written.id)?
+                        .iter()
+                        .map(|url| url.value.to_string())
+                        .collect::<Vec<_>>(),
+                    vec!["tres.es", "uno.es", "dos.es"]
+                );
+                assert_eq!(counted(connection, URL_CENSUS, written.id), (3, 3));
+                Ok(())
+            })
+            .expect("the reorder works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_shorter_list_tombstones_the_rows_that_are_left_over_and_empties_them() {
+        let bench = Bench::new("vault-urls-shorter");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &["uno.es", "dos.es", "tres.es"],
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US + 1,
+                    written.id,
+                    &["uno.es", "dos.es"],
+                )?;
+
+                assert_eq!(urls(connection, &codec, written.id)?.len(), 2);
+                // Three rows, two of them still holding a value: the third kept its skeleton so a
+                // merge can see it went, and lost its ciphertext so the service is not still named.
+                assert_eq!(counted(connection, URL_CENSUS, written.id), (3, 2));
+                Ok(())
+            })
+            .expect("the shorter list works");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_longer_list_adds_rows_and_an_empty_one_takes_them_all_away() {
+        let bench = Bench::new("vault-urls-longer");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                let first = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &["uno.es", "dos.es", "tres.es"],
+                )?;
+                let grown = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US + 1,
+                    written.id,
+                    &["uno.es", "dos.es", "tres.es", "cuatro.es"],
+                )?;
+
+                assert_eq!(grown.len(), 4);
+                let known: Vec<Uuid> = first.iter().map(|url| url.id).collect();
+                assert!(
+                    grown.last().is_some_and(|url| !known.contains(&url.id)),
+                    "the fourth address reused an identifier instead of getting its own"
+                );
+
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(4),
+                    NOW_US + 2,
+                    written.id,
+                    &[],
+                )?;
+
+                assert!(urls(connection, &codec, written.id)?.is_empty());
+                assert_eq!(counted(connection, URL_CENSUS, written.id), (4, 0));
+                Ok(())
+            })
+            .expect("the longer list and the empty one both work");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_list_that_is_refused_writes_nothing_at_all() {
+        // Checked before a statement runs, not while they are being written. A refusal halfway
+        // through would leave an entry holding the first nineteen of a list nobody accepted.
+        let bench = Bench::new("vault-urls-refused");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+
+                let many: Vec<String> = (0..=MAX_URLS).map(|n| format!("sitio{n}.es")).collect();
+                let borrowed: Vec<&str> = many.iter().map(String::as_str).collect();
+                let refused = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &borrowed,
+                )
+                .expect_err("thirty-three addresses were accepted");
+                assert!(matches!(refused, DbError::TooMany { .. }));
+                assert_eq!(counted(connection, URL_CENSUS, written.id), (0, 0));
+
+                let long: String = std::iter::repeat_n('a', MAX_URL_CHARS + 1).collect();
+                let refused = replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US,
+                    written.id,
+                    &[long.as_str()],
+                )
+                .expect_err("an address past the ceiling was accepted");
+                assert!(matches!(refused, DbError::TooMany { .. }));
+                assert_eq!(counted(connection, URL_CENSUS, written.id), (0, 0));
+                Ok(())
+            })
+            .expect("both refusals leave the file alone");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_reused_row_moves_on_a_revision_and_carries_the_reading_it_was_given() {
+        let bench = Bench::new("vault-urls-revision");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &["uno.es"],
+                )?;
+                let (before, _hlc): (i64, Vec<u8>) = connection.query_row(
+                    "SELECT rev, hlc FROM vault_urls WHERE entry_id = ?1",
+                    [written.id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(9),
+                    NOW_US + 1,
+                    written.id,
+                    &["otro.es"],
+                )?;
+                let (after, hlc): (i64, Vec<u8>) = connection.query_row(
+                    "SELECT rev, hlc FROM vault_urls WHERE entry_id = ?1",
+                    [written.id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+
+                assert!(after > before, "a reused row did not move on a revision");
+                assert_eq!(hlc, at(9).to_bytes().to_vec());
+
+                // And it still opens, which is the assertion a partial reseal would fail.
+                assert_eq!(
+                    urls(connection, &codec, written.id)?
+                        .first()
+                        .map(|url| url.value.to_string()),
+                    Some("otro.es".to_owned())
+                );
+                Ok(())
+            })
+            .expect("the revision moves");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_addresses_of_one_entry_are_not_the_addresses_of_another() {
+        let bench = Bench::new("vault-urls-isolated");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let one = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Uno"),
+                )?;
+                let two = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    an_entry("Dos"),
+                )?;
+
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US,
+                    one.id,
+                    &["uno.es"],
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(4),
+                    NOW_US,
+                    two.id,
+                    &["dos.es"],
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(5),
+                    NOW_US + 1,
+                    one.id,
+                    &[],
+                )?;
+
+                assert!(urls(connection, &codec, one.id)?.is_empty());
+                assert_eq!(urls(connection, &codec, two.id)?.len(), 1);
+                Ok(())
+            })
+            .expect("one entry's addresses are its own");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_custom_fields_of_an_entry_behave_the_way_its_addresses_do() {
+        let bench = Bench::new("vault-fields-write");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        let three = [
+            NewField {
+                label: "PIN",
+                value: "1234",
+                secret: true,
+            },
+            NewField {
+                label: "Oficina",
+                value: "Central",
+                secret: false,
+            },
+            NewField {
+                label: "Gestor",
+                value: "Alguien",
+                secret: false,
+            },
+        ];
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+
+                let first = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &three,
+                )?;
+                assert_eq!(
+                    first.iter().map(|field| field.position).collect::<Vec<_>>(),
+                    vec![0, 1, 2]
+                );
+
+                // The flag is in the clear beside the sealed columns, and comes back as it went.
+                let read = fields(connection, &codec, written.id)?;
+                assert_eq!(
+                    read.iter().map(|field| field.secret).collect::<Vec<_>>(),
+                    vec![true, false, false]
+                );
+                let (_rows, plain): (i64, i64) = connection.query_row(
+                    "SELECT count(*), sum(secret) FROM vault_fields WHERE entry_id = ?1",
+                    [written.id.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(plain, 1, "the flag is not readable without the key");
+
+                // Shorter, then longer, then empty: the same three shapes as the addresses.
+                let shorter = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US + 1,
+                    written.id,
+                    three.get(..2).unwrap_or_default(),
+                )?;
+                assert_eq!(
+                    shorter.iter().map(|field| field.id).collect::<Vec<_>>(),
+                    first
+                        .iter()
+                        .take(2)
+                        .map(|field| field.id)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(counted(connection, FIELD_CENSUS, written.id), (3, 4));
+
+                replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(4),
+                    NOW_US + 2,
+                    written.id,
+                    &[],
+                )?;
+                assert!(fields(connection, &codec, written.id)?.is_empty());
+                assert_eq!(counted(connection, FIELD_CENSUS, written.id), (3, 0));
+                Ok(())
+            })
+            .expect("the fields behave like the addresses");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn two_hundred_and_fifty_seven_custom_fields_are_refused_and_write_nothing() {
+        let bench = Bench::new("vault-fields-ceiling");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+
+                let labels: Vec<String> = (0..=MAX_FIELDS).map(|n| format!("campo {n}")).collect();
+                let many: Vec<NewField<'_>> = labels
+                    .iter()
+                    .map(|label| NewField {
+                        label,
+                        value: "x",
+                        secret: false,
+                    })
+                    .collect();
+
+                assert!(
+                    replace_fields(
+                        connection,
+                        &codec,
+                        bench.device,
+                        at(2),
+                        NOW_US,
+                        written.id,
+                        many.get(..MAX_FIELDS).unwrap_or_default(),
+                    )
+                    .is_ok()
+                );
+
+                let refused = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US + 1,
+                    written.id,
+                    &many,
+                )
+                .expect_err("one field past the ceiling was accepted");
+                assert!(matches!(refused, DbError::TooMany { .. }));
+                assert_eq!(fields(connection, &codec, written.id)?.len(), MAX_FIELDS);
+                Ok(())
+            })
+            .expect("the ceiling holds");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_label_and_a_value_with_accents_and_an_emoji_come_back_byte_for_byte() {
+        let bench = Bench::new("vault-fields-unicode");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = create_entry(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &[NewField {
+                        label: "Contraseña del móvil 📱",
+                        value: "ñandú-café-🔑",
+                        secret: true,
+                    }],
+                )?;
+                replace_urls(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US,
+                    written.id,
+                    &["https://señor.example/año?q=ñ#📌"],
+                )?;
+
+                let read = fields(connection, &codec, written.id)?;
+                assert_eq!(
+                    read.first().map(|field| field.label.to_string()),
+                    Some("Contraseña del móvil 📱".to_owned())
+                );
+                assert_eq!(
+                    read.first().map(|field| field.value.to_string()),
+                    Some("ñandú-café-🔑".to_owned())
+                );
+                assert_eq!(
+                    urls(connection, &codec, written.id)?
+                        .first()
+                        .map(|url| url.value.to_string()),
+                    Some("https://señor.example/año?q=ñ#📌".to_owned())
+                );
+                Ok(())
+            })
+            .expect("nothing is rewritten on the way through");
 
         database.close().expect("the connection closes");
     }

@@ -84,6 +84,12 @@ pub const MIGRATIONS: &[Migration] = &[
         up: include_str!("sql/0007_vault_kind_and_trash.sql"),
         down: include_str!("sql/0007_vault_kind_and_trash.down.sql"),
     },
+    Migration {
+        version: 8,
+        name: "vault_child_tombstones",
+        up: include_str!("sql/0008_vault_child_tombstones.sql"),
+        down: include_str!("sql/0008_vault_child_tombstones.down.sql"),
+    },
 ];
 
 /// Every table of user data a fully migrated database has, in the order they were created in.
@@ -827,11 +833,11 @@ mod tests {
 
         assert_eq!(
             revert_to(&database, 5).expect("migration 0006 reverts"),
-            vec![7, 6],
+            vec![8, 7, 6],
             "reverting to 5 did not run every reverse script above it, newest first"
         );
         let applied = apply_all(&database, NOW_US).expect("migration 0006 applies again");
-        assert_eq!(applied.versions, vec![6, 7]);
+        assert_eq!(applied.versions, vec![6, 7, 8]);
 
         assert_eq!(
             seeded_values(&database),
@@ -1069,11 +1075,11 @@ mod tests {
 
         assert_eq!(
             revert_to(&database, 6).expect("migration 0007 reverts"),
-            vec![7],
-            "reverting to 6 did not run exactly the seventh reverse script"
+            vec![8, 7],
+            "reverting to 6 did not run every reverse script above it, newest first"
         );
         let applied = apply_all(&database, NOW_US).expect("migration 0007 applies again");
-        assert_eq!(applied.versions, vec![7]);
+        assert_eq!(applied.versions, vec![7, 8]);
 
         assert_eq!(
             vault_entry_count(&database),
@@ -1217,6 +1223,106 @@ mod tests {
                 Ok(())
             })
             .expect("an entry that is not in the bin was refused");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// One address and one custom field hung off the seeded entry.
+    fn seed_a_url_and_a_field(database: &Database) {
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO vault_urls
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          entry_id, value, position)
+                     VALUES
+                         (x'8182838485868788898a8b8c8d8e8f90', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 0,
+                          x'4142434445464748494a4b4c4d4e4f50', x'010203', 0);
+
+                     INSERT INTO vault_fields
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          entry_id, label, value, secret, position)
+                     VALUES
+                         (x'9192939495969798999a9b9c9d9e9fa0', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'cccccccccccccccccccccccccccccccc', 0,
+                          x'4142434445464748494a4b4c4d4e4f50', x'040506', x'070809', 1, 0);",
+                )?;
+                Ok(())
+            })
+            .expect("the child rows can be written");
+    }
+
+    #[test]
+    fn a_removed_address_can_be_emptied_once_0008_has_run_and_could_not_before() {
+        // The reason this migration exists, stated as the two halves of the same insert. Before
+        // it, a tombstoned address had to keep its ciphertext; after it, it does not.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0008-nullable");
+        seed_a_url_and_a_field(&database);
+
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "UPDATE vault_urls SET deleted = 1, value = NULL;
+                     UPDATE vault_fields SET deleted = 1, label = NULL, value = NULL;",
+                )?;
+                Ok(())
+            })
+            .expect("a tombstoned child row can be emptied");
+
+        revert_to(&database, 7).expect("migration 0008 reverts");
+
+        let refused = database
+            .with(|connection| {
+                connection.execute_batch("UPDATE vault_urls SET value = NULL;")?;
+                Ok(())
+            })
+            .expect_err("the column was still nullable after the reverse script");
+        assert!(
+            refusal(refused).contains("NOT NULL constraint failed"),
+            "the reverse script did not put the constraint back"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_round_trip_of_0008_keeps_every_row_and_every_index_of_both_tables() {
+        // The expensive failure a rebuild can cause and that nothing else would notice: five of
+        // the six indexes put back. Nothing fails afterwards; a query just stops meeting its
+        // budget a year later, on somebody's real data.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0008-round-trip");
+        seed_a_url_and_a_field(&database);
+
+        let before = (
+            indexes(&database, "vault_urls"),
+            indexes(&database, "vault_fields"),
+        );
+
+        revert_to(&database, 7).expect("migration 0008 reverts");
+        apply_all(&database, NOW_US).expect("migration 0008 applies again");
+
+        assert_eq!(
+            (
+                indexes(&database, "vault_urls"),
+                indexes(&database, "vault_fields")
+            ),
+            before,
+            "a rebuild left an index behind"
+        );
+
+        let (urls, fields): (i64, i64) = database
+            .with(|connection| {
+                Ok(connection.query_row(
+                    "SELECT (SELECT count(*) FROM vault_urls), (SELECT count(*) FROM vault_fields)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .expect("both tables can be counted");
+        assert_eq!((urls, fields), (1, 1), "a rebuild lost a row");
 
         database.close().expect("the connection closes");
     }
