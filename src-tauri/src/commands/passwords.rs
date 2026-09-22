@@ -385,6 +385,40 @@ pub struct Cleared {
     pub rows: u32,
 }
 
+/// Which single value is being asked for.
+///
+/// A closed enumeration and never a column name. A target that was a string would be a way to ask
+/// this process for any column of any table, the vault header included.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RevealTarget {
+    /// The entry's password.
+    Password,
+    /// One custom field of it, which must be one of its own.
+    Field {
+        /// The field.
+        id: String,
+    },
+    /// One old password of it, by the identifier a history row carried.
+    HistoryEntry {
+        /// The row of the history.
+        id: String,
+    },
+}
+
+/// One value, on its way to being drawn once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Revealed {
+    /// The value itself. The only place in this application where one crosses the bridge.
+    pub value: String,
+    /// How many seconds the screen should show it before hiding it again.
+    ///
+    /// Comes from the core so that the countdown and the policy are the same number, and so that
+    /// changing it later is a constant here rather than a literal in a component.
+    pub hide_after_s: u16,
+}
+
 /// What emptying the bin destroyed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -813,6 +847,64 @@ pub fn history_clear(
     })
 }
 
+/// Hands over one named value of one entry, for the instant it is about to be drawn.
+///
+/// The only place in this application where a secret leaves the core. What keeps that acceptable
+/// is the shape of the question rather than anything done with the answer: **one** value, named by
+/// a closed enumeration, of **one** entry, asked for when somebody presses a button. Not a list,
+/// not an object with several fields, not "give me the whole entry".
+///
+/// The value is carried in a [`Zeroizing`] string right up to the last line, so what was in memory
+/// inside the core is wiped when this returns. That the string Tauri then serialises is not is a
+/// limitation of the bridge, and not a reason to leave the rest lying around.
+///
+/// # Errors
+///
+/// [`PasswordsError::Locked`] if the vault is closed, [`PasswordsError::NotFound`] if the entry is
+/// not there, is in the bin, or does not have that value — an entry with no password and a field
+/// that belongs to somebody else are the same answer, and neither is an empty string, because an
+/// empty string is a value and a screen would draw it as one.
+pub fn reveal(
+    state: &AppState,
+    id: &str,
+    target: &RevealTarget,
+    now: i64,
+) -> Result<Revealed, PasswordsError> {
+    let id = parsed(id)?;
+
+    // Not a write in any sense this module means by one: nothing is revised, nothing is resealed
+    // and the search index has nothing to learn. What it needs is the connection and the keys.
+    in_storage(state, |_storage, codec, connection| {
+        let value = match target {
+            RevealTarget::Password => {
+                // Through the reader that leaves the bin out: what somebody threw away is not
+                // consulted, whatever is asked of it.
+                let found =
+                    repository::entry(connection, codec, id)?.ok_or(PasswordsError::NotFound)?;
+                let password = found.password.ok_or(PasswordsError::NotFound)?;
+                repository::mark_used(connection, id, now)?;
+                password
+            }
+            RevealTarget::Field { id: field } => {
+                let value = repository::field_value(connection, codec, id, parsed(field)?)?;
+                repository::mark_used(connection, id, now)?;
+                value
+            }
+            // The one target that leaves no trace. Looking at what a password used to be is not
+            // using the entry, and ordering a list by when things were last used would be wrong
+            // if it counted that.
+            RevealTarget::HistoryEntry { id: moment } => {
+                repository::history_password(connection, codec, id, parsed(moment)?)?
+            }
+        };
+
+        Ok(Revealed {
+            value: value.to_string(),
+            hide_after_s: REVEAL_SECONDS,
+        })
+    })
+}
+
 /// Throws an entry away, or takes it back out, and says what it now is.
 ///
 /// Idempotent in both directions. Throwing away something already in the bin leaves the moment it
@@ -1117,6 +1209,24 @@ pub fn passwords_history_clear(
     scope: HistoryScopeDto,
 ) -> Result<Cleared, PasswordsError> {
     history_clear(&state, &scope, now_us())
+}
+
+/// Hands over one named value of one entry.
+///
+/// # Errors
+///
+/// See [`reveal`].
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn passwords_reveal(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    target: RevealTarget,
+) -> Result<Revealed, PasswordsError> {
+    reveal(&state, &id, &target, now_us())
 }
 
 /// Throws an entry away, or takes it back out.

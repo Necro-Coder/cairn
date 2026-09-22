@@ -137,6 +137,7 @@ pub fn run() {
             commands::passwords::passwords_trash,
             commands::passwords::passwords_delete,
             commands::passwords::passwords_empty_trash,
+            commands::passwords::passwords_reveal,
             commands::sample::diagnostics_insert_sample_habit,
             commands::sample::diagnostics_list_sample_habits,
             commands::sample::diagnostics_delete_sample_habit,

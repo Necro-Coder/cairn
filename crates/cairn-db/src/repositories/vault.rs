@@ -650,16 +650,94 @@ pub fn history_moments(
         .collect()
 }
 
+/// One custom field's value, by the identifier a field carried, under the entry named.
+///
+/// Checks that the field belongs to that entry, and checks it in the `WHERE` rather than
+/// afterwards, for the reason [`history_password`] does: filtering in Rust what could have been
+/// filtered in SQL means the row was read and decrypted before anybody asked whether the caller
+/// was entitled to it.
+///
+/// The bin is left out here as well. What somebody threw away is not consulted.
+///
+/// # Errors
+///
+/// [`DbError::NotFound`] if there is no live field with that identifier under a live entry that
+/// is not in the bin, [`DbError::Sealed`] if it does not open, [`DbError::Sqlite`].
+pub fn field_value(
+    connection: &Connection,
+    codec: &FieldCodec<'_>,
+    entry_id: Uuid,
+    field_id: Uuid,
+) -> Result<Zeroizing<String>, DbError> {
+    let found: Option<(i64, Option<Vec<u8>>)> = connection
+        .prepare_cached(
+            "SELECT f.rev, f.value FROM vault_fields AS f
+               JOIN vault_entries AS e ON e.id = f.entry_id
+              WHERE f.id = ?1 AND f.entry_id = ?2 AND f.deleted = 0
+                AND e.deleted = 0 AND e.trashed_at IS NULL
+              LIMIT 1",
+        )?
+        .query_row(
+            params![
+                field_id.as_bytes().as_slice(),
+                entry_id.as_bytes().as_slice()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    // A row with no ciphertext is a tombstone that has not been compacted away yet. There is
+    // nothing inside it, so it is the same answer as a row that is not there.
+    let (rev, Some(stored)) = found.ok_or(DbError::NotFound)? else {
+        return Err(DbError::NotFound);
+    };
+
+    codec.open_text(
+        child_row(FIELDS_TABLE, field_id.as_bytes(), rev)?,
+        "value",
+        &stored,
+    )
+}
+
+/// Writes down that somebody looked at an entry, and writes down nothing else.
+///
+/// One cleartext column and no revision. Not raising the revision is deliberate twice over:
+/// every encrypted column of a row is authenticated against the revision it was written at, so a
+/// write that raised it would have to reseal four values in order to record that somebody glanced
+/// at one, and looking at an entry is not an edit that the other device needs to hear about.
+///
+/// This is the **only** trace a reveal leaves. There is no audit row, no counter and no table of
+/// its own: a record of when each password is looked at is a record of somebody's own habits kept
+/// inside their own vault, and it would be readable by anything that could read the vault.
+///
+/// # Errors
+///
+/// [`DbError::Sqlite`] if the statement fails. An entry that is not there, or is in the bin, is
+/// not an error: there was nothing to write down.
+pub fn mark_used(connection: &Connection, id: Uuid, now_us: i64) -> Result<(), DbError> {
+    connection
+        .prepare_cached(
+            "UPDATE vault_entries SET last_used_at = ?2
+              WHERE id = ?1 AND deleted = 0 AND trashed_at IS NULL",
+        )?
+        .execute(params![id.as_bytes().as_slice(), now_us])?;
+
+    Ok(())
+}
+
 /// One old password, by the identifier a moment carried.
 ///
 /// Checks that the row belongs to the entry named, and checks it in the `WHERE` rather than
 /// afterwards. Filtering in Rust what could have been filtered in SQL means the row was read and
 /// decrypted before anybody asked whether the caller was entitled to it.
 ///
+/// The bin is left out for the same reason [`field_value`] leaves it out: what somebody threw
+/// away is not consulted, and an old password of a thrown away entry is still its password.
+///
 /// # Errors
 ///
-/// [`DbError::NotFound`] if there is no live row with that identifier under that entry,
-/// [`DbError::Sealed`] if it does not open, [`DbError::Sqlite`].
+/// [`DbError::NotFound`] if there is no live row with that identifier under a live entry that is
+/// not in the bin, [`DbError::Sealed`] if it does not open, [`DbError::Sqlite`].
 pub fn history_password(
     connection: &Connection,
     codec: &FieldCodec<'_>,
@@ -668,8 +746,10 @@ pub fn history_password(
 ) -> Result<Zeroizing<String>, DbError> {
     let found: Option<(i64, Option<Vec<u8>>)> = connection
         .prepare_cached(
-            "SELECT rev, password FROM vault_password_history
-              WHERE id = ?1 AND entry_id = ?2 AND deleted = 0
+            "SELECT h.rev, h.password FROM vault_password_history AS h
+               JOIN vault_entries AS e ON e.id = h.entry_id
+              WHERE h.id = ?1 AND h.entry_id = ?2 AND h.deleted = 0
+                AND e.deleted = 0 AND e.trashed_at IS NULL
               LIMIT 1",
         )?
         .query_row(
