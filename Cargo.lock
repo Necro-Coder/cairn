@@ -361,6 +361,7 @@ dependencies = [
  "proptest",
  "thiserror 2.0.20",
  "trybuild",
+ "uuid",
 ]
 
 [[package]]

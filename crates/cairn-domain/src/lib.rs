@@ -15,6 +15,7 @@ pub mod password;
 pub mod session;
 pub mod time;
 pub mod tree;
+pub mod vault;
 
 pub use hlc::{Clock, Hlc, Rev};
 pub use time::{CivilDay, TimeError, Timestamp};
