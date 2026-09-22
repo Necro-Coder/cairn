@@ -28,7 +28,7 @@ Suppressing one of these is allowed and is meant to be uncomfortable. It takes a
 | `npm run tokens` | Colours, lengths and durations written by hand instead of taken from a token, and inline styles, which the policy drops. |
 | `npm run check` | Types, using the Svelte compiler, and then the modules `node --test` runs. |
 | `npm run test:unit` | The frontend unit tests. |
-| `npm run test:a11y` | Accessibility violations, with `axe`, on every preview screen in both themes. |
+| `npm run test:a11y` | Accessibility violations, with `axe`, on every preview screen in both themes, and screens that take too long to draw. |
 | `npm run knip` | Files, exports and dependencies nothing uses. |
 | `npm audit --omit=dev` | Known vulnerabilities in anything that would ship. |
 
@@ -75,6 +75,18 @@ The browser is not in the repository and is not installed by `npm ci`. Run `npx 
 Both Playwright and `axe-core` are development dependencies. The gate that asserts `package.json` declares no runtime dependencies is unaffected and still reads zero.
 
 It was verified by adding an `<input>` with no `<label>` to a screen and confirming the gate fails, and it found two real defects on the day it was switched on: the diagnostics screen had no level-one heading, and it skipped from that heading straight to level three.
+
+### The drawing budgets
+
+The same command runs a second suite, `tests/budget`, for the same reason the first one needs a browser: how long a screen takes to appear is not a question a fake DOM has an honest answer to, and a screen that takes two minutes has failed whatever `axe` says about it.
+
+These are not benchmarks. A benchmark asks how fast a screen is on the machine running it, which is a number that changes with the machine and cannot be a blocking check. Each of these asks a question with a yes and a no — whether the work a screen does grows with the amount of content or with the square of it — and the two answers are far enough apart that no machine is fast or slow enough to confuse them. Every budget is written next to the two measurements it sits between, with the factor of room on each side, and a budget that cannot be written that way does not belong here.
+
+The list of habits is the first of them, and the reason the suite exists. It drew correctly and worked out which rows to draw once per row, which is unnoticeable on five habits and takes over two minutes on the ten thousand that the seeding button on the diagnostics screen will write into a vault.
+
+Budgets run in one palette, not two. What a screen costs to draw is the same in both, and two copies of the same measurement would compete for the same cores while being timed.
+
+The preview stand-in invents a long list when the address asks it to, with `?muchos=N` up to a ceiling of its own. A number from an address bar is input like any other, and a stand-in with no ceiling is a tab that allocates until it dies.
 
 ### The unit tests
 
