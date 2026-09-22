@@ -181,6 +181,12 @@ impl SearchIndex {
     ) -> Result<(), DbError> {
         self.clear();
 
+        // Marked incomplete before the read, and only marked complete once one has succeeded. A
+        // build that fails leaves an empty index, and an empty index that claims to be complete
+        // is indistinguishable from an empty vault: whoever is looking at the screen would be
+        // told the search found nothing rather than that it could not look.
+        self.complete = false;
+
         let found = vault::searchable(connection, codec)?;
         self.entries = found.entries.into_iter().map(Indexed::of).collect();
         self.complete = found.complete;
@@ -770,6 +776,10 @@ mod tests {
 
         assert!(matches!(built, Err(DbError::Sealed(_))));
         assert!(index.is_empty(), "the index was left half built");
+        assert!(
+            !index.is_complete(),
+            "an index that could not be built says it holds everything"
+        );
 
         database.close().expect("the connection closes");
     }

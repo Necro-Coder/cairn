@@ -117,6 +117,10 @@ pub struct Entry {
     /// A state before [`Entry::deleted`] rather than a shade of it: a row in the bin keeps every
     /// byte of its ciphertext, and a deleted one has lost all of it.
     pub trashed_at: Option<i64>,
+    /// When the row was first written, in microseconds since the epoch.
+    pub created_at: i64,
+    /// When it was last written.
+    pub updated_at: i64,
     /// Whether it is a tombstone.
     pub deleted: bool,
     /// The clock reading of the last write, which is also where the next page starts.
@@ -218,6 +222,8 @@ pub fn create_entry(
         last_used_at: None,
         kind,
         trashed_at: None,
+        created_at: stamp.created_at,
+        updated_at: stamp.updated_at,
         deleted: false,
         hlc: stamp.hlc,
     })
@@ -1670,7 +1676,8 @@ pub fn delete_entry(
 
 /// The columns every entry query reads, in the order [`read_entry`] expects them.
 const ENTRY_PROJECTION: &str = "SELECT id, hlc, rev, deleted, title, username, password, notes, \
-                                folder_id, favorite, last_used_at, kind, trashed_at \
+                                folder_id, favorite, last_used_at, kind, trashed_at, \
+                                created_at, updated_at \
                                 FROM vault_entries";
 
 /// What every query of this module adds so that the bin stays out of every list but its own.
@@ -1694,6 +1701,8 @@ type StoredEntry = (
     Option<i64>,
     i64,
     Option<i64>,
+    i64,
+    i64,
 );
 
 /// Reads the projection above.
@@ -1712,6 +1721,8 @@ fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEntry> {
         row.get(10)?,
         row.get(11)?,
         row.get(12)?,
+        row.get(13)?,
+        row.get(14)?,
     ))
 }
 
@@ -1751,6 +1762,8 @@ fn decode_entry(codec: &FieldCodec<'_>, stored: StoredEntry) -> Result<Entry, Db
         last_used,
         kind,
         trashed_at,
+        created_at,
+        updated_at,
     ) = stored;
 
     let id = Uuid::from_bytes(sixteen(&id)?);
@@ -1777,6 +1790,8 @@ fn decode_entry(codec: &FieldCodec<'_>, stored: StoredEntry) -> Result<Entry, Db
         last_used_at: last_used,
         kind: read_kind(kind)?,
         trashed_at,
+        created_at,
+        updated_at,
         deleted: deleted != 0,
         hlc: Hlc::from_bytes(sixteen(&hlc)?),
     })

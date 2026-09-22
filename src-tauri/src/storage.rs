@@ -75,13 +75,15 @@ impl Storage {
         // out a reading a row already carries.
         let resumed = database.with(|connection| clock::resume(connection, device))?;
 
-        // The titles are the only thing the vault cannot search in SQL, so they are opened here,
-        // once, while the key is already in hand. A failure to open one is a failure to unlock:
-        // an application that opened with a search that silently finds nothing is worse than one
-        // that says the file is damaged.
+        // What the vault cannot search in SQL is opened here, once, while the key is already in
+        // hand. A failure is **not** a failure to unlock. Refusing to open the vault because one
+        // title does not decrypt turns a problem with one row into the loss of everything else,
+        // which is the wrong half of that trade for somebody who came to read a different entry.
+        // The index is left empty and says so through `is_complete`, and the interface reports
+        // that the search is unavailable rather than letting somebody believe it found nothing.
         let mut titles = SearchIndex::empty();
         let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
-        database.with(|connection| titles.build(connection, &codec))?;
+        let _built = database.with(|connection| titles.build(connection, &codec));
 
         Ok(Self {
             database,
