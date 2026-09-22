@@ -197,6 +197,8 @@ pub const TABLES: &[TableSpec] = &[
             column("folder_id", ColumnKind::Blob),
             column("favorite", ColumnKind::Integer),
             column("last_used_at", ColumnKind::Integer),
+            column("kind", ColumnKind::Integer),
+            column("trashed_at", ColumnKind::Integer),
         ]
     ),
     table!(
