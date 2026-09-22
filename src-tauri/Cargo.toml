@@ -24,6 +24,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 cairn-crypto.workspace = true
 cairn-domain.workspace = true
+# The one crate that asks the operating system which time zone this device is in. The habit
+# commands need it and nothing below them may: a streak counted in the wrong zone looks exactly
+# like a correct one, so the question is asked here, at the boundary, and the answer travels
+# down as an argument.
+cairn-clock.workspace = true
 cairn-db.workspace = true
 uuid.workspace = true
 cairn-platform.workspace = true
