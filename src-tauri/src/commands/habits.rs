@@ -316,6 +316,13 @@ pub struct HabitSummary {
     pub position: i64,
     /// Whether it has been put away.
     pub archived: bool,
+    /// Which day that square is, as `YYYYMMDD`.
+    ///
+    /// The core's own answer to what day it is, which depends on the device's time zone and on
+    /// how far from midnight this person's day starts. It travels with the square so that a
+    /// screen marking today hands the day straight back rather than working one out from a
+    /// clock that knows neither of those two things.
+    pub today_day: u32,
     /// What today's square says.
     pub today: DayStateDto,
     /// The run as it stands.
@@ -348,6 +355,8 @@ pub struct HabitDetail {
     pub position: i64,
     /// Whether it has been put away.
     pub archived: bool,
+    /// Which day that square is, as `YYYYMMDD`. See [`HabitSummary::today_day`].
+    pub today_day: u32,
     /// What today's square says.
     pub today: DayStateDto,
     /// The run as it stands.
@@ -1342,6 +1351,8 @@ fn row_of(habit: &Habit) -> HabitRow {
 /// Today's square and the run so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Snapshot {
+    /// Which day that square is, as `YYYYMMDD`.
+    today_day: u32,
     /// What today's square says.
     today: DayStateDto,
     /// The run as it stands.
@@ -1381,6 +1392,7 @@ fn snapshot_of(
     let mark = entries.iter().find(|entry| entry.day == today);
 
     Ok(Snapshot {
+        today_day: today.as_number(),
         today: classify(spec, today, mark.map(entry_of), today).into(),
         streak: run.streak.into(),
     })
@@ -1447,6 +1459,7 @@ fn summary_of(habit: &Habit, spec: &HabitSpec, snapshot: Snapshot) -> HabitSumma
         schedule_mask: spec.schedule.as_mask(),
         position: habit.position,
         archived: habit.archived_at.is_some(),
+        today_day: snapshot.today_day,
         today: snapshot.today,
         streak: snapshot.streak,
     }
@@ -1485,6 +1498,7 @@ fn detail_of(
         schedule_mask: summary.schedule_mask,
         position: summary.position,
         archived: summary.archived,
+        today_day: summary.today_day,
         today: summary.today,
         streak: summary.streak,
         notes,

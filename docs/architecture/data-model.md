@@ -71,6 +71,10 @@ Columns worth explaining:
 - `habit_entries.amount` is in the smallest unit the habit counts in, never a fraction. Eight glasses of water is eight; two and a half kilometres is 2500 metres.
 - `started_on` and `day` are civil days, `YYYYMMDD`, not instants. [ADR 0008](decisions/0008-civil-days-and-instants.md) says why that distinction is a type and not a comment.
 
+The table is deliberately more permissive than the product: integers with a range check, two columns that may be null, and one column two features read two ways. That is the right shape for something a second device writes into, because a row arriving with a value this version does not know about has to be storable before it can be judged. It is the wrong shape for arithmetic, so the columns are turned into a closed type once, in `cairn-domain::habits::spec`, and everything after that point matches on a variant instead of comparing a number. A value outside what the product exposes is an error naming the column and what it held, never a default quietly substituted for it: the row was written by something this version does not understand, and pretending otherwise turns a version mismatch into a wrong number on a screen.
+
+Two of the four tables still have nothing behind them. `habit_areas` would group habits and no screen uses it; `habit_pauses` would hold the declared stretches where a missed day does not break a run, and nothing writes one. They are carried by the backup and by the merge like every other table, so a file written by a later version does not lose them.
+
 ## Migration 0003 — the vault
 
 Seven tables: `vault_folders`, `vault_entries`, `vault_urls`, `vault_fields`, `vault_password_history`, `vault_tags` and `vault_entry_tags`.
@@ -111,3 +115,15 @@ Other columns:
 - `transactions.kind` keeps expense, income and transfer apart at the column rather than inferring them from the sign, because a refund is a negative expense and not an income, and only the person entering it knows which.
 - `transactions.cleared` says whether the movement has been seen on a statement. It is structural because filtering by it is the whole of reconciling a month.
 - `budgets.period` is `YYYYMM`. A budget is per month by design; one with a start and an end is a second concept, and one that would make "how am I doing this month" a range query instead of a lookup.
+
+## Migration 0006 — the period a habit is judged over, and the target a day was judged by
+
+Two columns, added when the habits module stopped being a drawing and started being read.
+
+`habits.period` is 0 for daily and 1 for weekly. Migration 0002 gave a habit an `aggregation` saying how the days of a period combine, and a `target_per_period` naming one, and then left no column anywhere saying what the period _is_. Everything that read those two had to assume a day, which is right for most habits and quietly wrong for the ones somebody counts by the week, where three runs out of a target of three is a week finished and not three days out of seven missed.
+
+The `CHECK (period IN (0, 1))` is the whole point of the column being an integer: it makes a monthly habit impossible rather than something whoever reads the row has to notice and refuse. A month is not a period this application judges a streak over. "The month before this one" has twelve lengths, two of which depend on the year, and every one of those is somewhere a streak goes wrong without anybody being told.
+
+`habit_entries.target_snapshot` is the target that day was judged by, written beside the mark rather than looked up on the habit when the calendar is drawn. Without it, raising a target from five to ten repaints as failed every day that was a success under five, and a year somebody actually lived changes colour because of a decision taken this morning. It is null for habits that are done or not done, which have no target to remember, and null on every row written before the column existed; both are judged by the habit's current target, which is exactly what was happening to them the day before the migration ran. [ADR 0013](decisions/0013-judging-history-with-the-objective-of-the-day.md) is why the target is snapshotted and the rest of the definition is not.
+
+Both are additive, so no existing row had to be rewritten to a value somebody guessed.

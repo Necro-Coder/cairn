@@ -176,11 +176,13 @@ jobs:
         # a message about a shared object that tells nobody anything.
         run: npx playwright install --with-deps chromium
 
-      - name: Accessibility
-        # axe over every screen the preview build can reach, in both themes. A real
-        # browser rather than jsdom, because half of the AA rules are about computed
-        # colour and computed layout, and jsdom has neither: it would report a clean run
-        # having evaluated none of them.
+      - name: Accessibility and drawing budgets
+        # axe over every screen the preview build can reach, in both themes, and the cost
+        # of drawing a long list once, in one of them. A real browser rather than jsdom,
+        # because half of the AA rules are about computed colour and computed layout, and
+        # jsdom has neither: it would report a clean run having evaluated none of them. The
+        # budget needs a real browser for the same reason and one more — a fake DOM has no
+        # honest answer to how long anything takes.
         run: npm run test:a11y
 
   rust:
@@ -212,7 +214,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2
         with:
           tool: cargo-deny,cargo-audit,cargo-llvm-cov
 
@@ -417,7 +419,7 @@ jobs:
         with:
           workspaces: fuzz
 
-      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2
         with:
           tool: cargo-fuzz
 

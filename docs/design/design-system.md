@@ -385,7 +385,23 @@ Rules, not a catalogue. The catalogue is the code.
 
 **Empty states.** Every list has one, and it is the real thing the person sees on their first day rather than a placeholder: a geometric mark, one sentence saying what will be here, and the action that puts something there. Never the word "empty" on its own.
 
-**A chart with nothing in it.** Drawn rather than left out, in `--colour-surface-sunken`, flat, with no colour scale and no invented values, and with one sentence under it saying what each part of it is: the habits year is three hundred and seventy-one squares and one line of Spanish explaining that each one is a day. A scale invented against no data is a scale designed twice, and the second time would be the one with real densities in front of it. The squares are hidden from assistive technology and the sentence carries the meaning, because a grid announced cell by cell says less than the line under it.
+**The habits year.** Fifty-three columns of seven days, Monday at the top, weeks left to right. Fifty-three rather than fifty-two because a year crosses that many calendar weeks whenever it does not start on a Monday, which is six years out of seven; a grid that lost a column in those years would change shape without warning. Squares of the grid that are not days of that year are drawn as nothing at all, which is not the same as a day with no data.
+
+Five states, five treatments, and they differ by shape as well as by colour, because a grid has no room for a word beside each square and status colour is never the only signal here any more than anywhere else.
+
+| State | Shape | Colour |
+| --- | --- | --- |
+| Done | Filled square | `--colour-heatmap-done` |
+| Beyond what was asked | Filled square with a hole in the middle | `--colour-heatmap-done` filled, hole in `--colour-heatmap-extra` |
+| Missed | Outlined square, empty inside | `--colour-heatmap-missed` |
+| Not asked for that day | A dot on its own, no square | `--colour-heatmap-quiet` |
+| Before it existed, or still to come | Dashed outline | `--colour-heatmap-quiet` |
+
+The four colours are their own family rather than four references to the status colours, and the reason is that they are not statuses: a missed day is not an error and a day off is not a warning. Every one is held to 3:1 against both surfaces, which is why `quiet` is `--colour-text-faint` and not a border grey — the border greys measure about 2:1 on paper, which is right for a rule between rows and wrong for the only thing saying a day was never asked for.
+
+The grid is hidden from assistive technology and the sentence under it carries the meaning, because three hundred and sixty-six cells announced one by one say less than one line of Spanish. Below the width where a square stops being a square it scrolls sideways rather than squashing.
+
+**A chart with nothing in it.** Drawn rather than left out, flat, with no invented values, and with one sentence under it saying what each part of it is. A year with no marks in it is still a year: every square is drawn, all of them as «before it existed», which is the honest picture of a habit that had not started yet. Leaving them out would draw a shorter year instead.
 
 **"In development".** Anything drawn before it works says so, in a small uppercase badge in its own module's colour, in the place the value will go. A button that is not wired up is still shown and still reacts: pressing it says the part is in development. A control that does nothing looks like a broken application; one that explains looks like an unfinished one, which is what it is.
 

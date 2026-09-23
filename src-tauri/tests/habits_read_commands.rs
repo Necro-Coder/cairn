@@ -32,7 +32,9 @@ use cairn_db::repositories::habits::{self as repository, Mark, NewHabit};
 use cairn_db::{Connection, DbError, FieldCodec};
 use cairn_domain::habits::calendar::shift;
 use cairn_domain::{CivilDay, Timestamp};
-use cairn_lib::commands::habits::{HabitDraft, HabitFilter, HabitsError, create, get, list};
+use cairn_lib::commands::habits::{
+    DayStateDto, HabitDraft, HabitFilter, HabitsError, create, get, list, toggle_day,
+};
 use cairn_lib::commands::vault::create as create_vault;
 use cairn_lib::state::AppState;
 use cairn_lib::storage::{DataDirectory, Storage};
@@ -612,4 +614,68 @@ fn mark_run(state: &AppState, habit: Uuid, days: i32) {
         })
         .expect("the vault is open")
         .expect("a run of days can be marked");
+}
+
+/// Which day the square belongs to is the core's answer, and it is the same one everywhere.
+///
+/// The interface has no clock of its own worth trusting for this: what day it is here depends
+/// on the device's zone and on how far from midnight this person's day starts, and a `Date` in
+/// a WebView knows neither. So the day travels with the square, and a screen marking today
+/// hands that number straight back to [`toggle_day`].
+///
+/// Asserted on the list and on the single read together, because the one thing that would make
+/// the field useless is the two disagreeing: a row marked from the list would then write to a
+/// different day than the same row marked from its own screen.
+#[test]
+fn the_square_says_which_day_it_is_and_says_the_same_in_both_places() {
+    let scratch = Scratch::new("today-day");
+    let state = unlocked(&scratch);
+
+    let created = create(&state, &zone(), &plain_draft("Meditar"), NOW_US).expect("the habit");
+
+    assert_eq!(
+        created.today_day,
+        today().as_number(),
+        "the day carried is the day the core itself judged the square against"
+    );
+
+    let listing = list(&state, &zone(), HabitFilter::Active, NOW_US).expect("the list");
+    let summary = listing.habits.first().expect("the one habit");
+
+    assert_eq!(
+        summary.today_day, created.today_day,
+        "the list and the single read name the same day"
+    );
+
+    let read = get(&state, &zone(), &created.id, NOW_US).expect("the habit again");
+
+    assert_eq!(read.today_day, created.today_day);
+}
+
+/// The day the square carries is a day the core is willing to be given back.
+///
+/// The whole point of the field: a screen reads it off the row and hands it to `toggle_day`
+/// without touching it. If the core were to call that day future or too old, the one gesture
+/// this module exists for would refuse on the row that offered the number.
+#[test]
+fn the_day_the_square_carries_is_one_the_core_accepts_back() {
+    let scratch = Scratch::new("today-day-round-trip");
+    let state = unlocked(&scratch);
+
+    let created = create(&state, &zone(), &plain_draft("Correr"), NOW_US).expect("the habit");
+
+    let marked = toggle_day(
+        &state,
+        &zone(),
+        &created.id,
+        created.today_day,
+        None,
+        NOW_US,
+    )
+    .expect("the day the row itself named is a day that may be marked");
+
+    assert!(
+        matches!(marked, DayStateDto::Done { .. }),
+        "marking today with the day the row carried is what makes today done, and it said {marked:?}"
+    );
 }
