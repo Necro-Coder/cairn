@@ -46,5 +46,13 @@ zstd = { version = "0.13", default-features = false }
 # to whoever runs `cargo update` next.
 openssl-src.workspace = true
 
+[[bench]]
+# A plain binary rather than a harness, for the reason the one in cairn-crypto gives: what this
+# produces is a handful of lines to read against the budgets the phase wrote down, not a
+# distribution, and a benchmark framework here would be a dependency and a compile time bought
+# for nothing.
+name = "habits"
+harness = false
+
 [lints]
 workspace = true

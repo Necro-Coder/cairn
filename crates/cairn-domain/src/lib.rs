@@ -9,6 +9,7 @@
 //! used on the wire. Dependencies point inwards, and this is as far in as they go.
 #![forbid(unsafe_code)]
 
+pub mod habits;
 pub mod hlc;
 pub mod password;
 pub mod session;
