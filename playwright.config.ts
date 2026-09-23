@@ -1,11 +1,14 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * The accessibility gate.
+ * What only a real browser can check.
  *
- * WCAG 2.2 AA is the floor this project committed to, and a floor nothing measures is a
- * floor that sinks one screen at a time. This drives the preview build in a real browser
- * and runs `axe` over every screen, in both themes, as a blocking check.
+ * Two suites, and both are here for the same reason. `tests/a11y` is the accessibility
+ * gate: WCAG 2.2 AA is the floor this project committed to, and a floor nothing measures
+ * is a floor that sinks one screen at a time, so `axe` runs over every screen in both
+ * themes as a blocking check. `tests/budget` is the other half of the same argument — a
+ * screen that takes two minutes to appear has failed whatever `axe` says about it, and how
+ * long a screen takes to appear is not a question a fake DOM can be asked.
  *
  * A real browser rather than `jsdom`, and that is the whole reason Playwright is here at
  * all. Half of the AA rules are about computed colour and computed layout: contrast,
@@ -17,7 +20,7 @@ import { defineConfig, devices } from '@playwright/test';
  * declares no runtime dependencies, and that is its own gate.
  */
 export default defineConfig({
-  testDir: './tests/a11y',
+  testDir: './tests',
   // Nothing here shares state with anything else, and a browser is cheap to start.
   fullyParallel: true,
   // A test that only passes on the second attempt has told us something, and retrying
@@ -48,6 +51,11 @@ export default defineConfig({
     },
     {
       name: 'ink',
+      // The accessibility suite alone. What a screen costs to draw is the same in both
+      // palettes, so running the budget suite twice would double the slowest check in the
+      // pipeline to learn nothing, and the two copies would compete for the same cores
+      // while being timed.
+      testDir: './tests/a11y',
       use: { ...devices['Desktop Chrome'], colorScheme: 'dark' },
     },
   ],

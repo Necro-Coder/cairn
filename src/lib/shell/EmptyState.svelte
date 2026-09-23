@@ -27,11 +27,21 @@
     sentence: string;
     /** What the action that puts something here is called. */
     action: string;
-    /** What pressing it says, since there is nothing behind it yet. */
-    note: string;
+    /** What pressing it says, when there is nothing behind it yet. A real action needs none. */
+    note?: string;
+    /**
+     * What pressing it actually does, once there is something behind it.
+     *
+     * Absent is the state this component was written for: a button drawn before the part it
+     * belongs to works, which still reacts and explains itself, because a control that does
+     * nothing looks like a broken application and one that explains looks like an unfinished
+     * one. Present is the other state, and the badge comes off with it — a part that works
+     * has nothing to say about being in development.
+     */
+    onAction?: (() => void) | undefined;
   }
 
-  const { section, sentence, action, note }: Props = $props();
+  const { section, sentence, action, note = '', onAction }: Props = $props();
 
   let explained = $state(false);
 </script>
@@ -42,8 +52,20 @@
   <p class="sentence">{sentence}</p>
 
   <div class="actions">
-    <button type="button" class="primary" onclick={() => (explained = true)}>{action}</button>
-    <Badge tone={section.tone} text="En desarrollo" />
+    <button
+      type="button"
+      class="primary"
+      onclick={() => {
+        if (onAction === undefined) {
+          explained = true;
+        } else {
+          onAction();
+        }
+      }}>{action}</button
+    >
+    {#if onAction === undefined}
+      <Badge tone={section.tone} text="En desarrollo" />
+    {/if}
   </div>
 
   {#if explained}

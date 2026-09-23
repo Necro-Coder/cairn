@@ -109,6 +109,31 @@
    */
   --brand-glyph: #c4380a;
 
+  /* ---------------------------------------------------------------- habits calendar */
+  /*
+   * The five squares a year of one habit is drawn with.
+   *
+   * Their own family rather than four references to the status colours, and the reason is
+   * that they are not statuses: a missed day is not an error, and a day the habit never
+   * asked about is not a warning. Naming them after what they are is what stops somebody
+   * reading a red calendar as a broken application.
+   *
+   * Every one of them is held to 3:1 against both surfaces, because a square carries its
+   * meaning through colour and is the one place in this system where that is true. `quiet`
+   * is text-faint rather than a border colour for exactly that reason: the border greys
+   * measure about 2:1 on paper, which is fine for a rule between rows and not fine for the
+   * only thing telling somebody a day was not asked for.
+   *
+   * They are also drawn as five different shapes — filled, filled with a hole, outlined, a
+   * dot on its own, and a dashed outline — so that the five stay apart in greyscale. That is
+   * not belt and braces; it is the rule that status colour is never the only signal, applied
+   * to a grid with no room for a word beside each square.
+   */
+  --colour-heatmap-done: #2c7a44;
+  --colour-heatmap-missed: #b8272c;
+  --colour-heatmap-extra: #1b4fd8;
+  --colour-heatmap-quiet: #6b665d;
+
   /* ------------------------------------------------------------------------ space */
   /* A four pixel grid. Nothing in between, ever. */
   --space-1: 0.25rem;
@@ -180,6 +205,21 @@
   --duration-normal: 160ms;
   --easing: cubic-bezier(0.2, 0, 0.2, 1);
 
+  /*
+   * How long a screen waits before admitting it is waiting.
+   *
+   * The design system asks for a discreet indicator that appears only after 200ms, and the
+   * reason is that against a local database almost everything is instant: an indicator that
+   * flashes for forty milliseconds reads as a fault rather than as progress. It is a token
+   * rather than a number in a component because every screen of every module has to agree
+   * about it — nine of them by the end of phase 07 — and because the one way to find out
+   * whether 200ms is right is to change it in one place and look.
+   *
+   * It is not switched off by reduced motion. It is a delay before something appears, not a
+   * movement, and removing it would make the flash it exists to prevent certain.
+   */
+  --delay-loading: 200ms;
+
   /* ----------------------------------------------------------------------- layout */
   /* The width a column of prose stays readable at. Lists and tables take the width. */
   --measure: 62ch;
@@ -208,6 +248,19 @@
   --layer-width-palette: 38.75rem;
   --layer-width-picker: 35rem;
   --layer-max-height: 23.75rem;
+  /* The box that says whether a day is answered. Above the 24px touch floor on its own, so
+   * the row around it is comfort rather than the thing that makes it reachable. */
+  --habit-box-size: 1.5rem;
+  /* The narrowest a habit row gets before the badge beside it wraps to the next line. */
+  --habit-row-min: 15rem;
+  /* Four digits and their spinner, which is every quantity this product counts in a day. */
+  --habit-amount-width: 7rem;
+  /* The dot that stands for a day the habit never asked about, and the hole in the middle of
+   * a day that went beyond what was asked. Small enough to read as a mark and not a square. */
+  --heatmap-dot-size: 0.3125rem;
+  /* The narrowest the whole year may get before it scrolls sideways instead of squashing.
+   * Fifty-three columns and a gap each: below this a square stops being a square. */
+  --heatmap-min-width: 24rem;
   --field-max-width: 28rem;
   --form-max-width-narrow: 30rem;
   --form-max-width: 34rem;
@@ -263,6 +316,11 @@
     --mark-ink: #f2efe9;
 
     --brand-glyph: #ff5a1f;
+
+    --colour-heatmap-done: #63c281;
+    --colour-heatmap-missed: #f2696d;
+    --colour-heatmap-extra: #5b8cff;
+    --colour-heatmap-quiet: #8a8781;
   }
 }
 
@@ -307,6 +365,11 @@
   --mark-ink: #f2efe9;
 
   --brand-glyph: #ff5a1f;
+
+  --colour-heatmap-done: #63c281;
+  --colour-heatmap-missed: #f2696d;
+  --colour-heatmap-extra: #5b8cff;
+  --colour-heatmap-quiet: #8a8781;
 }
 
 /*
