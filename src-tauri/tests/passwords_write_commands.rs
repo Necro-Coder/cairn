@@ -165,16 +165,19 @@ fn furnished(title: &str) -> EntryDraftDto {
         ],
         fields: vec![
             DraftFieldDto {
+                id: None,
                 label: "Oficina".to_owned(),
                 value: Some("Central".to_owned()),
                 secret: false,
             },
             DraftFieldDto {
+                id: None,
                 label: "Titular".to_owned(),
                 value: Some("Alguien".to_owned()),
                 secret: false,
             },
             DraftFieldDto {
+                id: None,
                 label: "PIN".to_owned(),
                 value: Some(A_SECRET_VALUE.to_owned()),
                 secret: true,
@@ -317,6 +320,7 @@ fn a_draft_with_four_things_wrong_is_refused_with_four_problems() {
         username: Some("u".repeat(257)),
         urls: (0..33).map(|number| format!("sitio{number}.es")).collect(),
         fields: vec![DraftFieldDto {
+            id: None,
             label: String::new(),
             value: Some("sin nombre".to_owned()),
             secret: false,
@@ -434,32 +438,34 @@ fn emptying_the_password_is_a_change_and_is_recorded_as_one() {
     assert_eq!(detail.history_len, 1, "the password it had was not kept");
 }
 
+/// The fields of an entry exactly as a form would send them back after reading it.
+///
+/// What `get` gives, with every identifier echoed and every secret value emptied, which is the
+/// only shape the interface can produce: it never received those values, so it cannot return them.
+fn echoed(state: &AppState, id: Uuid) -> Vec<DraftFieldDto> {
+    get(state, &id.to_string())
+        .expect("the entry reads")
+        .fields
+        .into_iter()
+        .map(|field| DraftFieldDto {
+            id: Some(field.id),
+            label: field.label,
+            value: field.value,
+            secret: field.secret,
+        })
+        .collect()
+}
+
 #[test]
 fn a_secret_field_that_was_never_sent_back_survives_the_save() {
     let scratch = Scratch::new("update-secret-field");
     let state = unlocked(&scratch);
     let id = created(&state, &furnished("Banco"));
 
-    // Exactly what the form does with what `get` gave it: the labels came back, the secret value
-    // did not, and this is what it can therefore send.
+    // Exactly what the form does with what `get` gave it: the labels and the identifiers came
+    // back, the secret value did not, and this is what it can therefore send.
     let unchanged = EntryDraftDto {
-        fields: vec![
-            DraftFieldDto {
-                label: "Oficina".to_owned(),
-                value: Some("Central".to_owned()),
-                secret: false,
-            },
-            DraftFieldDto {
-                label: "Titular".to_owned(),
-                value: Some("Alguien".to_owned()),
-                secret: false,
-            },
-            DraftFieldDto {
-                label: "PIN".to_owned(),
-                value: None,
-                secret: true,
-            },
-        ],
+        fields: echoed(&state, id),
         ..furnished("Banco")
     };
 
@@ -472,6 +478,125 @@ fn a_secret_field_that_was_never_sent_back_survives_the_save() {
         "the value of the secret field was lost by saving the form"
     );
     carries_no_secret("a saved entry", &as_json(&detail));
+}
+
+#[test]
+fn deleting_a_field_does_not_hand_its_secret_to_the_one_below_it() {
+    // The regression this pairing exists for. Two secret fields; the form deletes the first and
+    // sends the second back with no value, meaning "keep the one it had". Paired by position, the
+    // survivor would inherit the deleted field's secret under its own label — the card PIN filed
+    // as the security answer, silently, with the real answer gone and nothing to say so.
+    let scratch = Scratch::new("update-field-deleted-above");
+    let state = unlocked(&scratch);
+
+    let two_secrets = EntryDraftDto {
+        fields: vec![
+            DraftFieldDto {
+                id: None,
+                label: "PIN".to_owned(),
+                value: Some("1111".to_owned()),
+                secret: true,
+            },
+            DraftFieldDto {
+                id: None,
+                label: "Respuesta".to_owned(),
+                value: Some("mi primera escuela".to_owned()),
+                secret: true,
+            },
+        ],
+        ..furnished("Banco")
+    };
+    let id = created(&state, &two_secrets);
+
+    let mut fields = echoed(&state, id);
+    fields.remove(0);
+
+    let without_the_pin = EntryDraftDto {
+        fields,
+        ..furnished("Banco")
+    };
+    update(&state, &id.to_string(), &without_the_pin, NOW_US).expect("the entry is saved");
+
+    assert_eq!(
+        stored_fields(&state, id),
+        vec![("Respuesta".to_owned(), "mi primera escuela".to_owned())],
+        "the surviving field did not keep its own value"
+    );
+}
+
+#[test]
+fn reordering_two_secret_fields_moves_neither_value() {
+    // The other half of the same mistake, and the one somebody reaches by dragging rather than by
+    // deleting. Both are sent back with no value, in the other order.
+    let scratch = Scratch::new("update-fields-swapped");
+    let state = unlocked(&scratch);
+
+    let two_secrets = EntryDraftDto {
+        fields: vec![
+            DraftFieldDto {
+                id: None,
+                label: "PIN".to_owned(),
+                value: Some("1111".to_owned()),
+                secret: true,
+            },
+            DraftFieldDto {
+                id: None,
+                label: "Respuesta".to_owned(),
+                value: Some("mi primera escuela".to_owned()),
+                secret: true,
+            },
+        ],
+        ..furnished("Banco")
+    };
+    let id = created(&state, &two_secrets);
+
+    let mut fields = echoed(&state, id);
+    fields.swap(0, 1);
+
+    let swapped = EntryDraftDto {
+        fields,
+        ..furnished("Banco")
+    };
+    update(&state, &id.to_string(), &swapped, NOW_US).expect("the entry is saved");
+
+    assert_eq!(
+        stored_fields(&state, id),
+        vec![
+            ("Respuesta".to_owned(), "mi primera escuela".to_owned()),
+            ("PIN".to_owned(), "1111".to_owned()),
+        ],
+        "swapping the two fields swapped their values as well"
+    );
+}
+
+#[test]
+fn a_field_naming_a_row_of_another_entry_is_refused_and_writes_nothing() {
+    // The identifier is a key whoever calls chooses, so it is checked against the rows of the
+    // entry being written and not merely looked up. Left unchecked, a caller could hand one
+    // entry's field to another and read it back from somewhere it was never filed.
+    let scratch = Scratch::new("update-field-of-another");
+    let state = unlocked(&scratch);
+    let mine = created(&state, &furnished("Banco"));
+    let theirs = created(&state, &furnished("Otro"));
+
+    let borrowed = echoed(&state, theirs);
+    let stolen = EntryDraftDto {
+        fields: borrowed,
+        ..furnished("Banco")
+    };
+
+    assert!(
+        matches!(
+            update(&state, &mine.to_string(), &stolen, NOW_US),
+            Err(PasswordsError::NotFound)
+        ),
+        "a field belonging to another entry was accepted"
+    );
+    assert_eq!(
+        stored_fields(&state, mine).len(),
+        3,
+        "the refused save changed the entry it was refused for"
+    );
 }
 
 #[test]

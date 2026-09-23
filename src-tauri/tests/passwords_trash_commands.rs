@@ -146,11 +146,13 @@ fn furnished(title: &str) -> EntryDraftDto {
         ],
         fields: vec![
             DraftFieldDto {
+                id: None,
                 label: "Oficina".to_owned(),
                 value: Some("Central".to_owned()),
                 secret: false,
             },
             DraftFieldDto {
+                id: None,
                 label: "PIN".to_owned(),
                 value: Some(A_SECRET_VALUE.to_owned()),
                 secret: true,

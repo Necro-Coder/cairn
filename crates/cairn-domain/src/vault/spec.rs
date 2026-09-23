@@ -71,6 +71,15 @@ pub const MAX_FOLDER_NAME_CHARS: usize = 128;
 /// One custom field, as it arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DraftField {
+    /// The row this field already is, or `None` for one somebody has just added.
+    ///
+    /// Nothing here judges it. It is not something a person types, and there is no shape it could
+    /// be wrong in that this module would be able to see. It travels through the check so that the
+    /// repository can pair what arrives with what is stored **by identifier**, which is the only
+    /// pairing that survives somebody reordering the boxes or deleting one in the middle: paired
+    /// by position, a form that dropped the first field would hand the second field's row the
+    /// first one's secret.
+    pub id: Option<Uuid>,
     /// What the field is called, as it is drawn beside the value.
     pub label: String,
     /// What it holds.
@@ -342,6 +351,7 @@ impl EntryDraft {
             );
 
             kept.push(DraftField {
+                id: field.id,
                 label: label.to_owned(),
                 value: value.to_owned(),
                 kind: field.kind,
@@ -681,6 +691,7 @@ mod tests {
     #[test]
     fn two_hundred_and_fifty_six_fields_are_enough_and_one_more_is_too_many() {
         let field = |n: usize| DraftField {
+            id: None,
             label: format!("campo {n}"),
             value: "x".to_owned(),
             kind: FieldKind::Text,
@@ -706,6 +717,7 @@ mod tests {
         let mut draft = a_draft(EntryKind::Account);
         draft.fields = (0..5)
             .map(|n| DraftField {
+                id: None,
                 label: if n == 3 {
                     String::new()
                 } else {
@@ -730,6 +742,7 @@ mod tests {
     fn a_field_somebody_has_named_and_not_filled_in_is_accepted() {
         let mut draft = a_draft(EntryKind::Account);
         draft.fields = vec![DraftField {
+            id: None,
             label: "PIN".to_owned(),
             value: String::new(),
             kind: FieldKind::Secret,
@@ -744,11 +757,13 @@ mod tests {
         let mut draft = a_draft(EntryKind::Account);
         draft.fields = vec![
             DraftField {
+                id: None,
                 label: "  ".to_owned(),
                 value: "\t".to_owned(),
                 kind: FieldKind::Text,
             },
             DraftField {
+                id: None,
                 label: "PIN".to_owned(),
                 value: "1234".to_owned(),
                 kind: FieldKind::Secret,
@@ -768,6 +783,7 @@ mod tests {
         draft.username = Some("alguien\rmás".to_owned());
         draft.password = Some(repeated('a', MAX_PASSWORD_BYTES + 1));
         draft.fields = vec![DraftField {
+            id: None,
             label: "PIN".to_owned(),
             value: repeated('a', MAX_FIELD_VALUE_BYTES + 1),
             kind: FieldKind::Secret,

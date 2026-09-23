@@ -22,6 +22,7 @@
 
 use core::fmt::Write as _;
 use core::time::Duration;
+use std::collections::HashMap;
 
 use cairn_crypto::constant_time_eq;
 use cairn_db::codec::FieldCodec;
@@ -60,7 +61,16 @@ pub const REVEAL_SECONDS: u16 = 20;
 /// Why something about the passwords module did not happen.
 ///
 /// Every failure of the database collapses into [`PasswordsError::Storage`] with no detail. What
-/// SQLite said belongs in a log on this side; what reaches a screen is that storage failed.
+/// reaches a screen is that storage failed, and nothing about which row or which column.
+///
+/// **What is lost with it, and knowingly.** `DbError::Sealed` means a stored value did not
+/// authenticate, and the associated data binds every ciphertext to its table, its row, its column
+/// and its revision — so that failure is a value that has been moved, rolled back or damaged, and
+/// it collapses here into the same answer as a full disk. This application keeps no log, by
+/// design: a record of what happened in somebody's vault is another copy of what is in it. The
+/// consequence is that a tampered file is indistinguishable from a failing one until somebody
+/// reads the screen and thinks about it. Telling the two apart is a job for the phase that
+/// decides where such a thing could be written down without becoming a second vault.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[non_exhaustive]
@@ -280,7 +290,7 @@ pub struct Listing<T> {
 
 /// Which entries a listing asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum EntryFilter {
     /// Everything that is not in the bin.
     All,
@@ -341,7 +351,7 @@ pub struct PasswordsSettings {
 
 /// An entry as it arrives from the form.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntryDraftDto {
     /// Whether it is an account or a note.
     pub kind: EntryKindDto,
@@ -369,8 +379,17 @@ pub struct EntryDraftDto {
 
 /// One custom field as it arrives.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DraftFieldDto {
+    /// The field this already is, as [`FieldDto`] gave it, or `None` for one just added.
+    ///
+    /// What decides which stored row a submitted field is. It has to travel because of the field
+    /// below: a secret field is sent to the form with its value emptied, so a save that sends no
+    /// value means "keep the one it had", and **which** one it had cannot be answered by counting
+    /// down the list. Delete the first of two secret fields and the second one would inherit the
+    /// first one's value under its own label — the card PIN filed under "respuesta de seguridad",
+    /// silently, with the real answer gone.
+    pub id: Option<String>,
     /// What names it.
     pub label: String,
     /// `None` on a secret field means "leave it as it was", for the same reason as above.
@@ -401,7 +420,7 @@ pub struct Cleared {
 /// user name and an address are not secrets of the same kind, and what changes for them is not
 /// whether they may be copied but whether they are taken back afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum CopyTarget {
     /// The entry's password.
     Password,
@@ -447,7 +466,7 @@ pub const MAX_CLIPBOARD_SECONDS: u16 = 60;
 /// A closed enumeration and never a column name. A target that was a string would be a way to ask
 /// this process for any column of any table, the vault header included.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum RevealTarget {
     /// The entry's password.
     Password,
@@ -464,16 +483,33 @@ pub enum RevealTarget {
 }
 
 /// One value, on its way to being drawn once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// `Serialize` is written out rather than derived, because the value is a [`Zeroizing`] string and
+/// `zeroize` does not carry a `serde` implementation for it. Holding it as one is the point: the
+/// copy Tauri makes on its way into the JSON of the bridge is out of this program's hands, but the
+/// copy this struct owns is not, and it is wiped when the command returns rather than left in the
+/// heap for whatever reads the page file next. Two fields, named here exactly as the derive named
+/// them, and a test asserts the shape does not drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Revealed {
     /// The value itself. The only place in this application where one crosses the bridge.
-    pub value: String,
+    pub value: Zeroizing<String>,
     /// How many seconds the screen should show it before hiding it again.
     ///
     /// Comes from the core so that the countdown and the policy are the same number, and so that
     /// changing it later is a constant here rather than a literal in a component.
     pub hide_after_s: u16,
+}
+
+impl Serialize for Revealed {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut shape = serializer.serialize_struct("Revealed", 2)?;
+        shape.serialize_field("value", &*self.value)?;
+        shape.serialize_field("hideAfterS", &self.hide_after_s)?;
+        shape.end()
+    }
 }
 
 /// What emptying the bin destroyed.
@@ -486,7 +522,7 @@ pub struct Emptied {
 
 /// Whose history to empty.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum HistoryScopeDto {
     /// One entry's.
     Entry {
@@ -956,7 +992,7 @@ pub fn reveal(
         };
 
         Ok(Revealed {
-            value: value.to_string(),
+            value,
             hide_after_s: REVEAL_SECONDS,
         })
     })
@@ -1569,6 +1605,7 @@ fn write_children(
         .fields
         .iter()
         .map(|field| NewField {
+            id: field.id,
             label: &field.label,
             value: &field.value,
             secret: matches!(field.kind, FieldKind::Secret),
@@ -1590,10 +1627,10 @@ fn write_children(
 /// Turns what arrived from the form into something the repository may be handed.
 ///
 /// Two substitutions happen before the judging, and both exist because [`get`] deliberately did
-/// not send the value back. A secret field whose value is absent keeps the one it had, paired by
-/// position exactly as `replace_fields` pairs them. The password is not substituted here: it is
-/// carried verbatim by [`update`], so that a save which does not touch it cannot alter it by
-/// being trimmed on the way past.
+/// not send the value back. A secret field whose value is absent keeps the one it had, **found by
+/// the identifier the field carries**, exactly as `replace_fields` now pairs them. The password is
+/// not substituted here: it is carried verbatim by [`update`], so that a save which does not touch
+/// it cannot alter it by being trimmed on the way past.
 fn validated(
     draft: &EntryDraftDto,
     existing_fields: &[repository::Field],
@@ -1614,20 +1651,38 @@ fn validated(
         None => None,
     };
 
+    let stored: HashMap<Uuid, &repository::Field> = existing_fields
+        .iter()
+        .map(|field| (field.id, field))
+        .collect();
+
     let fields = draft
         .fields
         .iter()
-        .enumerate()
-        .map(|(at, field)| DraftField {
-            label: field.label.clone(),
-            value: kept_value(field, existing_fields.get(at)),
-            kind: if field.secret {
-                FieldKind::Secret
-            } else {
-                FieldKind::Text
-            },
+        .map(|field| {
+            // An identifier that is not a UUID at all is the same answer as one naming nothing:
+            // `NotFound` further down, when the repository looks for the row. Refusing here with a
+            // problem about a box would put a message under a field whose identifier the person
+            // never saw and cannot correct.
+            let id = field
+                .id
+                .as_deref()
+                .map(Uuid::parse_str)
+                .transpose()
+                .map_err(|_not_a_uuid| PasswordsError::NotFound)?;
+
+            Ok(DraftField {
+                id,
+                label: field.label.clone(),
+                value: kept_value(field, id.and_then(|id| stored.get(&id).copied())),
+                kind: if field.secret {
+                    FieldKind::Secret
+                } else {
+                    FieldKind::Text
+                },
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, PasswordsError>>()?;
 
     EntryDraft {
         kind: draft.kind.kind(),
@@ -1648,9 +1703,10 @@ fn validated(
 
 /// The value a custom field is saved with, which may be the one it already had.
 ///
-/// Absent only means "as it was" on a secret field, and only where the field in that position was
-/// also secret. Anywhere else there is nothing to keep: the form was sent the value, so a value
-/// it did not send back is a box somebody emptied.
+/// Absent only means "as it was" on a secret field, and only where the row **that field names**
+/// was also secret. Anywhere else there is nothing to keep: the form was sent the value, so a
+/// value it did not send back is a box somebody emptied, and a field with no identifier is one
+/// that did not exist a moment ago and therefore has no previous value to inherit.
 fn kept_value(field: &DraftFieldDto, previous: Option<&repository::Field>) -> String {
     match field.value.as_deref() {
         Some(value) => value.to_owned(),

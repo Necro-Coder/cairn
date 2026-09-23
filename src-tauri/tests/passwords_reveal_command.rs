@@ -129,11 +129,13 @@ fn furnished(title: &str) -> EntryDraftDto {
         urls: vec!["banco.example".to_owned()],
         fields: vec![
             DraftFieldDto {
+                id: None,
                 label: "Oficina".to_owned(),
                 value: Some(A_PLAIN_VALUE.to_owned()),
                 secret: false,
             },
             DraftFieldDto {
+                id: None,
                 label: "PIN".to_owned(),
                 value: Some(A_SECRET_VALUE.to_owned()),
                 secret: true,
@@ -217,13 +219,32 @@ fn the_password_of_an_entry_comes_back_with_how_long_to_show_it() {
     let shown = reveal(&state, &id.to_string(), &RevealTarget::Password, NOW_US)
         .expect("the password is revealed");
 
-    assert_eq!(shown.value, A_WRITTEN_PASSWORD);
+    assert_eq!(shown.value.as_str(), A_WRITTEN_PASSWORD);
     assert_eq!(shown.hide_after_s, 20);
 
     // Twice in a row. There is no state that gets spent, no token and no single use.
     let again = reveal(&state, &id.to_string(), &RevealTarget::Password, NOW_US)
         .expect("it can be revealed again");
-    assert_eq!(again.value, A_WRITTEN_PASSWORD);
+    assert_eq!(again.value.as_str(), A_WRITTEN_PASSWORD);
+}
+
+#[test]
+fn what_a_reveal_puts_on_the_bridge_is_two_fields_named_as_the_derive_named_them() {
+    // `Revealed` writes its own `Serialize`, because the value it carries clears itself and
+    // `zeroize` brings no implementation for that. A hand written one can drift from the shape
+    // every screen reads, and it would drift silently: the value would still be there, under a
+    // name nothing looks for. So the shape is asserted, whole, rather than field by field.
+    let scratch = Scratch::new("reveal-shape");
+    let state = unlocked(&scratch);
+    let id = written(&state, &furnished("Banco"));
+
+    let shown = reveal(&state, &id.to_string(), &RevealTarget::Password, NOW_US)
+        .expect("the password is revealed");
+
+    assert_eq!(
+        serde_json::to_string(&shown).expect("the answer serialises"),
+        format!(r#"{{"value":"{A_WRITTEN_PASSWORD}","hideAfterS":20}}"#)
+    );
 }
 
 #[test]
@@ -256,7 +277,8 @@ fn both_kinds_of_custom_field_can_be_revealed() {
             NOW_US
         )
         .expect("the secret field is revealed")
-        .value,
+        .value
+        .as_str(),
         A_SECRET_VALUE
     );
 
@@ -269,7 +291,8 @@ fn both_kinds_of_custom_field_can_be_revealed() {
             NOW_US
         )
         .expect("the plain field is revealed")
-        .value,
+        .value
+        .as_str(),
         A_PLAIN_VALUE
     );
 }
@@ -357,7 +380,8 @@ fn an_old_password_comes_back_and_one_of_another_entry_does_not() {
             NOW_US
         )
         .expect("the old password is revealed")
-        .value,
+        .value
+        .as_str(),
         A_WRITTEN_PASSWORD
     );
     assert_eq!(

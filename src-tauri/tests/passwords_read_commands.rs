@@ -161,11 +161,13 @@ fn write_entry(state: &AppState, step: u64, title: &str, kind: EntryKind) -> Uui
             written.id,
             &[
                 NewField {
+                    id: None,
                     label: "Oficina",
                     value: "Central",
                     secret: false,
                 },
                 NewField {
+                    id: None,
                     label: "PIN",
                     value: A_SECRET_VALUE,
                     secret: true,
@@ -409,6 +411,7 @@ fn an_entry_with_every_address_and_every_field_it_may_have_comes_back_in_order()
         let fields: Vec<NewField<'_>> = labels
             .iter()
             .map(|label| NewField {
+                id: None,
                 label: label.as_str(),
                 value: "x",
                 secret: false,

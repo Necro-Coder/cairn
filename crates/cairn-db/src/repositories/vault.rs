@@ -22,7 +22,7 @@
 //! and will not be, is tags: the tables exist from migration 0003 and nothing reads or writes
 //! them, because the module they were for is not one this product has.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use cairn_domain::vault::{
     EntryKind, MAX_FIELD_LABEL_CHARS, MAX_FIELD_VALUE_BYTES, MAX_FIELDS, MAX_FOLDER_NAME_CHARS,
@@ -885,6 +885,13 @@ pub struct Field {
 /// What is needed to write one custom field down.
 #[derive(Debug, Clone, Copy)]
 pub struct NewField<'a> {
+    /// The row to write this over, or `None` for a field that did not exist yet.
+    ///
+    /// The identifier decides which stored row a submitted field claims. `None` is a new row, and
+    /// an identifier that names no live field of this entry is refused rather than treated as one:
+    /// it is a key chosen by whoever called, and a key that silently misses is how a field belonging
+    /// to another entry, or one already tombstoned, turns into a row nobody asked for.
+    pub id: Option<Uuid>,
     /// What to call it.
     pub label: &'a str,
     /// What it holds.
@@ -1101,7 +1108,20 @@ pub fn replace_urls(
     Ok(written)
 }
 
-/// Replaces every custom field of an entry, in one go. Same rules as above.
+/// Replaces every custom field of an entry, in one go.
+///
+/// **Paired by identifier, not by position**, which is the one way this differs from
+/// [`replace_urls`]. A field carries a secret, and the form that submits it never receives that
+/// secret back, so a submitted field with no value means "keep the one this row already had". Pair
+/// that by position and deleting the first field makes the second one inherit the first one's
+/// secret, under the second one's label, with nothing anywhere saying so. An address has no such
+/// problem: it arrives whole every time, which is why the two functions pair differently and why
+/// this comment exists rather than a shared helper.
+///
+/// A [`NewField`] with no identifier is a new row. One naming a live field of this entry writes
+/// over it. One naming anything else — a field of another entry, a tombstone, a row already
+/// claimed by an earlier position of the same list — is [`DbError::NotFound`]. Every field of the
+/// entry that no submitted row claims is tombstoned.
 ///
 /// The `secret` flag is written in the clear beside the two sealed columns, on purpose: it
 /// decides how every row is drawn, and a flag that has to be decrypted to know how to draw a row
@@ -1109,7 +1129,8 @@ pub fn replace_urls(
 ///
 /// # Errors
 ///
-/// As above, with [`cairn_domain::vault::MAX_FIELDS`].
+/// As above, with [`cairn_domain::vault::MAX_FIELDS`], and [`DbError::NotFound`] for an
+/// identifier that is not a live field of this entry or that the same call already claimed.
 pub fn replace_fields(
     connection: &Connection,
     codec: &FieldCodec<'_>,
@@ -1145,11 +1166,22 @@ pub fn replace_fields(
         entry_id,
     )?;
 
+    // Claimed as the list is walked, so a second field naming the same row finds it gone and is
+    // refused rather than writing over what the first one just wrote.
+    let mut unclaimed: BTreeMap<Uuid, RowStamp> =
+        existing.into_iter().map(|row| (row.id, row)).collect();
+
     let mut written = Vec::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
         let position = i64::try_from(index).unwrap_or(i64::MAX);
-        let previous = existing.get(index);
-        let stamp = match previous {
+        let previous = match field.id {
+            // An identifier the caller chose, checked against the rows of *this* entry. It is not
+            // in the map when it belongs to another entry, when it was already tombstoned, or when
+            // an earlier position of this same list claimed it, and all three are the same answer.
+            Some(claimed) => Some(unclaimed.remove(&claimed).ok_or(DbError::NotFound)?),
+            None => None,
+        };
+        let stamp = match previous.as_ref() {
             Some(kept) => kept.revised(hlc, now_us),
             None => RowStamp::new(device, hlc, now_us)?,
         };
@@ -1173,7 +1205,10 @@ pub fn replace_fields(
         });
     }
 
-    for spare in existing.iter().skip(fields.len()) {
+    // Whatever no submitted field claimed. `BTreeMap` rather than a hash map so this runs in the
+    // order of the identifiers rather than in whatever order a hash happened to give, which is
+    // what keeps two runs over the same data writing the same thing.
+    for spare in unclaimed.into_values() {
         let gone = spare.tombstoned(hlc, now_us);
         connection
             .prepare_cached(
@@ -3100,24 +3135,34 @@ mod tests {
         database.close().expect("the connection closes");
     }
 
+    /// Written, shortened and emptied, the way the addresses are — but claimed by identifier.
+    ///
+    /// The one place the two lists part company. An address arrives whole every time, so the list
+    /// itself is the whole truth and position is enough. A field may arrive with its value left
+    /// out, meaning "keep the one this row had", so the row has to be named. Shortening the list
+    /// therefore means sending back the identifiers of the rows that stay, not the first two of
+    /// whatever was there.
     #[test]
-    fn the_custom_fields_of_an_entry_behave_the_way_its_addresses_do() {
+    fn the_custom_fields_of_an_entry_are_written_shortened_and_emptied_by_identifier() {
         let bench = Bench::new("vault-fields-write");
         let database = bench.database();
         let codec = bench.codec();
 
         let three = [
             NewField {
+                id: None,
                 label: "PIN",
                 value: "1234",
                 secret: true,
             },
             NewField {
+                id: None,
                 label: "Oficina",
                 value: "Central",
                 secret: false,
             },
             NewField {
+                id: None,
                 label: "Gestor",
                 value: "Alguien",
                 secret: false,
@@ -3162,7 +3207,17 @@ mod tests {
                 )?;
                 assert_eq!(plain, 1, "the flag is not readable without the key");
 
-                // Shorter, then longer, then empty: the same three shapes as the addresses.
+                // Shorter, then empty. The two that stay name the rows they already are, which is
+                // what the form sends back; the third is claimed by nobody and is tombstoned.
+                let kept: Vec<NewField<'_>> = three
+                    .iter()
+                    .zip(first.iter())
+                    .take(2)
+                    .map(|(field, row)| NewField {
+                        id: Some(row.id),
+                        ..*field
+                    })
+                    .collect();
                 let shorter = replace_fields(
                     connection,
                     &codec,
@@ -3170,7 +3225,7 @@ mod tests {
                     at(3),
                     NOW_US + 1,
                     written.id,
-                    three.get(..2).unwrap_or_default(),
+                    &kept,
                 )?;
                 assert_eq!(
                     shorter.iter().map(|field| field.id).collect::<Vec<_>>(),
@@ -3221,6 +3276,7 @@ mod tests {
                 let many: Vec<NewField<'_>> = labels
                     .iter()
                     .map(|label| NewField {
+                        id: None,
                         label,
                         value: "x",
                         secret: false,
@@ -3283,6 +3339,7 @@ mod tests {
                     NOW_US,
                     written.id,
                     &[NewField {
+                        id: None,
                         label: "Contraseña del móvil 📱",
                         value: "ñandú-café-🔑",
                         secret: true,
@@ -3316,6 +3373,190 @@ mod tests {
                 Ok(())
             })
             .expect("nothing is rewritten on the way through");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_field_keeps_the_row_its_identifier_names_however_the_list_is_ordered() {
+        // The pairing this function exists to get right. Two fields written, then sent back in the
+        // other order with their identifiers: each has to land on its own row, because the row is
+        // what a value the caller did not resend would be taken from.
+        let bench = Bench::new("vault-fields-by-id");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let written = an_account(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                let first = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    written.id,
+                    &[
+                        NewField {
+                            id: None,
+                            label: "PIN",
+                            value: "1111",
+                            secret: true,
+                        },
+                        NewField {
+                            id: None,
+                            label: "Respuesta",
+                            value: "mi primera escuela",
+                            secret: true,
+                        },
+                    ],
+                )?;
+                let (pin, answer) = (first[0].id, first[1].id);
+
+                let swapped = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US,
+                    written.id,
+                    &[
+                        NewField {
+                            id: Some(answer),
+                            label: "Respuesta",
+                            value: "mi primera escuela",
+                            secret: true,
+                        },
+                        NewField {
+                            id: Some(pin),
+                            label: "PIN",
+                            value: "1111",
+                            secret: true,
+                        },
+                    ],
+                )?;
+
+                assert_eq!(
+                    swapped.iter().map(|field| field.id).collect::<Vec<_>>(),
+                    vec![answer, pin],
+                    "a field was written over the other one's row"
+                );
+
+                let read = fields(connection, &codec, written.id)?;
+                assert_eq!(
+                    read.iter()
+                        .map(|field| (field.id, field.value.to_string()))
+                        .collect::<Vec<_>>(),
+                    vec![
+                        (answer, "mi primera escuela".to_owned()),
+                        (pin, "1111".to_owned()),
+                    ]
+                );
+
+                Ok(())
+            })
+            .expect("the fields are paired by identifier");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn an_identifier_that_is_not_a_live_field_of_this_entry_is_refused() {
+        // Three ways to name a row that is not there, and one answer for all three: a field of
+        // another entry, a plain invention, and one the same call has already claimed.
+        let bench = Bench::new("vault-fields-foreign-id");
+        let database = bench.database();
+        let codec = bench.codec();
+
+        database
+            .with(|connection| {
+                let mine = an_account(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(1),
+                    NOW_US,
+                    an_entry("Banco"),
+                )?;
+                let theirs = an_account(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(2),
+                    NOW_US,
+                    an_entry("Otro"),
+                )?;
+                let hers = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(3),
+                    NOW_US,
+                    theirs.id,
+                    &[NewField {
+                        id: None,
+                        label: "PIN",
+                        value: "1111",
+                        secret: true,
+                    }],
+                )?;
+                let ours = replace_fields(
+                    connection,
+                    &codec,
+                    bench.device,
+                    at(4),
+                    NOW_US,
+                    mine.id,
+                    &[NewField {
+                        id: None,
+                        label: "Oficina",
+                        value: "Central",
+                        secret: false,
+                    }],
+                )?;
+
+                let claiming = |id: Uuid| NewField {
+                    id: Some(id),
+                    label: "Robado",
+                    value: "x",
+                    secret: true,
+                };
+
+                for (what, offered) in [
+                    ("a field of another entry", vec![claiming(hers[0].id)]),
+                    ("an identifier of nothing", vec![claiming(Uuid::new_v4())]),
+                    (
+                        "the same row claimed twice",
+                        vec![claiming(ours[0].id), claiming(ours[0].id)],
+                    ),
+                ] {
+                    assert!(
+                        matches!(
+                            replace_fields(
+                                connection,
+                                &codec,
+                                bench.device,
+                                at(5),
+                                NOW_US,
+                                mine.id,
+                                &offered,
+                            ),
+                            Err(DbError::NotFound)
+                        ),
+                        "{what} was accepted"
+                    );
+                }
+
+                Ok(())
+            })
+            .expect("every refusal is the one expected");
 
         database.close().expect("the connection closes");
     }
@@ -3958,6 +4199,7 @@ mod tests {
             NOW_US,
             written.id,
             &[NewField {
+                id: None,
                 label: "PIN",
                 value: "1234",
                 secret: true,
