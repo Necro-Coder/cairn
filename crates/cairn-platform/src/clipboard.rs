@@ -112,6 +112,7 @@ mod windows_clipboard {
         GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+    use zeroize::Zeroizing;
 
     use super::{ClipboardError, Fingerprint, fingerprint_of};
 
@@ -178,6 +179,13 @@ mod windows_clipboard {
 
     /// Puts text on the clipboard, replacing what was there.
     ///
+    /// Everything that can fail on its own happens **before** the clipboard is opened: the
+    /// conversion, the allocation and the copy. Only emptying and handing the block over need it
+    /// open. The order matters to whoever is using the machine rather than to this program —
+    /// emptying first and then failing to allocate would have thrown away what they had copied in
+    /// order to report that nothing was copied — and it keeps the clipboard, which belongs to the
+    /// whole desktop, held for two calls instead of six.
+    ///
     /// # Errors
     ///
     /// [`ClipboardError`] in each of its three shapes.
@@ -186,30 +194,21 @@ mod windows_clipboard {
         reason = "hands a block of system memory to the clipboard; every call carries its own SAFETY comment stating who owns what afterwards"
     )]
     pub fn write(text: &str) -> Result<(), ClipboardError> {
-        // Built before the clipboard is opened, so that nothing is held open while this program
-        // allocates and converts.
-        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        // The whole length is reserved first and the buffer wiped on the way out. Both matter and
+        // for the same reason: this is a second copy of a password in this process's heap, and a
+        // `Vec` that grows leaves the bytes it outgrew behind in memory nothing will ever clear,
+        // where a page file or a crash dump can still reach them.
+        let mut wide: Zeroizing<Vec<u16>> =
+            Zeroizing::new(Vec::with_capacity(text.len().saturating_add(1)));
+        wide.extend(text.encode_utf16());
         wide.push(0);
         let bytes = wide.len().saturating_mul(core::mem::size_of::<u16>());
-
-        let _open = Open::take()?;
-
-        // SAFETY: empties the clipboard this thread has open. It takes no arguments and reads
-        // none of our memory. It must be called before `SetClipboardData` or the new handle is
-        // refused.
-        let emptied = unsafe { EmptyClipboard() };
-        if emptied == 0 {
-            // SAFETY: as above, reads the calling thread's last error code.
-            return Err(ClipboardError::Refused {
-                code: unsafe { GetLastError() },
-            });
-        }
 
         // SAFETY: allocates `bytes` of movable system memory and reads nothing of ours. A null
         // answer means the allocation failed, which is checked on the next line.
         let block = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) };
         if block.is_null() {
-            // SAFETY: as above.
+            // SAFETY: as elsewhere, reads the calling thread's last error code.
             return Err(ClipboardError::Refused {
                 code: unsafe { GetLastError() },
             });
@@ -242,6 +241,31 @@ mod windows_clipboard {
         // SAFETY: unlocks the block locked just above, exactly once. After this the pointer must
         // not be used again, and it is not.
         let _unlocked = unsafe { GlobalUnlock(block) };
+
+        // The block is filled and still ours. From here every way out but the last one has to
+        // free it, because ownership passes to the system only when `SetClipboardData` succeeds.
+        let _open = match Open::take() {
+            Ok(open) => open,
+            Err(why) => {
+                // SAFETY: the clipboard never opened, so nothing was handed anywhere and this
+                // frees our own allocation.
+                let _freed = unsafe { windows_sys::Win32::Foundation::GlobalFree(block) };
+                return Err(why);
+            }
+        };
+
+        // SAFETY: empties the clipboard this thread has open. It takes no arguments and reads
+        // none of our memory. It must be called before `SetClipboardData` or the new handle is
+        // refused.
+        let emptied = unsafe { EmptyClipboard() };
+        if emptied == 0 {
+            // SAFETY: nothing has been handed over, so the block is still ours to free.
+            let _freed = unsafe { windows_sys::Win32::Foundation::GlobalFree(block) };
+            // SAFETY: as above, reads the calling thread's last error code.
+            return Err(ClipboardError::Refused {
+                code: unsafe { GetLastError() },
+            });
+        }
 
         // SAFETY: hands the block to the clipboard in the format its contents are in. **The
         // system owns the block from here on**: it must not be freed by this program, and the
@@ -356,15 +380,20 @@ mod windows_clipboard {
     /// bounded as the terminator somebody else wrote, and the clipboard is written by every other
     /// program on the machine; sixteen mebibytes of text is far more than anything worth copying
     /// and far less than a walk off the end of memory.
+    ///
+    /// Both buffers clear themselves. What is read here is not this program's secret but somebody
+    /// else's: whatever was on the clipboard when the timer woke up, which is as likely to be a
+    /// password from another manager as it is a shopping list, and there is no reason for this
+    /// process to keep a copy of it after the digest has been taken.
     #[allow(
         unsafe_code,
         reason = "walks a null terminated string the system handed over; the SAFETY comment states the bound"
     )]
-    fn read_wide(source: *const u16) -> String {
+    fn read_wide(source: *const u16) -> Zeroizing<String> {
         /// The most text this reads before stopping, in UTF-16 code units.
         const CEILING: usize = 8 * 1024 * 1024;
 
-        let mut units = Vec::new();
+        let mut units: Zeroizing<Vec<u16>> = Zeroizing::new(Vec::new());
         for at in 0..CEILING {
             // SAFETY: `source` points at a null terminated UTF-16 string inside a block the
             // clipboard has locked for us, and the loop stops at the terminator or at the
@@ -376,7 +405,7 @@ mod windows_clipboard {
             units.push(unit);
         }
 
-        String::from_utf16_lossy(&units)
+        Zeroizing::new(String::from_utf16_lossy(&units))
     }
 }
 
