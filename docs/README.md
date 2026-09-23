@@ -18,7 +18,7 @@ Three ways in, depending on what you want.
 | Security model | _planned_ — what Cairn protects, and what it does not, in plain words. Meanwhile the [threat model](architecture/threat-model.md) says the same things for a technical reader |
 | Backup and restore | _planned_ — how encrypted exports work and why you need them |
 | Syncing your devices | _planned_ |
-| Habits | _planned_ |
+| [Habits](user/modules/habits.md) | What a habit is here, what a streak counts and when it breaks, what editing one does to its history, and what is not built yet. |
 | Vault | _planned_ |
 | Finances | _planned_ |
 | Troubleshooting | _planned_ |

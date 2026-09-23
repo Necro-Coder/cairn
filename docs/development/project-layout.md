@@ -49,7 +49,33 @@ That third one is the reason the workspace is one object. `workspace.svelte.ts` 
 
 `lib/search/` is the contract every module will register a search provider against, written before there is anything to search. A hit carries a module, an identity, a title and a date, and there is no field for content, a value, an amount or a snippet: the palette opens on two keys, so the type is what makes showing a secret impossible rather than the care of whoever writes the provider. `contract.test-d.ts` fails to compile if a fifth field appears, whatever it is called. Both arguments a provider is handed are bounded before it sees them, at fifty hits and at two hundred characters of query, because in phase 03 that query stops being matched against eight titles in the WebView and becomes an argument to a command in the core.
 
-`routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active. `routes/modules/` is habits, passwords and finances, each drawn in full before any of them works: the real empty state somebody meets on their first day, the shape the data will take — a year of days, a list of accounts, three totals of a month — and a badge where the value will go saying the part is not written. Nothing in them reads or writes anything, and the figures that are shown are zero because a vault with nothing in it holds nothing, which is a fact rather than a placeholder. `routes/settings/` is the five parts of the settings screen — security, appearance, data, diagnostics and shortcuts — with the diagnostics drawn twice: as one of those parts while the vault is open, and as a screen of its own while it is closed, because the machine somebody needs a version number on is usually the one that will not open.
+`routes/` holds the screens. A screen knows nothing about tabs; it is what the shell draws inside whichever one is active. `routes/modules/` is habits, passwords and finances. Habits is real and is described below; the other two are still drawn in full before they work: the real empty state somebody meets on their first day, the shape the data will take — a list of accounts, three totals of a month — and a badge where the value will go saying the part is not written. Nothing in those two reads or writes anything, and the figures shown are zero because a vault with nothing in it holds nothing, which is a fact rather than a placeholder. `routes/settings/` is the five parts of the settings screen — security, appearance, data, diagnostics and shortcuts — with the diagnostics drawn twice: as one of those parts while the vault is open, and as a screen of its own while it is closed, because the machine somebody needs a version number on is usually the one that will not open.
+
+## The shape of a product module
+
+Habits is the first module with something behind it, and the shape it took is the shape passwords and finances are meant to copy. It is written down here because the second and third time it is built, the pressure will be to take a shortcut, and the shortcuts are all in the same two places: rules that end up in a screen, and a second opinion about the same fact on the two sides of the bridge.
+
+Five layers, and what each one is allowed to decide.
+
+| Where | What lives there | Habits |
+| --- | --- | --- |
+| `crates/cairn-domain/src/<module>/` | Every rule, as functions over values. No clock, no database, no input or output | `habits/{calendar,spec,day,streak,completion}.rs` |
+| `crates/cairn-db/src/<module>/` | Rows in and out, and nothing that decides what a row means | Reads, writes, windows of days, the year a heat map covers |
+| `src-tauri/src/commands/<module>.rs` | What today is, what the limits are, and the shape crossing the bridge | Zone, day-start preference, window sizes, the thirty-day limit, the DTOs |
+| `src/routes/<module>/` | Screens, and pure modules beside them holding what a screen works out | `today.ts`, `detail.ts`, `draft.ts` beside their three components |
+| `src/lib/ipc.types.ts` and `src/lib/ipc.ts` | The vocabulary, and the only file that may call the core | Eleven functions, one type per thing that crosses |
+
+Four rules hold it together, and each answers a mistake that was made once.
+
+**The domain takes today as an argument.** Every function in `habits/` that could need a date is handed one. Which day is today depends on a time zone and on the hour the person starts their day at, and the crate that knows the rules is not allowed to know either. It makes every rule testable without a clock, and it puts the one place that answers "what day is it" in the command layer where the preference and the zone already are.
+
+**A verdict is computed once and travels.** `day::classify` returns one of five variants and everything downstream matches on those five. The interface receives conclusions — the streak, whether it is at risk, the percentage already rounded — and never the material to derive them. A screen that can derive a number is a screen that will eventually derive it differently from the core. The full reasoning is [decision 0012](../architecture/decisions/0012-what-a-streak-means.md).
+
+**Both sides of the bridge are checked against one type.** `IpcSurface` in `ipc.types.ts` is implemented by `ipc.ts`, which calls Tauri, and by `lib/preview/ipc.ts`, which invents data for a browser. Neither can drift from the other, because a method added to one and not the other stops the typecheck. Before that type existed, the preview and the real bridge disagreed about an argument and nothing said so.
+
+**A screen has four states and a union that makes the fifth impossible.** `lib/ui/async.ts` holds `Async<T>` — loading, empty, ready, failed — and `AsyncView.svelte` draws the first and the last so no screen invents its own. Every error variant the core can send has one Spanish sentence, written in one place, with the default branch typed as `never`: a new variant in Rust fails the build on this side rather than reaching somebody as a code.
+
+Two smaller conventions that come with it. Logic a screen works out lives in a `.ts` file beside the component, not inside it, so `node --test` can reach it without a browser — the round trip a form makes through a habit and back is a test, not a hope. And no component contains a literal value: colours, sizes, spaces and durations come from `lib/styles/tokens.css`, and `npm run tokens` fails the build over a hand-written one.
 
 ## Dependencies point inwards
 
@@ -93,6 +119,6 @@ One place: `[workspace.package]` in the root `Cargo.toml`. Every crate inherits 
 
 ## What is not here yet
 
-Nothing in `cairn-crypto`, `cairn-db` or `cairn-sync` is implemented. Each arrives with the work that justifies it, so that it can be reviewed on its own rather than buried in a commit that also moves scaffolding around. The cryptography in particular is meant to be read in isolation, by somebody looking for a mistake in it.
+`cairn-sync` is still a version number and a doc comment. Each crate arrives with the work that justifies it, so that it can be reviewed on its own rather than buried in a commit that also moves scaffolding around, and nothing synchronises yet.
 
-`cairn-db` is one step ahead of that rule and the exception is deliberate. It has no API, no schema and no migrations, but it does already depend on SQLCipher, because whether SQLCipher cross compiles to a phone is the one assumption the storage design rests on that could turn out to be false. The gate that checks it has to have something real to compile, or it is a green tick over an empty crate. What the dependency brings with it is `tests/sqlcipher.rs`, which proves the library linked in encrypts rather than merely existing.
+Of the modules, only habits is real. Passwords and finances are screens with no core behind them, and they say so on themselves rather than leaving it to be discovered.

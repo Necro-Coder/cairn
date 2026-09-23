@@ -52,6 +52,15 @@ import type {
   CompactionReport,
   SeedReport,
   VaultStatus,
+  DayState,
+  HabitDetail,
+  HabitDraft,
+  HabitFilter,
+  HabitStats,
+  HabitSummary,
+  HabitUpdateOutcome,
+  Heatmap,
+  UpdateImpact,
 } from './ipc.types';
 
 /** The name the core sends the lock event under. It must match `window.rs`. */
@@ -230,6 +239,74 @@ async function closeWindow(): Promise<void> {
   return invoke<void>('close_window');
 }
 
+/* -----------------------------------------------------------------------------------------
+ * Habits.
+ *
+ * Eleven commands. The name in `invoke` is the core's, in `snake_case` and prefixed by the
+ * module, because the core has one flat namespace and `list` in it would be a command about
+ * nothing in particular. The name of the function is this side's. The two are deliberately
+ * different and this file is the only place they meet.
+ *
+ * The argument names in each object are the parameter names of the Rust function, converted
+ * the way Tauri converts them. Getting one wrong is not a type error anywhere: it is an
+ * argument the command never receives.
+ * -------------------------------------------------------------------------------------- */
+
+/** Reads every habit of one kind, with today's square and the run so far. */
+async function listHabits(filter: HabitFilter): Promise<readonly HabitSummary[]> {
+  return invoke<HabitSummary[]>('habits_list', { filter });
+}
+
+/** Reads one habit in full, note included. */
+async function getHabit(id: string): Promise<HabitDetail> {
+  return invoke<HabitDetail>('habits_get', { id });
+}
+
+/** Creates a habit from a draft. */
+async function createHabit(draft: HabitDraft): Promise<HabitDetail> {
+  return invoke<HabitDetail>('habits_create', { draft });
+}
+
+/** Saves a draft over an existing habit. */
+async function updateHabit(id: string, draft: HabitDraft): Promise<HabitUpdateOutcome> {
+  return invoke<HabitUpdateOutcome>('habits_update', { id, draft });
+}
+
+/** Works out what saving that draft would do, without saving it. */
+async function previewHabitUpdate(id: string, draft: HabitDraft): Promise<UpdateImpact> {
+  return invoke<UpdateImpact>('habits_update_preview', { id, draft });
+}
+
+/** Puts a habit away, or takes it back out. */
+async function archiveHabit(id: string, archived: boolean): Promise<HabitSummary> {
+  return invoke<HabitSummary>('habits_archive', { id, archived });
+}
+
+/** Removes a habit and every day ever marked on it. */
+async function deleteHabit(id: string): Promise<void> {
+  return invoke<void>('habits_delete', { id });
+}
+
+/** Sets the person's whole order at once. */
+async function reorderHabits(ids: readonly string[]): Promise<void> {
+  return invoke<void>('habits_reorder', { ids });
+}
+
+/** Marks or unmarks one day, and answers what that square now says. */
+async function toggleHabitDay(id: string, day: number, amount: number | null): Promise<DayState> {
+  return invoke<DayState>('habits_toggle_day', { id, day, amount });
+}
+
+/** Reads one whole year of one habit. */
+async function habitHeatmap(id: string, year: number): Promise<Heatmap> {
+  return invoke<Heatmap>('habits_heatmap', { id, year });
+}
+
+/** Reads everything the detail screen shows in numbers. */
+async function habitStats(id: string): Promise<HabitStats> {
+  return invoke<HabitStats>('habits_stats', { id });
+}
+
 /**
  * The real boundary.
  *
@@ -270,4 +347,15 @@ export const ipc: IpcSurface = {
   minimizeWindow,
   toggleMaximizeWindow,
   closeWindow,
+  listHabits,
+  getHabit,
+  createHabit,
+  updateHabit,
+  previewHabitUpdate,
+  archiveHabit,
+  deleteHabit,
+  reorderHabits,
+  toggleHabitDay,
+  habitHeatmap,
+  habitStats,
 };

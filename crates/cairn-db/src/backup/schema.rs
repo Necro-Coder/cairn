@@ -157,6 +157,7 @@ pub const TABLES: &[TableSpec] = &[
             column("started_on", ColumnKind::Integer),
             column("archived_at", ColumnKind::Integer),
             column("position", ColumnKind::Integer),
+            column("period", ColumnKind::Integer),
         ]
     ),
     table!(
@@ -166,6 +167,7 @@ pub const TABLES: &[TableSpec] = &[
             column("day", ColumnKind::Integer),
             column("amount", ColumnKind::Integer),
             column("note", ColumnKind::Sealed),
+            column("target_snapshot", ColumnKind::Integer),
         ]
     ),
     table!(

@@ -17,5 +17,7 @@ Each one says what the situation was, what was chosen, what was rejected and why
 | [0009](0009-what-the-database-encrypts.md) | What the database encrypts, column by column | accepted |
 | [0010](0010-backup-file-format.md) | A backup is one file, framed in chunks, with nothing written that a reader has to believe | accepted |
 | [0011](0011-where-the-backup-key-comes-from.md) | The backup key hangs off the key encryption key, not off the data key | accepted |
+| [0012](0012-what-a-streak-means.md) | What a streak means, and where each part of it is decided | accepted |
+| [0013](0013-judging-history-with-the-objective-of-the-day.md) | A day is judged by the target it was marked under | accepted |
 
 A record is never edited to say something different once it is accepted. If a decision is replaced, the new one gets its own number and the old one is marked as superseded, so that the reasoning behind a change is still readable afterwards.
