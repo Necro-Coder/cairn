@@ -82,7 +82,7 @@ rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl
 # The number is the one openssl-sys itself resolves to. Naming any other one does not
 # override it: cargo would simply add a second, unused copy of the crate to the graph and
 # leave the real build exactly where it was.
-openssl-src = "=300.6.1"
+openssl-src = "=400.0.1"
 
 # Lints applied to every crate in the workspace through `[lints] workspace = true`.
 # Setting them here rather than in each lib.rs means a new crate cannot be created

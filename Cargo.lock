@@ -342,7 +342,7 @@ dependencies = [
  "cairn-crypto",
  "cairn-domain",
  "cairn-platform",
- "openssl-src",
+ "openssl-src 400.0.1+4.0.2",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2537,6 +2537,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openssl-src"
+version = "400.0.1+4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8700cc16d48035d75a7907f8ebbaec59a350ea87d8d3181041ae8b6dd23a1b05"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2544,7 +2553,7 @@ checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
+ "openssl-src 300.6.1+3.6.3",
  "pkg-config",
  "vcpkg",
 ]
