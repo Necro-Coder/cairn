@@ -3,6 +3,7 @@
 //! Everything lives in the library rather than in `main.rs` so that the desktop binary
 //! and, later, the iOS entry point drive exactly the same code.
 
+pub mod clipboard;
 pub mod clock;
 pub mod commands;
 pub mod instance;
@@ -122,6 +123,24 @@ pub fn run() {
             commands::habits::habits_toggle_day,
             commands::habits::habits_heatmap,
             commands::habits::habits_stats,
+            commands::passwords::passwords_list,
+            commands::passwords::passwords_search,
+            commands::passwords::passwords_get,
+            commands::passwords::passwords_history,
+            commands::passwords::passwords_folders,
+            commands::passwords::passwords_settings,
+            commands::passwords::passwords_create,
+            commands::passwords::passwords_update,
+            commands::passwords::passwords_folder_save,
+            commands::passwords::passwords_folder_delete,
+            commands::passwords::passwords_folders_reorder,
+            commands::passwords::passwords_history_clear,
+            commands::passwords::passwords_trash,
+            commands::passwords::passwords_delete,
+            commands::passwords::passwords_empty_trash,
+            commands::passwords::passwords_reveal,
+            commands::passwords::passwords_copy,
+            commands::passwords::passwords_set_clipboard_seconds,
             commands::sample::diagnostics_insert_sample_habit,
             commands::sample::diagnostics_list_sample_habits,
             commands::sample::diagnostics_delete_sample_habit,

@@ -13,6 +13,11 @@ publish.workspace = true
 cairn-crypto.workspace = true
 jiff.workspace = true
 thiserror.workspace = true
+# Row identifiers. Already in the graph at this exact version through `cairn-db`, and taken from
+# the workspace so the sixteen bytes one crate writes are the sixteen the other reads. A draft
+# names the folder it goes in, and naming it with a `String` here would mean the check that it is
+# an identifier at all happened somewhere else, or nowhere.
+uuid.workspace = true
 
 [dev-dependencies]
 # Already in the tree for `cairn-crypto`, at the same version. The types in this crate are the

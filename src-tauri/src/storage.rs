@@ -14,11 +14,12 @@ use std::sync::Mutex;
 use cairn_crypto::UnlockedVault;
 use cairn_db::backup::swap;
 use cairn_db::codec::FieldCodec;
-use cairn_db::search::{Match, TitleIndex};
+use cairn_db::repositories::vault;
+use cairn_db::search::{Results, SearchIndex, Searchable};
 use cairn_db::{
     DATABASE_FILE, DEVICE_FILE, Database, DbError, DeviceId, clock, device, migrations,
 };
-use cairn_domain::{Clock, Hlc};
+use cairn_domain::{Clock, Hlc, Timestamp};
 
 /// The database, the identifier of the device that writes to it, and its logical clock.
 #[derive(Debug)]
@@ -38,7 +39,7 @@ pub struct Storage {
     /// The one piece of plaintext this application keeps outside a single call, and it is here
     /// rather than beside the window for exactly that reason: this is what the lock destroys.
     /// Behind a lock of its own so a search does not wait on a write.
-    titles: Mutex<TitleIndex>,
+    titles: Mutex<SearchIndex>,
 }
 
 impl Storage {
@@ -73,15 +74,27 @@ impl Storage {
         // After the migrations, because the tables it reads have to exist, and before anything
         // is written, because a clock that starts below what is already in the file would hand
         // out a reading a row already carries.
-        let resumed = database.with(|connection| clock::resume(connection, device))?;
+        let mut resumed = database.with(|connection| clock::resume(connection, device))?;
 
-        // The titles are the only thing the vault cannot search in SQL, so they are opened here,
-        // once, while the key is already in hand. A failure to open one is a failure to unlock:
-        // an application that opened with a search that silently finds nothing is worse than one
-        // that says the file is damaged.
-        let mut titles = TitleIndex::empty();
+        // What has run out of its thirty days stops existing here, on the way in, and not on the
+        // way out: closing has to be fast and must never wait on a write, and a machine that is
+        // switched off rather than closed would never sweep at all.
+        //
+        // Before the index is built, so that nothing swept can appear in a search for the rest of
+        // this session. A failure is **not** a failure to unlock: the bin is somebody's own data
+        // and not being able to destroy part of it is no reason to refuse them the rest, so the
+        // outcome is dropped and the next unlock tries again.
+        let _swept = Self::sweep_the_bin(&database, &mut resumed, now_us);
+
+        // What the vault cannot search in SQL is opened here, once, while the key is already in
+        // hand. A failure is **not** a failure to unlock. Refusing to open the vault because one
+        // title does not decrypt turns a problem with one row into the loss of everything else,
+        // which is the wrong half of that trade for somebody who came to read a different entry.
+        // The index is left empty and says so through `is_complete`, and the interface reports
+        // that the search is unavailable rather than letting somebody believe it found nothing.
+        let mut titles = SearchIndex::empty();
         let codec = FieldCodec::new(vault.data_key(), *vault.key_id());
-        database.with(|connection| titles.build(connection, &codec))?;
+        let _built = database.with(|connection| titles.build(connection, &codec));
 
         Ok(Self {
             database,
@@ -92,13 +105,27 @@ impl Storage {
         })
     }
 
-    /// The entries whose title contains what was typed.
+    /// Destroys what has been in the bin for longer than it may be, in one transaction.
+    ///
+    /// Takes the clock by reference rather than reading one, because this runs before the storage
+    /// exists and the reading it uses has to be the next one this device gives out, not a repeat
+    /// of one already in the file.
+    fn sweep_the_bin(database: &Database, clock: &mut Clock, now_us: i64) -> Result<u32, DbError> {
+        let millis = u64::try_from(Timestamp::from_micros(now_us).as_millis()).unwrap_or(0);
+        let hlc = clock.tick(millis);
+
+        database.in_transaction(|transaction| {
+            vault::empty_bin(transaction, hlc, now_us, vault::Sweep::Expired)
+        })
+    }
+
+    /// One page of the entries whose title, user name or address contains what was typed.
     ///
     /// Reads the index rather than the file. Nothing is decrypted here, because everything this
     /// answers with was decrypted once, on the unlock.
     #[must_use]
-    pub fn search_titles(&self, needle: &str) -> Vec<Match> {
-        self.with_titles(|index| index.matches(needle))
+    pub fn search_entries(&self, needle: &str, page: u16) -> Results {
+        self.with_titles(|index| index.search(needle, page))
     }
 
     /// Opens every live title again, replacing what the index held.
@@ -119,6 +146,15 @@ impl Storage {
         })
     }
 
+    /// Tells the index what one entry now is, or that it is no longer there.
+    ///
+    /// Called after a write has committed, never before: an index taught about a write that then
+    /// rolled back would find an entry that does not exist, and the person would be looking at a
+    /// result they cannot open.
+    pub fn note_entry(&self, id: uuid::Uuid, entry: Option<Searchable>) {
+        self.with_titles(|index| index.upsert(id, entry));
+    }
+
     /// How many titles the index holds, and whether it holds all of them.
     #[must_use]
     pub fn title_index_size(&self) -> (usize, bool) {
@@ -130,7 +166,7 @@ impl Storage {
     /// A panic elsewhere must not turn the search into a permanent failure, and there is no
     /// invariant to protect: the worst a half written index can be is out of date, and the next
     /// rebuild replaces it.
-    fn with_titles<T>(&self, work: impl FnOnce(&mut TitleIndex) -> T) -> T {
+    fn with_titles<T>(&self, work: impl FnOnce(&mut SearchIndex) -> T) -> T {
         let mut index = match self.titles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -204,7 +240,7 @@ impl Storage {
         // Before the file, and whether or not the file agrees to close. The index is plaintext,
         // and a database that refuses to let go is no reason to leave every title of the vault
         // readable in this process.
-        self.with_titles(TitleIndex::clear);
+        self.with_titles(SearchIndex::clear);
 
         self.database.close()
     }
@@ -243,7 +279,7 @@ impl Storage {
 
         // Before the connection goes anywhere. The index is plaintext and it is about to be
         // wrong in any case, because the rows it was built from are being replaced.
-        self.with_titles(TitleIndex::clear);
+        self.with_titles(SearchIndex::clear);
 
         match swap::swap_in(self.database, staging, safety_copy) {
             Ok(_swapped) => {

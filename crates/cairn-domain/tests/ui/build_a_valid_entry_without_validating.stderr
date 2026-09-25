@@ -1,0 +1,11 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+  --> tests/ui/build_a_valid_entry_without_validating.rs:20:20
+   |
+20 |     let _wrapped = ValidEntry(draft);
+   |                    ^^^^^^^^^^
+   |
+note: constructor is not visible here due to private fields
+  --> src/vault/spec.rs
+   |
+   | pub struct ValidEntry(EntryDraft);
+   |                       ^^^^^^^^^^ private field

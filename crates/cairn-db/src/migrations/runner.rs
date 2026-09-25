@@ -78,6 +78,18 @@ pub const MIGRATIONS: &[Migration] = &[
         up: include_str!("sql/0006_habit_period_and_snapshot.sql"),
         down: include_str!("sql/0006_habit_period_and_snapshot.down.sql"),
     },
+    Migration {
+        version: 7,
+        name: "vault_kind_and_trash",
+        up: include_str!("sql/0007_vault_kind_and_trash.sql"),
+        down: include_str!("sql/0007_vault_kind_and_trash.down.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "vault_child_tombstones",
+        up: include_str!("sql/0008_vault_child_tombstones.sql"),
+        down: include_str!("sql/0008_vault_child_tombstones.down.sql"),
+    },
 ];
 
 /// Every table of user data a fully migrated database has, in the order they were created in.
@@ -821,11 +833,11 @@ mod tests {
 
         assert_eq!(
             revert_to(&database, 5).expect("migration 0006 reverts"),
-            vec![6],
-            "reverting to 5 did not run exactly the sixth reverse script"
+            vec![8, 7, 6],
+            "reverting to 5 did not run every reverse script above it, newest first"
         );
         let applied = apply_all(&database, NOW_US).expect("migration 0006 applies again");
-        assert_eq!(applied.versions, vec![6]);
+        assert_eq!(applied.versions, vec![6, 7, 8]);
 
         assert_eq!(
             seeded_values(&database),
@@ -1006,6 +1018,311 @@ mod tests {
                 "habit_entries_sync".to_owned()
             ]
         );
+
+        database.close().expect("the connection closes");
+    }
+
+    /// One vault entry, written straight into the table.
+    ///
+    /// Through SQL rather than through the repository, for the reason the habit fixture gives:
+    /// what is being checked is the shape of the schema, and no repository knows the two columns
+    /// migration 0007 adds yet. The sealed columns hold bytes that are not ciphertext, which
+    /// nothing in this test ever tries to open.
+    fn seed_a_vault_entry(database: &Database) {
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO vault_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          title, username, password, notes, folder_id, favorite, last_used_at)
+                     VALUES
+                         (x'4142434445464748494a4b4c4d4e4f50', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'77777777777777777777777777777777', 0,
+                          x'aabbcc', x'ddeeff', NULL, NULL, NULL, 1, NULL);",
+                )?;
+                Ok(())
+            })
+            .expect("the seed row can be written");
+    }
+
+    /// How many entries the vault table holds, whatever state they are in.
+    fn vault_entry_count(database: &Database) -> i64 {
+        database
+            .with(|connection| {
+                Ok(connection
+                    .query_row("SELECT count(*) FROM vault_entries", [], |row| row.get(0))?)
+            })
+            .expect("the entries can be counted")
+    }
+
+    /// A migrated database with one vault entry in it.
+    fn a_database_with_an_entry(label: &str) -> (Scratch, Database) {
+        let scratch = Scratch::new(label);
+        let vault = an_open_vault();
+        let database =
+            Database::open(&scratch.database_path(), &vault.database_key()).expect("a new file");
+        apply_all(&database, NOW_US).expect("the migrations apply");
+        seed_a_vault_entry(&database);
+
+        (scratch, database)
+    }
+
+    #[test]
+    fn applying_0007_reverting_it_and_applying_it_again_keeps_every_entry() {
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-round-trip");
+        let before = vault_entry_count(&database);
+
+        assert_eq!(
+            revert_to(&database, 6).expect("migration 0007 reverts"),
+            vec![8, 7],
+            "reverting to 6 did not run every reverse script above it, newest first"
+        );
+        let applied = apply_all(&database, NOW_US).expect("migration 0007 applies again");
+        assert_eq!(applied.versions, vec![7, 8]);
+
+        assert_eq!(
+            vault_entry_count(&database),
+            before,
+            "an entry was lost across the round trip of 0007"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn reverting_0007_takes_both_columns_and_the_partial_index_away() {
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-columns-gone");
+
+        revert_to(&database, 6).expect("migration 0007 reverts");
+
+        let left = columns(&database, "vault_entries");
+        assert!(
+            !left.contains(&"kind".to_owned()),
+            "`kind` survived the reverse script"
+        );
+        assert!(
+            !left.contains(&"trashed_at".to_owned()),
+            "`trashed_at` survived the reverse script"
+        );
+        assert!(
+            !indexes(&database, "vault_entries").contains(&"vault_entries_trash".to_owned()),
+            "the partial index survived the reverse script"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn an_entry_written_before_0007_comes_back_as_an_account_that_is_not_in_the_bin() {
+        // What every entry written before this migration becomes, and what all of them already
+        // were while no column said otherwise: an account, and nowhere near the bin.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-default");
+
+        revert_to(&database, 6).expect("migration 0007 reverts");
+        apply_all(&database, NOW_US).expect("migration 0007 applies again");
+
+        let (kind, trashed_at): (i64, Option<i64>) = database
+            .with(|connection| {
+                Ok(connection.query_row(
+                    "SELECT kind, trashed_at FROM vault_entries",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .expect("the two columns can be read");
+
+        assert_eq!(kind, 0, "an existing entry did not come back as an account");
+        assert_eq!(trashed_at, None, "an existing entry came back in the bin");
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_kind_that_is_neither_an_account_nor_a_note_is_refused_by_the_schema() {
+        // The check is the whole reason the column is an integer: a third kind is impossible
+        // here rather than something whoever reads the row has to remember to reject.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-kind-check");
+
+        let refused = database
+            .with(|connection| {
+                connection.execute(
+                    "INSERT INTO vault_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          title, favorite, kind)
+                     VALUES
+                         (x'5152535455565758595a5b5c5d5e5f60', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'88888888888888888888888888888888', 0,
+                          x'aabbcc', 0, ?1)",
+                    [2_i64],
+                )?;
+                Ok(())
+            })
+            .expect_err("a third kind of entry was accepted");
+
+        assert!(
+            refusal(refused).contains("CHECK constraint failed"),
+            "the row was refused for some reason other than the check on `kind`"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn a_moment_of_zero_is_not_a_moment_something_was_thrown_away() {
+        // Zero is the epoch, which is not a moment anything in this application happened at, and
+        // it is what an uninitialised integer looks like. Refusing it is what keeps "in the bin"
+        // and "somebody wrote a zero" from being the same row.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-trashed-check");
+
+        let refused = database
+            .with(|connection| {
+                connection.execute(
+                    "INSERT INTO vault_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          title, favorite, trashed_at)
+                     VALUES
+                         (x'6162636465666768696a6b6c6d6e6f70', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'99999999999999999999999999999999', 0,
+                          x'aabbcc', 0, ?1)",
+                    [0_i64],
+                )?;
+                Ok(())
+            })
+            .expect_err("an entry thrown away at the epoch was accepted");
+
+        assert!(
+            refusal(refused).contains("CHECK constraint failed"),
+            "the row was refused for some reason other than the check on `trashed_at`"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn an_entry_that_was_never_thrown_away_is_accepted() {
+        // Null is what every live entry holds, and what every row written before the column
+        // existed already says.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0007-trashed-null");
+
+        database
+            .with(|connection| {
+                connection.execute(
+                    "INSERT INTO vault_entries
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          title, favorite, trashed_at)
+                     VALUES
+                         (x'7172737475767778797a7b7c7d7e7f80', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0,
+                          x'aabbcc', 0, ?1)",
+                    [Option::<i64>::None],
+                )?;
+                Ok(())
+            })
+            .expect("an entry that is not in the bin was refused");
+
+        database.close().expect("the connection closes");
+    }
+
+    /// One address and one custom field hung off the seeded entry.
+    fn seed_a_url_and_a_field(database: &Database) {
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO vault_urls
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          entry_id, value, position)
+                     VALUES
+                         (x'8182838485868788898a8b8c8d8e8f90', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 0,
+                          x'4142434445464748494a4b4c4d4e4f50', x'010203', 0);
+
+                     INSERT INTO vault_fields
+                         (id, created_at, updated_at, device_id, deleted, hlc, rev,
+                          entry_id, label, value, secret, position)
+                     VALUES
+                         (x'9192939495969798999a9b9c9d9e9fa0', 1, 2,
+                          x'11111111111111111111111111111111', 0,
+                          x'cccccccccccccccccccccccccccccccc', 0,
+                          x'4142434445464748494a4b4c4d4e4f50', x'040506', x'070809', 1, 0);",
+                )?;
+                Ok(())
+            })
+            .expect("the child rows can be written");
+    }
+
+    #[test]
+    fn a_removed_address_can_be_emptied_once_0008_has_run_and_could_not_before() {
+        // The reason this migration exists, stated as the two halves of the same insert. Before
+        // it, a tombstoned address had to keep its ciphertext; after it, it does not.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0008-nullable");
+        seed_a_url_and_a_field(&database);
+
+        database
+            .with(|connection| {
+                connection.execute_batch(
+                    "UPDATE vault_urls SET deleted = 1, value = NULL;
+                     UPDATE vault_fields SET deleted = 1, label = NULL, value = NULL;",
+                )?;
+                Ok(())
+            })
+            .expect("a tombstoned child row can be emptied");
+
+        revert_to(&database, 7).expect("migration 0008 reverts");
+
+        let refused = database
+            .with(|connection| {
+                connection.execute_batch("UPDATE vault_urls SET value = NULL;")?;
+                Ok(())
+            })
+            .expect_err("the column was still nullable after the reverse script");
+        assert!(
+            refusal(refused).contains("NOT NULL constraint failed"),
+            "the reverse script did not put the constraint back"
+        );
+
+        database.close().expect("the connection closes");
+    }
+
+    #[test]
+    fn the_round_trip_of_0008_keeps_every_row_and_every_index_of_both_tables() {
+        // The expensive failure a rebuild can cause and that nothing else would notice: five of
+        // the six indexes put back. Nothing fails afterwards; a query just stops meeting its
+        // budget a year later, on somebody's real data.
+        let (_scratch, database) = a_database_with_an_entry("migrate-0008-round-trip");
+        seed_a_url_and_a_field(&database);
+
+        let before = (
+            indexes(&database, "vault_urls"),
+            indexes(&database, "vault_fields"),
+        );
+
+        revert_to(&database, 7).expect("migration 0008 reverts");
+        apply_all(&database, NOW_US).expect("migration 0008 applies again");
+
+        assert_eq!(
+            (
+                indexes(&database, "vault_urls"),
+                indexes(&database, "vault_fields")
+            ),
+            before,
+            "a rebuild left an index behind"
+        );
+
+        let (urls, fields): (i64, i64) = database
+            .with(|connection| {
+                Ok(connection.query_row(
+                    "SELECT (SELECT count(*) FROM vault_urls), (SELECT count(*) FROM vault_fields)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .expect("both tables can be counted");
+        assert_eq!((urls, fields), (1, 1), "a rebuild lost a row");
 
         database.close().expect("the connection closes");
     }

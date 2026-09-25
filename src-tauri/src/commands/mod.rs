@@ -15,6 +15,7 @@ pub mod backup;
 pub mod diagnostics;
 pub mod habits;
 pub mod instance;
+pub mod passwords;
 pub mod sample;
 pub mod vault;
 
@@ -30,6 +31,12 @@ pub use diagnostics::{DatabaseStatus, Diagnostics};
 pub use habits::{
     DayStateDto, FieldProblem, HabitDetail, HabitDraft, HabitFilter, HabitSummary, HabitsError,
     Listing, StreakDto, WeekProgressDto,
+};
+pub use passwords::{
+    Cleared, Copied, CopyTarget, DraftFieldDto, Emptied, EntryDetail, EntryDraftDto, EntryFilter,
+    EntryKindDto, EntrySummary, FieldDto, FolderDeleted, FolderDto, HistoryItemDto,
+    HistoryScopeDto, PasswordsError, PasswordsSettings, RevealTarget, Revealed, SearchHit,
+    SearchPage, TrashedDto, UrlDto,
 };
 pub use sample::{KeysetPage, SampleError, SampleHabit, SeedReport, SeededTable};
 pub use vault::{

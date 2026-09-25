@@ -145,7 +145,7 @@ mod tests {
     use cairn_crypto::{Argon2Params, MAX_LANES, MIN_MEMORY_KIB, MIN_PASSES, UnlockedVault};
     use cairn_domain::{CivilDay, Hlc};
 
-    use super::census;
+    use super::{RETENTION_DAYS, census};
     use crate::codec::FieldCodec;
     use crate::device::DeviceId;
     use crate::migrations;
@@ -161,6 +161,21 @@ mod tests {
         let (_header, vault) = cairn_crypto::create("una frase larga para la prueba", params, 0)
             .expect("creating a vault at the lowest parameters cannot fail here");
         vault
+    }
+
+    /// The domain names the same period again, because it may not depend on this crate, and this
+    /// is the one place that can see both numbers at once.
+    ///
+    /// Without this, the two would be free to drift, and the day the domain's copy grew past this
+    /// one the bin would start offering to restore rows whose contents the sweep had already
+    /// emptied. The check is one line and the failure it prevents is silent.
+    #[test]
+    fn the_domain_and_this_crate_agree_on_how_long_a_tombstone_lives() {
+        assert_eq!(
+            cairn_domain::vault::trash::TOMBSTONE_DAYS,
+            RETENTION_DAYS,
+            "the domain's copy of the tombstone period has drifted from this one"
+        );
     }
 
     #[test]
