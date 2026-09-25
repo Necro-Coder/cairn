@@ -51,6 +51,7 @@ import type {
   SampleHabit,
   CompactionReport,
   SeedReport,
+  SweepReport,
   VaultStatus,
   DayState,
   HabitDetail,
@@ -97,6 +98,11 @@ async function listSampleHabits(page: KeysetPage): Promise<readonly SampleHabit[
 /** Marks a sample habit as deleted and empties its encrypted column. */
 async function deleteSampleHabit(id: string): Promise<SampleHabit> {
   return invoke<SampleHabit>('diagnostics_delete_sample_habit', { id });
+}
+
+/** Marks every habit the diagnostics screen wrote as deleted, and leaves the rest alone. */
+async function sweepSampleHabits(): Promise<SweepReport> {
+  return invoke<SweepReport>('diagnostics_delete_sample_habits');
 }
 
 /** Writes a number of rows into every table that has a generator, for measuring. */
@@ -323,6 +329,7 @@ export const ipc: IpcSurface = {
   insertSampleHabit,
   listSampleHabits,
   deleteSampleHabit,
+  sweepSampleHabits,
   seedData,
   compactTombstones,
   fetchVaultStatus,

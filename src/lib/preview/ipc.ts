@@ -752,6 +752,24 @@ const ASKED_FOR_MANY = ((): number => {
   return Math.min(asked, MAX_INVENTED);
 })();
 
+/** What the diagnostics screen calls the habits it writes, which is what a sweep removes. */
+const SAMPLE_NAME = 'Hábito de prueba';
+
+/**
+ * Whether a name is one of the stand-in's own, matched the way the core matches it.
+ *
+ * The name on its own, or the name followed by a space and a whole number. Written here as well
+ * as in Rust because this file has to be able to show the screen after a sweep, and a looser
+ * rule on this side would show a sweep taking habits the real one leaves alone.
+ */
+function isSampleName(name: string): boolean {
+  if (name === SAMPLE_NAME) {
+    return true;
+  }
+  const rest = name.startsWith(`${SAMPLE_NAME} `) ? name.slice(SAMPLE_NAME.length + 1) : null;
+  return rest !== null && rest.length > 0 && /^\d+$/.test(rest);
+}
+
 /**
  * That many copies of the first fixture, each with its own identifier, name and place.
  *
@@ -769,7 +787,7 @@ function manyHabits(count: number): PreviewHabit[] {
       {
         ...first.detail,
         id: `00000000-0000-4000-8000-c${String(at).padStart(11, '0')}`,
-        name: `Hábito de prueba ${String(at)}`,
+        name: `${SAMPLE_NAME} ${String(at)}`,
       },
       at,
       { marks: first.marks },
@@ -892,7 +910,7 @@ export const ipc: IpcSurface = {
     previewHabitCount += 1;
     const habit: SampleHabit = {
       id: `00000000-0000-4000-8000-${String(previewHabitCount).padStart(12, '0')}`,
-      name: 'Hábito de prueba',
+      name: SAMPLE_NAME,
       deleted: false,
       cursor: String(previewHabitCount).padStart(32, '0'),
     };
@@ -911,6 +929,41 @@ export const ipc: IpcSurface = {
     const gone: SampleHabit = { ...found, deleted: true };
     previewHabits.splice(previewHabits.indexOf(found), 1, gone);
     return Promise.resolve(gone);
+  },
+
+  /*
+   * The one answer here that is worked out rather than fixed, and it has to be.
+   *
+   * A sweep is the only control on that screen whose whole point is what it removes, so a
+   * stand-in that answered a number without removing anything would show a screen that cannot be
+   * told apart from one over a core that silently did nothing. It sweeps both lists, because the
+   * core has one table and this file has two: the diagnostics one, where a swept row becomes a
+   * tombstone, and the habits one, where it simply stops being there.
+   */
+  sweepSampleHabits: () => {
+    const started = Date.now();
+    let removed = 0;
+
+    for (const [at, habit] of previewHabits.entries()) {
+      if (!habit.deleted && isSampleName(habit.name)) {
+        previewHabits.splice(at, 1, { ...habit, deleted: true });
+        removed += 1;
+      }
+    }
+
+    for (let at = habits.length - 1; at >= 0; at -= 1) {
+      const habit = habits[at];
+      if (habit !== undefined && isSampleName(habit.detail.name)) {
+        habits.splice(at, 1);
+        removed += 1;
+      }
+    }
+
+    return Promise.resolve({
+      removed,
+      remaining: habits.length,
+      elapsedMs: Math.max(1, Date.now() - started),
+    });
   },
 
   seedData: (rowsPerTable) =>

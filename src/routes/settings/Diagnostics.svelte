@@ -199,6 +199,39 @@
     });
   }
 
+  /** What the last sweep did, in one sentence, or `null` before there has been one. */
+  let sweeping = $state<string | null>(null);
+
+  /**
+   * Marks every habit this screen wrote as deleted, and leaves everything else alone.
+   *
+   * The way back from the button beside it. A thousand rows per press is a number somebody
+   * reaches in four presses and cannot undo from the list, which turns a measuring tool into a
+   * vault nobody wants to open again.
+   *
+   * No dialog, and that is the design system's rule rather than a shortcut: a dialog is for a
+   * choice that carrying on cannot undo, and what this can reach is decided by a name the core
+   * owns. It cannot take a habit somebody wrote, whatever it is pressed by. So the button says
+   * exactly which name it sweeps, and the sentence afterwards says what actually went.
+   */
+  async function sweep(): Promise<void> {
+    await runSample(async () => {
+      const report = await ipc.sweepSampleHabits();
+      sweeping =
+        report.removed === 0
+          ? `No había ningún «${SAMPLE_HABIT_NAME}» que barrer. Quedan ${String(report.remaining)} hábitos.`
+          : `Se han barrido ${String(report.removed)} en ${String(report.elapsedMs)} ms. Quedan ${String(report.remaining)} hábitos, que son los tuyos.`;
+    });
+  }
+
+  /**
+   * The name the core gives every habit it writes here, repeated so the button can say it.
+   *
+   * A copy for display, like `RETENTION_DAYS` above. The core decides what is swept; if the two
+   * ever disagree, the core is right and this is a typo.
+   */
+  const SAMPLE_HABIT_NAME = 'Hábito de prueba';
+
   /** Whether the list has been read once since the panel was drawn. */
   let sampleListRead = false;
 
@@ -290,7 +323,16 @@
       <button type="button" disabled={sampleBusy} onclick={() => void seed()}>
         Sembrar {SEED_ROWS} filas
       </button>
+      <button type="button" disabled={sampleBusy} onclick={() => void sweep()}>
+        Barrer los «{SAMPLE_HABIT_NAME}»
+      </button>
     </div>
+
+    {#if sweeping !== null}
+      <p class="muted" role="status">
+        {sweeping}
+      </p>
+    {/if}
 
     {#if compaction !== null}
       <p class="muted" role="status">

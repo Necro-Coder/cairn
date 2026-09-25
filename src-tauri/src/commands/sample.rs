@@ -1,4 +1,5 @@
-//! The four commands the diagnostics screen uses to prove that storage works.
+//! The commands the diagnostics screen uses to prove that storage works, and the sweep that
+//! undoes what two of them wrote.
 //!
 //! They exist for one manual test: create a habit, list it, delete it, restart, and see that it
 //! is still there as a tombstone with nothing inside it. That test is worth having because it is
@@ -163,6 +164,96 @@ pub struct CompactionReport {
     pub remaining: u64,
     /// How long it took.
     pub elapsed_ms: u64,
+}
+
+/// What a sweep removed, and what it left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepReport {
+    /// How many habits this module had written and has now marked as deleted.
+    pub removed: u32,
+    /// How many live habits are left, which are the ones that were not this module's.
+    pub remaining: u32,
+    /// How long the whole sweep took, in milliseconds.
+    pub elapsed_ms: u64,
+}
+
+/// Marks every habit this module wrote as deleted, and empties each one's encrypted column.
+///
+/// The way out of a seeding run. Ten thousand rows is a number the button above can produce in
+/// one press and the screen that lists them cannot undo in any number of presses, and a
+/// diagnostics tool that can only be pointed one way is a trap rather than a tool.
+///
+/// Takes no argument, like everything else here. What it removes is decided by a name this
+/// module owns, so there is nothing arriving from the WebView that can widen it: a request to
+/// sweep is a request to sweep this module's own rows and cannot be made into anything else.
+///
+/// Not one transaction. Each removal opens its own, because the repository's delete opens one
+/// and SQLite has no second one to give it; ten thousand of them is slower than a single commit
+/// and is the honest way to use the function that already exists. A sweep interrupted half way
+/// through has removed half of them and left the file consistent, which is the property worth
+/// having here.
+///
+/// # Errors
+///
+/// Returns [`SampleError::Locked`] if the vault is closed and [`SampleError::Storage`] if the
+/// database refuses.
+#[tauri::command(async)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the command macro generates the call and requires the state guard by value"
+)]
+pub fn diagnostics_delete_sample_habits(
+    state: tauri::State<'_, AppState>,
+) -> Result<SweepReport, SampleError> {
+    sweep(&state, now_us(), now_ms())
+}
+
+/// What [`diagnostics_delete_sample_habits`] does, with the moment passed in.
+///
+/// Split out for the same reason the habit commands are: the command takes a state guard the
+/// framework builds, which a test has no way to produce, and the sequence worth asserting on is
+/// this one. The two moments are parameters, in microseconds and in milliseconds, so that an
+/// assertion about what was swept does not also depend on what time the machine thinks it is.
+///
+/// # Errors
+///
+/// See [`diagnostics_delete_sample_habits`].
+pub fn sweep(state: &AppState, micros: i64, millis: u64) -> Result<SweepReport, SampleError> {
+    let started = std::time::Instant::now();
+
+    let (removed, remaining) = state
+        .session()
+        .with_open(|vault, storage| {
+            let codec = storage.codec(vault);
+
+            storage.database().with(|connection| {
+                let live = every_habit(connection, &codec)?;
+                let (mine, theirs): (Vec<Habit>, Vec<Habit>) =
+                    live.into_iter().partition(|habit| is_sample(&habit.name));
+
+                let mut removed = 0_u32;
+                for habit in &mine {
+                    match habits::delete(connection, storage.next_hlc(millis), micros, habit.id) {
+                        Ok(_gone) => removed = removed.saturating_add(1),
+                        // Already gone, which is the answer another window reached first. The
+                        // row is in the state this asked for, so it is not a failure of the
+                        // sweep; it is simply not one of this sweep's removals.
+                        Err(DbError::NotFound) => {}
+                        Err(other) => return Err(other),
+                    }
+                }
+
+                Ok((removed, u32::try_from(theirs.len()).unwrap_or(u32::MAX)))
+            })
+        })
+        .ok_or(SampleError::Locked)??;
+
+    Ok(SweepReport {
+        removed,
+        remaining,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
 }
 
 /// Removes the tombstones that are older than the retention window.
@@ -411,6 +502,59 @@ fn seed(
     })?;
 
     Ok(rows)
+}
+
+/// Whether a name is one this module wrote.
+///
+/// Exactly the two shapes the two writers above produce: the name on its own, from the single
+/// insert, and the name followed by a space and a whole number, from the seeding run. Nothing
+/// else. A sweep is the one operation here that decides what to destroy from a name rather than
+/// from an identifier somebody chose, so it is written to be read: a habit called `Hábito de
+/// pruebas`, `Hábito de prueba de verdad` or `hábito de prueba 3` is somebody's own and survives.
+///
+/// Somebody who deliberately calls a real habit `Hábito de prueba 7` will lose it, and no rule
+/// that works from the name can avoid that. The screen says which name it sweeps before it does
+/// it, which is the part that is actually in this project's power.
+fn is_sample(name: &str) -> bool {
+    if name == SAMPLE_NAME {
+        return true;
+    }
+
+    name.strip_prefix(SAMPLE_NAME)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|ordinal| {
+            !ordinal.is_empty() && ordinal.bytes().all(|digit| digit.is_ascii_digit())
+        })
+}
+
+/// Every live habit, read a page at a time.
+///
+/// All of them before any of them is touched, and that ordering is the whole point rather than a
+/// detail. Marking a habit gives it a new clock reading, and the page this walks is ordered by
+/// that reading, so deleting while walking would move rows past the cursor and leave some of
+/// them behind — which on a sweep looks exactly like a sweep that worked, until the list is
+/// opened again.
+fn every_habit(
+    connection: &cairn_db::Connection,
+    codec: &cairn_db::FieldCodec<'_>,
+) -> Result<Vec<Habit>, DbError> {
+    let mut all: Vec<Habit> = Vec::new();
+    let mut after = None;
+
+    loop {
+        let page = habits::page(connection, codec, after, MAX_PAGE)?;
+        let Some(last) = page.last() else { break };
+
+        after = Some(last.hlc);
+        let was_full = page.len() == MAX_PAGE;
+        all.extend(page);
+
+        if !was_full {
+            break;
+        }
+    }
+
+    Ok(all)
 }
 
 /// The day every sample row is started on.

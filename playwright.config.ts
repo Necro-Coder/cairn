@@ -38,25 +38,38 @@ export default defineConfig({
   },
 
   /*
-   * The same screens twice, once in each theme.
+   * The accessibility suite twice, once in each theme, and then the budgets on their own.
    *
-   * Both are drawn from the same tokens, but they are two different sets of values and
-   * only one of them can be the one somebody checked by eye. Contrast in particular is a
-   * property of the pair, so a palette that passes on paper says nothing about ink.
+   * Both themes because they are drawn from the same tokens but are two different sets of
+   * values, and only one of them can be the one somebody checked by eye. Contrast in
+   * particular is a property of the pair, so a palette that passes on paper says nothing
+   * about ink.
+   *
+   * The budgets are a project of their own, in one theme, and they wait for the other two.
+   * Two reasons, and the second is the one that matters. What a screen costs to draw is the
+   * same in both palettes, so a second copy would double the slowest check in the pipeline
+   * to learn nothing. And a suite that is timing a screen must not share the machine with a
+   * suite that is not: `fullyParallel` puts a ten thousand row render beside an `axe` run
+   * over another screen, which makes the budget read high and the `axe` run time out, and a
+   * check that fails when the machine happens to be busy is a check nobody will believe
+   * twice. `dependencies` is how Playwright is told to finish one before starting the other.
    */
   projects: [
     {
       name: 'paper',
+      testDir: './tests/a11y',
       use: { ...devices['Desktop Chrome'], colorScheme: 'light' },
     },
     {
       name: 'ink',
-      // The accessibility suite alone. What a screen costs to draw is the same in both
-      // palettes, so running the budget suite twice would double the slowest check in the
-      // pipeline to learn nothing, and the two copies would compete for the same cores
-      // while being timed.
       testDir: './tests/a11y',
       use: { ...devices['Desktop Chrome'], colorScheme: 'dark' },
+    },
+    {
+      name: 'budget',
+      testDir: './tests/budget',
+      dependencies: ['paper', 'ink'],
+      use: { ...devices['Desktop Chrome'], colorScheme: 'light' },
     },
   ],
 

@@ -112,6 +112,13 @@ export interface SeedReport {
   readonly elapsedMs: number;
 }
 
+/** What a sweep of the habits the diagnostics screen wrote removed, and what it left. */
+export interface SweepReport {
+  readonly removed: number;
+  readonly remaining: number;
+  readonly elapsedMs: number;
+}
+
 /**
  * Why a sample operation did not happen.
  *
@@ -498,6 +505,14 @@ export interface IpcSurface {
 
   /** Marks a sample habit as deleted and empties its encrypted column. */
   readonly deleteSampleHabit: (id: string) => Promise<SampleHabit>;
+
+  /**
+   * Marks every habit the diagnostics screen wrote as deleted, and leaves the rest alone.
+   *
+   * Takes no argument for the same reason the other three do not. Which habits are swept is
+   * decided by a name the core owns, so there is nothing the interface can send that widens it.
+   */
+  readonly sweepSampleHabits: () => Promise<SweepReport>;
 
   /** Writes a number of rows into every table that has a generator, for measuring. */
   readonly seedData: (rowsPerTable: number) => Promise<SeedReport>;

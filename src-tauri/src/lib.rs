@@ -125,6 +125,7 @@ pub fn run() {
             commands::sample::diagnostics_insert_sample_habit,
             commands::sample::diagnostics_list_sample_habits,
             commands::sample::diagnostics_delete_sample_habit,
+            commands::sample::diagnostics_delete_sample_habits,
             commands::sample::diagnostics_seed_data,
             commands::sample::diagnostics_compact_tombstones,
             commands::vault::vault_status,
